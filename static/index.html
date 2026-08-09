@@ -15,7 +15,14 @@
     // 主题早期初始化：防 FOUC
     (function() {
       var saved = null;
-      try { saved = localStorage.getItem('meetmid-theme'); } catch (_) {}
+      try {
+        saved = localStorage.getItem('middot-theme');
+        if (!saved) {
+          // 迁移旧 key（Meetmid 时代），一次性搬走
+          var legacy = localStorage.getItem('meetmid-theme');
+          if (legacy) { saved = legacy; localStorage.setItem('middot-theme', legacy); localStorage.removeItem('meetmid-theme'); }
+        }
+      } catch (_) {}
       var theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
       document.documentElement.setAttribute('data-theme', theme);
     })();
@@ -4958,7 +4965,7 @@
         const cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
         const next = cur === 'dark' ? 'light' : 'dark';
         document.documentElement.setAttribute('data-theme', next);
-        try { localStorage.setItem('meetmid-theme', next); } catch (_) {}
+        try { localStorage.setItem('middot-theme', next); } catch (_) {}
         syncThemeIcon();
         // 地图底图跟随主题
         if (window.map && typeof map.setMapStyle === 'function') {

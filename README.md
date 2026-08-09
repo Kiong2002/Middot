@@ -6,9 +6,9 @@
 [![Flask](https://img.shields.io/badge/Flask-3.0-000000)](https://flask.palletsprojects.com/)
 [![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-9146FF)](https://platform.deepseek.com/)
 [![高德地图](https://img.shields.io/badge/地图-高德%20JS%20API%202.0-E4392E)](https://console.amap.com/)
-[![Live Demo](https://img.shields.io/badge/线上体验-meetmid.myowl.me-1F883D)](https://meetmid.myowl.me/)
+[![Live Demo](https://img.shields.io/badge/线上体验-middot.myowl.me-1F883D)](https://middot.myowl.me/)
 
-线上体验：**[meetmid.myowl.me](https://meetmid.myowl.me/)**
+线上体验：**[middot.myowl.me](https://middot.myowl.me/)**
 
 ---
 
@@ -196,12 +196,12 @@ python app_v2.py
 生产环境用 rsync 直推 + `pkill -f app_v2.py` 重启：
 
 ```bash
-rsync -avz app_v2.py amap_client.py root@<host>:/root/Meetmid-AMAP/
-rsync -avz static/ root@<host>:/root/Meetmid-AMAP/static/
-ssh root@<host> 'bash /root/restart_meetmid.sh'
+rsync -avz app_v2.py amap_client.py root@<host>:/root/Middot/
+rsync -avz static/ root@<host>:/root/Middot/static/
+ssh root@<host> 'bash /root/restart_middot.sh'
 ```
 
-`restart_meetmid.sh` 只是简单的 `pkill + nohup`，日志到 `server.log`。
+`restart_middot.sh` 只是简单的 `pkill + nohup`，日志到 `server.log`。
 
 ---
 
@@ -229,8 +229,6 @@ Python **3.10+**（用到了 `str | None` 联合类型语法）。
 **部分路线显示"计算中"？** 高德路线 API 免费版 QPS 较低，后端已加限流；若仍慢可减少候选数量或错峰使用。
 
 **公交路线时间对不上？** 高德公交 API 默认使用工作日中午 12:00 规划（避免末班车干扰）。可在「出发时间」处手动指定。
-
-**中点 vs Meetmid 是同一个吗？** 是。项目内部代码仍用 `Meetmid-AMAP` 目录名（第一次 init 时叫这个），产品对外统一叫**中点 Middot**。
 
 ---
 
