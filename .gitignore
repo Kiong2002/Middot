@@ -29,3 +29,12 @@ Thumbs.db
 
 # 日志
 *.log
+
+# SQLite 数据库（用户数据，不提交）
+*.db
+*.sqlite
+*.sqlite3
+middot.db
+
+# 服务器运行时
+server.log

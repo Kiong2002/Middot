@@ -1,103 +1,74 @@
-# 智能中间点地点推荐
+# 中点 Middot
 
-> 输入两个出发地，描述你们的需求，AI 自动找到中间位置的最优地点，并分别规划双方交通路线。
+> 「我们在哪见？」—— 让 AI 帮你和朋友挑一个都不远、都开心的地方。
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Flask](https://img.shields.io/badge/Flask-3.0-green) ![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-purple) ![高德地图](https://img.shields.io/badge/地图-高德-red)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
+[![Flask](https://img.shields.io/badge/Flask-3.0-000000)](https://flask.palletsprojects.com/)
+[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-9146FF)](https://platform.deepseek.com/)
+[![高德地图](https://img.shields.io/badge/地图-高德%20JS%20API%202.0-E4392E)](https://console.amap.com/)
+[![Live Demo](https://img.shields.io/badge/线上体验-meetmid.myowl.me-1F883D)](https://meetmid.myowl.me/)
 
----
-
-## 功能特性
-
-- **自然语言理解**：直接输入"找一家安静的咖啡馆"、"公平的位置，两边都不要太远"等口语需求
-- **智能中间点计算**：自动计算两点的地理中心，动态调整搜索半径
-- **A/B 独立路线规划**：双方可选择不同出行方式（公交地铁 / 驾车 / 骑行 / 步行 / 最快）
-- **智能排序**：从 query 中提取排序偏好，自动调整评分、总时间、公平性的权重
-- **附近搜索**：对每个结果地点一键搜索周边咖啡馆、书店、地铁站等配套设施
-- **多结果展示**：最多20个候选地点，地图标记默认半透明，点击卡片后高亮选中
-- **路线重算**：切换出行方式后无需重新搜索，直接对缓存数据重算路线
-- **可拖拽布局**：左右面板分界线可拖动调节宽度
+线上体验：**[meetmid.myowl.me](https://meetmid.myowl.me/)**
 
 ---
 
-## 技术架构
+## 这是什么
 
-### 多 Agent 流水线（`app_v2.py`）
+**中点 Middot** 是一个多人碰面地点决策工具。
 
-```
-用户输入
-   │
-   ▼
-Agent1 规划（LLM，无工具）
-   提取：keyword / min_rating / sort_weights
-   │
-   ▼
-Agent2 搜索（LLM + 2个工具）
-   工具：find_midpoint / search_pois_nearby
-   LLM 只看压缩摘要，完整数据存 Python 侧
-   │
-   ▼
-Python 筛选排名
-   评分过滤 → 取前20个
-   │
-   ▼
-Python 路线计算
-   A/B 分别调高德路线 API
-   综合评分 = 评分×w₁ - 总时间×w₂ - 时间差×w₃
-   权重由 Agent1 从 query 中提取
-   │
-   ▼
-Agent3 总结（LLM，无工具）
-   生成 2-4 句推荐文字
-   │
-   ▼
-返回结果 + Session ID
-```
+你输入所有人的出发地和一句话需求（"找家安静点的火锅店"、"想吃日料，人均别太贵"），中点会：
 
-### 为什么拆分 Agent？
+1. 算出所有人的**地理中点**（可拖动锚点、拉半径），
+2. 到高德地图上搜候选地点，
+3. **分别为每个人**规划实时路线（公交/驾车/骑行/步行/最快），
+4. 按"公平/评分/距离"三种口径排序，
+5. 让**小 Mid**（内嵌 AI 助手）用自然语言改需求："再远一点"、"人均别超 150"、"再加一个朋友，她在望京"。
 
-| 问题 | 解决方案 |
-|---|---|
-| 单 Agent 上下文过长（POI 原始数据很大） | Agent2 工具返回给 LLM 的是压缩摘要，完整数据存 Python 侧 |
-| 路线计算不需要 LLM | 纯 Python 直接调高德 API，速度快、结果确定 |
-| A/B 切换出行方式需要重算 | Session 缓存 POI 列表，重算只跑路线，不重新搜索 |
+它不是"帮你搜餐厅"——它是**帮你做决定**。
+
+---
+
+## 核心亮点
+
+- **多人 · 不止 A/B**：支持任意人数参与者（不再局限于两人对约）
+- **锚点 + 半径**：不满意 AI 算的中点？拖到你想要的位置，设个"离所有人都别超 5km"
+- **房间实时协作**：6 位房间号，朋友扫码进来，改锚点、改需求、改自己的位置——**3 秒同步给所有人**
+- **小 Mid AI 助手**：DeepSeek + tool_calls，支持"加人 / 改位置 / 改锚点 / 换关键词 / 再搜一批"等结构化操作，前端每一次工具调用都有可撤销的活动日志
+- **iOS Apple Maps 风视觉**：柔和圆角、玻璃质感、动效克制
+- **收藏 & 历史**：常去的位置、以前找过的地方，一键找回
+- **纯 HTML/CSS/JS 前端**：单文件 SPA，无构建工具，无 npm，无 React
 
 ---
 
 ## 快速开始
 
-### 1. 准备 API Key
+### 1. 拿两把 API Key
 
-需要两个 Key，在项目根目录创建 `.env` 文件：
+在项目根目录 `cp .env.example .env` 后填入：
 
+```env
+# DeepSeek: https://platform.deepseek.com/
+DEEPSEEK_API_KEY=sk-...
+
+# 高德 Web 服务 Key（后端 geocode / 路线 API）: https://console.amap.com/
+AMAP_KEY=...
+
+# 高德 Web 端 JS API Key（前端地图）——需要在控制台把 localhost/127.0.0.1 加到白名单
+AMAP_JS_KEY=...
 ```
-DEEPSEEK_API_KEY=你的DeepSeek API Key
-AMAP_KEY=你的高德Web服务Key
-AMAP_JS_KEY=你的高德JS API Key
-```
 
-**获取方式：**
-- DeepSeek：[platform.deepseek.com](https://platform.deepseek.com)
-- 高德地图：[console.amap.com](https://console.amap.com)
-  - `AMAP_KEY`：创建「Web 服务」类型应用
-  - `AMAP_JS_KEY`：创建「Web 端（JS API）」类型应用，需在控制台配置允许的域名白名单（加入 `localhost` 和 `127.0.0.1`）
-
-### 2. 启动服务
+### 2. 启动
 
 ```bash
 bash start.sh
 ```
 
-脚本会自动：
-1. 创建 Python 3.10 虚拟环境（`uv` 管理）
-2. 安装依赖
-3. 启动 `app_v2.py`（多 Agent 版本）
+首次运行会用 `uv` 建虚拟环境、装依赖、启动 `app_v2.py`。访问 <http://localhost:5000>。
 
-访问 [http://localhost:5000](http://localhost:5000)
-
-### 3. 手动启动（可选）
+手动启动：
 
 ```bash
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 python app_v2.py
@@ -105,39 +76,78 @@ python app_v2.py
 
 ---
 
-## 使用说明
+## 使用指南
 
-### 选择出发地（A/B）
+### 单人模式：先摆参与者，再搜
 
-- **搜索框输入**：输入地址后从下拉候选中选择（走后端代理，结果稳定）
-- **点击地图**：点击左上角「选地点A/B」按钮后在地图上直接点选
+1. 侧边栏点「+ 参与者」加人，每人填地址或点地图选点
+2. 设定锚点（可选：不设则用几何中点）
+3. 输入需求，如「安静的咖啡厅，人均别超 60」
+4. 「找餐厅」→ 出结果 → 点小圆点看每人到那的路线
 
-### 填写需求
+### 多人模式：开房间
 
-支持自然语言，例如：
-- `找一家评分高的火锅店`
-- `安静的咖啡馆，最好两边路上时间差不多`
-- `附近有公园的中餐厅，不要太远`
-- `找个 KTV，价格实惠`
+1. 顶栏点「房间」→「创建」→ 拿到 6 位房号（比如 `473521`）
+2. 分享链接或口头告诉朋友
+3. 朋友进来后填自己位置，你能实时看到，反之亦然
+4. 谁改了锚点、关键词，其他人都会收到顶部横幅通知
+5. 房主可以「锁定房间」防止陌生人加入
 
-### 出行方式
+### 让小 Mid 帮你
 
-A 和 B 可以分别选择不同的出行方式：
-- ⚡ 最快（自动比较所有方式，取最短）
-- 🚇 公交地铁
-- 🚲 骑行
-- 🚗 驾车
-- 🚶 步行
+点右下角 🧭 图标打开小 Mid 面板。它能：
 
-### 查看结果
+- 「我在北大，Lisa 在人大，想吃火锅」→ 自动加两个参与者 + 填关键词
+- 「换一个安静点的」→ 换关键词重搜
+- 「再加一个朋友，她在望京」→ `add_participant`
+- 「第 2 个人的位置改到国贸」→ `set_participant_location`
+- 「锚点往北挪 2 公里」→ `shift_center`
+- 每一次工具调用都会在 AI 面板顶部生成活动条目，可**撤销**
 
-- 点击卡片：地图标记高亮，地图平移到该地点
-- 点击地图标记：弹出信息窗口，显示双方路线详情
-- 「🔍 搜索此地点附近」：弹出附近搜索面板，可搜咖啡馆、书店、地铁站等
+---
 
-### 切换出行方式重算
+## 技术架构
 
-结果出来后，可在底部「切换出行方式重算路线」面板调整 A/B 的出行方式，点击「重新计算路线」后**无需重新搜索**，直接对已有地点重算路线并重新排序。
+### 后端流水线（`app_v2.py`）
+
+```
+用户查询 →  规划 Agent（提关键词 / 排序权重 / 评分阈值）
+        →  高德 Search API（POI 候选）
+        →  评分过滤 & 排序
+        →  批量路线计算（并发 + QPS 限速）
+        →  总结 Agent（生成 2-4 句推荐话术）
+        →  SSE 流式返回 + 落盘 session 供后续路线重算
+```
+
+- **多 Agent 拆分**：把重的（长上下文、大数据）留给 Python，把轻的（自然语言理解）留给 LLM
+- **Session 缓存**：切换出行方式不需要重搜——直接对已有 POI 重算路线
+- **SSE 流式进度**：前端能看到「规划 → 搜索 → 路线 → 总结」逐步推进
+- **rate limiter**：全局 QPS 限流，避免高德配额被打爆
+
+### 小 Mid AI 助手（`/api/v2/assistant/stream`）
+
+- **OpenAI 风格 tool_calls**：DeepSeek 支持工具调用，前端每收到一个 `tool_call` 立即渲染卡片
+- **13 个工具**：`add_participant` / `set_participant_location` / `set_anchor` / `shift_center` / `set_query` / `set_radius` / `set_participant_prefer` / `search_now` / `remove_participant` / ...
+- **服务端硬约束**：AI 只能改可白名单内的字段，重名/越界/参数错都会被拒
+- **限流 + max iterations**：单轮最多 7 次工具调用，防止 AI 卡在死循环
+- **前端 ActivityLog**：每次调用可撤销，被 AI 改的字段有 2s 高亮动画
+
+### 房间协作（`app_v2.py` L2000+）
+
+- **6 位纯数字房号**：避开常见电话号码前缀，24h 不复用
+- **revision-based 增量拉取**：`GET /api/v2/rooms/<code>?since_rev=N`，无变化返回 `{unchanged: true}`
+- **BEGIN IMMEDIATE 事务**：避免两个并发 update 拿到同一个 revision
+- **3s 轮询 + 智能退避**：5 次无变化退到 8s；`document.hidden` 时暂停
+- **权限分级**：房主能锁房 / 踢人 / 转让；成员能改自己位置 + 改锚点关键词
+- **归属水印**：谁改了什么，顶部横幅显示 5s
+
+### 前端（`static/index.html`）
+
+- **单文件 SPA**：~6000 行 vanilla JS，无构建工具、无框架、无 npm
+- **高德 JS API 2.0** + `HawkEye`（右上角小地图）+ `Driving/Walking/Riding/Transfer/Geolocation`
+- **Lucide icons** + 自托管 marked/purify（Xiao Mid 消息 Markdown 渲染）
+- **Apple Maps 视觉**：柔和圆角、玻璃质感面板、iOS 风 accordion
+- **手机端专项**：三层抽屉（sidebar / results / assist），底部圆角、地图留 15vh 保底
 
 ---
 
@@ -145,73 +155,57 @@ A 和 B 可以分别选择不同的出行方式：
 
 ```
 .
-├── app.py            # 原版单 Agent（保留备用，不建议直接使用）
-├── app_v2.py         # 多 Agent 版本（当前主版本）
+├── app_v2.py             # Flask 主入口 + 多 Agent 流水线 + AI 助手 + 房间 + 收藏
+├── amap_client.py        # 高德 API 客户端（geocode / 路线 / POI 搜索）
 ├── requirements.txt
-├── start.sh          # 一键启动脚本
-├── .env              # API Key 配置（不提交 git）
-└── static/
-    └── index.html    # 单页前端（纯 HTML/CSS/JS，无构建工具）
+├── start.sh              # 一键启动
+├── .env.example          # API Key 模板（复制成 .env）
+├── static/
+│   ├── index.html        # 单文件前端 SPA
+│   └── vendor/           # 自托管 marked.min.js / purify.min.js
+└── README.md
 ```
 
 ---
 
-## 后端 API 接口
+## 后端 API 一览
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/api/v2/search` | 完整流水线搜索，返回 `session_id` |
-| `POST` | `/api/v2/routes` | 路线重算（基于 session_id，不重新搜索） |
-| `GET`  | `/api/v2/session/<id>` | 查看 session 详情（调试用） |
-| `POST` | `/api/geocode` | 地址→坐标（正地理编码） |
-| `POST` | `/api/geocode-suggest` | 地点搜索下拉候选（基于高德 inputtips） |
-| `POST` | `/api/nearby-search` | 查询某坐标附近的 POI |
-| `GET`  | `/api/config` | 获取前端所需配置（含 JS API Key） |
-
-### `/api/v2/search` 请求示例
-
-```json
-{
-  "location_a": { "lng": 116.397, "lat": 39.908, "name": "天安门" },
-  "location_b": { "lng": 116.469, "lat": 39.995, "name": "望京" },
-  "query": "找一家评分高的火锅店，两边路上时间要差不多",
-  "city": "北京",
-  "prefer_a": "transit",
-  "prefer_b": "auto",
-  "departure_time": "09:30"
-}
-```
-
-### `/api/v2/routes` 请求示例
-
-```json
-{
-  "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "prefer_a": "cycling",
-  "prefer_b": "driving",
-  "departure_time": null
-}
-```
+| `POST` | `/api/v2/search-stream` | 主流水线（SSE 流式） |
+| `POST` | `/api/v2/routes` | 路线重算（用 session_id，不重搜） |
+| `POST` | `/api/v2/assistant/stream` | 小 Mid 对话（SSE + tool_calls） |
+| `GET`  | `/api/v2/session/<id>` | 查看 session 详情 |
+| `POST` | `/api/v2/rooms` | 创建房间 |
+| `POST` | `/api/v2/rooms/join` | 加入房间 |
+| `GET`  | `/api/v2/rooms/<code>?since_rev=N` | 增量拉取房间状态 |
+| `POST` | `/api/v2/rooms/<code>/update` | 更新房间（锚点/关键词/自己的位置等） |
+| `POST` | `/api/v2/rooms/<code>/leave` | 离开房间 |
+| `POST` | `/api/v2/rooms/<code>/lock` | 锁定/解锁房间（仅房主） |
+| `POST` | `/api/v2/rooms/<code>/kick` | 踢人（仅房主） |
+| `GET`/`POST`/`DELETE` | `/api/favorites` | 收藏（`kind=location \| poi`） |
+| `POST` | `/api/geocode` | 地址 → 坐标 |
+| `POST` | `/api/geocode-suggest` | 输入联想 |
+| `POST` | `/api/nearby-search` | 附近 POI |
+| `GET`  | `/api/config` | 前端配置（含 JS API Key） |
 
 ---
 
-## 常见问题
+## 部署
 
-**Q：地点搜索下拉没有结果？**
-后端服务是否正常运行，检查 `AMAP_KEY` 是否配置正确。
+生产环境用 rsync 直推 + `pkill -f app_v2.py` 重启：
 
-**Q：地图不显示？**
-检查 `AMAP_JS_KEY` 是否配置，以及高德控制台是否将 `localhost` 加入域名白名单。
+```bash
+rsync -avz app_v2.py amap_client.py root@<host>:/root/Meetmid-AMAP/
+rsync -avz static/ root@<host>:/root/Meetmid-AMAP/static/
+ssh root@<host> 'bash /root/restart_meetmid.sh'
+```
 
-**Q：搜索结果路线显示"计算中..."？**
-高德路线 API 限制（免费版 QPS 较低），结果较多时部分路线可能超时。可以减少显示数量（下拉选 5 个或 10 个）后重新搜索。
-
-**Q：公交路线摘要看起来不对？**
-高德公交 API 使用固定时间（工作日中午 12:00）规划路线，避免末班车影响。可在「出发时间」处手动指定时间。
+`restart_meetmid.sh` 只是简单的 `pkill + nohup`，日志到 `server.log`。
 
 ---
 
-## 依赖版本
+## 依赖
 
 ```
 flask==3.0.3
@@ -222,4 +216,38 @@ httpx>=0.27.0
 python-dotenv==1.0.1
 ```
 
-Python 版本：**3.10+**（使用了 `str | None` 类型注解语法）
+Python **3.10+**（用到了 `str | None` 联合类型语法）。
+
+---
+
+## 常见问题
+
+**地点搜索联想没结果？** 检查 `AMAP_KEY`，确认高德控制台的 QPS 配额没超。
+
+**地图不显示？** 检查 `AMAP_JS_KEY`，确认高德控制台的域名白名单里加了你部署的域名（localhost 也要加）。
+
+**部分路线显示"计算中"？** 高德路线 API 免费版 QPS 较低，后端已加限流；若仍慢可减少候选数量或错峰使用。
+
+**公交路线时间对不上？** 高德公交 API 默认使用工作日中午 12:00 规划（避免末班车干扰）。可在「出发时间」处手动指定。
+
+**中点 vs Meetmid 是同一个吗？** 是。项目内部代码仍用 `Meetmid-AMAP` 目录名（第一次 init 时叫这个），产品对外统一叫**中点 Middot**。
+
+---
+
+## Roadmap
+
+- [x] 多人参与（不再局限 A/B）
+- [x] 锚点 + 半径可视化
+- [x] 房间实时协作（3s 轮询）
+- [x] 小 Mid AI 助手（DeepSeek + tool_calls）
+- [x] ActivityLog + 撤销
+- [x] 位置收藏
+- [ ] POI 收藏 & 我的历史
+- [ ] 小 Mid 双模式（背后规划 + 结果抽屉，不改用户面板）
+- [ ] 房间共享 AI（AI 建议全房间可见）
+
+---
+
+## License
+
+MIT
