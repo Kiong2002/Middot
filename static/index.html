@@ -540,20 +540,42 @@
       stroke-linecap: round;
       stroke-linejoin: round;
     }
-    .swap-flow-icon path { stroke-dasharray: 5 2.5; }
-    .chip.chip-refresh.spinning .swap-flow-icon path { animation: swapFlowStroke .72s linear; }
-    .chip.chip-refresh.spinning .swap-flow-icon .arrow-head { animation: swapFlowHead .72s var(--ease-standard); }
+    .swap-flow-icon .flow-track { opacity: .52; }
+    .swap-flow-icon .flow-runner {
+      stroke-width: 2.15;
+      stroke-dasharray: .22 .78;
+      stroke-dashoffset: 1;
+      opacity: 0;
+    }
+    .chip.chip-refresh.spinning .swap-flow-icon .flow-runner { animation: swapRunner .78s linear; }
+    .chip.chip-refresh.spinning .swap-flow-icon .arrow-head { animation: swapFlowHead .78s var(--ease-standard); }
+    .swap-flow-icon .runner-head { opacity: 0; }
+    .chip.chip-refresh.spinning .swap-flow-icon .runner-head-a { animation: runnerHeadA .78s var(--ease-standard); }
+    .chip.chip-refresh.spinning .swap-flow-icon .runner-head-b { animation: runnerHeadB .78s var(--ease-standard) .09s; }
     .chip.chip-refresh.spinning .swap-flow-icon .path-b,
     .chip.chip-refresh.spinning .swap-flow-icon .head-b { animation-delay: .09s; }
-    @keyframes swapFlowStroke {
-      from { stroke-dashoffset: 0; opacity: .55; }
-      45%  { opacity: 1; }
-      to   { stroke-dashoffset: -15; opacity: .7; }
+    @keyframes swapRunner {
+      0%   { stroke-dashoffset: 1; opacity: 0; }
+      14%  { opacity: 1; }
+      82%  { opacity: 1; }
+      100% { stroke-dashoffset: 0; opacity: 0; }
     }
     @keyframes swapFlowHead {
-      0%   { transform: translateX(-2px); opacity: .5; }
-      55%  { opacity: 1; }
-      100% { transform: translateX(1.5px); opacity: .8; }
+      0%   { transform: translateX(0); opacity: 1; }
+      72%  { transform: translateX(1.5px); opacity: .85; }
+      100% { transform: translateX(2px); opacity: 0; }
+    }
+    @keyframes runnerHeadA {
+      0%   { transform: translate(0, 0); opacity: 0; }
+      14%  { opacity: 1; }
+      52%  { transform: translate(8px, 4px); opacity: 1; }
+      100% { transform: translate(16px, 8px); opacity: 0; }
+    }
+    @keyframes runnerHeadB {
+      0%   { transform: translate(0, 0); opacity: 0; }
+      14%  { opacity: 1; }
+      52%  { transform: translate(8px, -4px); opacity: 1; }
+      100% { transform: translate(16px, -8px); opacity: 0; }
     }
 
     /* 高德 SDK 自带的 logo/版权标 —— 压 z-index，别遮 UI */
@@ -2633,7 +2655,7 @@
         rf.type = 'button';
         rf.id = 'exampleRefreshBtn';
         rf.title = '换一批';
-        rf.innerHTML = `<svg class="swap-flow-icon" viewBox="0 0 22 16" aria-hidden="true"><path class="path-a" d="M2 4 C7 4 7.5 12 13 12 H19"/><polyline class="arrow-head head-a" points="16.5,9.5 19,12 16.5,14.5"/><path class="path-b" d="M2 12 C7 12 7.5 4 13 4 H19"/><polyline class="arrow-head head-b" points="16.5,1.5 19,4 16.5,6.5"/></svg><span>换一批</span>`;
+        rf.innerHTML = `<svg class="swap-flow-icon" viewBox="0 0 22 16" aria-hidden="true"><path class="flow-track path-a" d="M2 4 C7 4 7.5 12 13 12 H19"/><path class="flow-runner path-a" pathLength="1" d="M2 4 C7 4 7.5 12 13 12 H19"/><polyline class="arrow-head head-a" points="16.5,9.5 19,12 16.5,14.5"/><polyline class="runner-head runner-head-a" points="0.5,1.5 3,4 0.5,6.5"/><path class="flow-track path-b" d="M2 12 C7 12 7.5 4 13 4 H19"/><path class="flow-runner path-b" pathLength="1" d="M2 12 C7 12 7.5 4 13 4 H19"/><polyline class="arrow-head head-b" points="16.5,1.5 19,4 16.5,6.5"/><polyline class="runner-head runner-head-b" points="0.5,9.5 3,12 0.5,14.5"/></svg><span>换一批</span>`;
         rf.addEventListener('click', () => {
           rf.classList.remove('spinning');
           void rf.offsetWidth;
