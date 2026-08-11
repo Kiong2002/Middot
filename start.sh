@@ -25,4 +25,4 @@ fi
 
 echo ""
 echo "启动服务中（多Agent v2 版本）..."
-python app_v2.py
+exec "$(pwd)/venv/bin/python3" app_v2.py

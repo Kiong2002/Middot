@@ -148,15 +148,16 @@
       display: flex; align-items: center; justify-content: space-between;
       z-index: 10;
     }
-    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand { display: flex; align-items: center; gap: 10px; margin-right: auto; }
     .brand-icon {
-      width: 32px; height: 32px; border-radius: 9px;
+      width: 34px; height: 34px; border-radius: 10px;
       overflow: hidden;
       display: flex; align-items: center; justify-content: center;
       flex-shrink: 0;
+      box-shadow: 0 1px 2px rgba(0,68,153,.18), 0 5px 14px rgba(0,112,243,.16);
     }
-    .brand-icon svg { width: 32px; height: 32px; display: block; }
-    .brand-name { font-weight: 700; font-size: 16px; letter-spacing: -0.01em; }
+    .brand-icon svg { width: 34px; height: 34px; display: block; }
+    .brand-name { font-weight: 680; font-size: 16px; letter-spacing: -0.025em; }
     .brand-sub  { font-size: 13px; color: var(--text-3); margin-left: 8px; }
 
     .status-badge {
@@ -530,9 +531,30 @@
       background: color-mix(in oklch, var(--brand) 10%, var(--panel));
       border-style: solid;
     }
-    .chip.chip-refresh [data-lucide] { width: 12px; height: 12px; }
-    .chip.chip-refresh.spinning [data-lucide] { animation: chipSpin .6s ease-out; }
-    @keyframes chipSpin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+    .swap-flow-icon { width: 20px; height: 14px; overflow: visible; flex: 0 0 20px; }
+    .swap-flow-icon path,
+    .swap-flow-icon polyline {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .swap-flow-icon path { stroke-dasharray: 5 2.5; }
+    .chip.chip-refresh.spinning .swap-flow-icon path { animation: swapFlowStroke .72s linear; }
+    .chip.chip-refresh.spinning .swap-flow-icon .arrow-head { animation: swapFlowHead .72s var(--ease-standard); }
+    .chip.chip-refresh.spinning .swap-flow-icon .path-b,
+    .chip.chip-refresh.spinning .swap-flow-icon .head-b { animation-delay: .09s; }
+    @keyframes swapFlowStroke {
+      from { stroke-dashoffset: 0; opacity: .55; }
+      45%  { opacity: 1; }
+      to   { stroke-dashoffset: -15; opacity: .7; }
+    }
+    @keyframes swapFlowHead {
+      0%   { transform: translateX(-2px); opacity: .5; }
+      55%  { opacity: 1; }
+      100% { transform: translateX(1.5px); opacity: .8; }
+    }
 
     /* 高德 SDK 自带的 logo/版权标 —— 压 z-index，别遮 UI */
     .amap-logo, .amap-copyright,
@@ -1415,29 +1437,16 @@
       box-shadow: var(--shadow-2) !important;
       opacity: .92;
     }
-    /* HawkEye 内部矩形（当前视口 + 拖拽预览）是 AMap 用 SVG <path> 画的。
-       在 iOS Safari WebKit 里 CSS !important + inline style.setProperty + setAttribute
-       都覆盖不掉 AMap 硬编码的 stroke rgb(0,178,213)。多轮验证失败。
-       改用 nuclear 方案：JS 把 AMap 原 path 隐藏，克隆一份自己造的 sibling path
-       (无 AMap inline style 干扰) 用橙色渲染。 */
-    .amap-hawkeye svg path.hk-orig,
-    .amap-overlay-hawkeye svg path.hk-orig {
-      visibility: hidden !important;
-      opacity: 0 !important;
-    }
-    .amap-hawkeye svg path.hk-clone,
-    .amap-overlay-hawkeye svg path.hk-clone {
-      stroke: #f59e0b;
-      fill: #f59e0b;
-      stroke-opacity: 0.95;
-      fill-opacity: 0.12;
-      stroke-width: 2;
-    }
-    .amap-hawkeye svg path.hk-clone.hk-preview,
-    .amap-overlay-hawkeye svg path.hk-clone.hk-preview {
-      stroke-dasharray: 4 3;
-      stroke-width: 2.5;
-      fill-opacity: 0;
+    /* 拖动鹰眼时的目标视口。独立覆盖层不依赖高德内部 SVG 结构，
+       因此在 Safari 和高德重绘 path 时也能稳定保持橙色。 */
+    .hk-drag-preview {
+      position: absolute;
+      z-index: 99998;
+      box-sizing: border-box;
+      border: 2px dashed #f59e0b;
+      background: rgba(245, 158, 11, .13);
+      pointer-events: none;
+      display: none;
     }
     @media (max-width: 820px) {
       .amap-hawkeye,
@@ -1474,11 +1483,11 @@
     .search-input-wrap .input-here-btn [data-lucide] { width: 14px; height: 14px; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* 地图右上角"用我的位置定锚"浮标（点地图选点模式时显示） */
+    /* 地图右下角常驻定位按钮，位于小 Mid 上方；选点模式下复用为填点。 */
     .map-here-fab {
       position: absolute; z-index: 12;
-      top: 12px; left: 12px;
-      display: none;
+      top: auto; left: auto; right: 20px; bottom: 86px;
+      display: inline-flex;
       align-items: center; gap: 6px;
       padding: 8px 12px;
       background: var(--panel);
@@ -1494,6 +1503,30 @@
     .map-here-fab [data-lucide] { width: 14px; height: 14px; }
     .map-here-fab.loading { opacity: .6; cursor: wait; }
     .map-here-fab.loading [data-lucide="locate-fixed"] { animation: spin 1s linear infinite; }
+    @media (max-width: 820px) {
+      .map-here-fab {
+        top: auto; left: auto; right: 12px; bottom: 78px;
+        padding: 7px 10px;
+        width: auto; height: 34px;
+        border-radius: 17px;
+      }
+      .map-here-fab span { display: inline; }
+    }
+
+    .assist-location-consent .bubble { border: 1px solid var(--brand); }
+    .assist-location-actions { display: flex; gap: 7px; margin-top: 9px; }
+    .assist-location-actions button {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 6px 10px;
+      background: var(--panel);
+      color: var(--text-1);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .assist-location-actions .allow { border-color: var(--brand); background: var(--brand); color: #fff; }
+    .assist-location-actions button:disabled { opacity: .6; cursor: wait; }
 
     /* 从上下文胶囊点过来时给对应卡片一个短暂高亮 */
     .flash-hi {
@@ -1634,11 +1667,28 @@
     }
     .assist-fab:active { transform: scale(.96); }
     .assist-fab.hidden { display: none; }
-    .assist-fab .fab-emoji {
-      display: inline-block;
+    .mid-orb {
+      position: relative;
+      display: inline-flex;
+      width: 36px; height: 36px;
+      align-items: center; justify-content: center;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 31% 24%, rgba(255,255,255,.95) 0 5%, rgba(255,255,255,.42) 6%, transparent 27%),
+        radial-gradient(circle at 60% 68%, #0077ED 0, #168FF8 48%, #5FC3FF 78%, #BDE8FF 100%);
+      box-shadow:
+        inset -4px -5px 9px rgba(0,55,145,.30),
+        inset 3px 3px 7px rgba(255,255,255,.52),
+        0 5px 12px rgba(0,112,243,.28);
       transform-origin: center 60%;
       animation: fabWiggle 3.6s ease-in-out infinite;
     }
+    .mid-orb::after { content: ''; position: absolute; inset: 2px; border: 1px solid rgba(255,255,255,.38); border-radius: 50%; }
+    .mid-orb-ring { width: 21px; height: 13px; border: 1.7px solid rgba(255,255,255,.9); border-left-color: transparent; border-radius: 50%; transform: rotate(-22deg); filter: drop-shadow(0 1px 1px rgba(0,65,150,.28)); }
+    .mid-orb-dot { position: absolute; width: 5px; height: 5px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,.18), 0 1px 3px rgba(0,60,140,.35); }
+    .assist-avatar .mid-orb { width: 27px; height: 27px; animation: none; }
+    .assist-avatar .mid-orb-ring { width: 16px; height: 10px; border-width: 1.3px; }
+    .assist-avatar .mid-orb-dot { width: 4px; height: 4px; }
     @keyframes fabWiggle {
       0%, 88%, 100% { transform: rotate(0deg); }
       92%           { transform: rotate(-14deg); }
@@ -2144,37 +2194,33 @@
         <button class="icon-btn mobile-only" id="mobileMenuBtn" title="打开侧栏" aria-label="打开侧栏">
           <i data-lucide="menu"></i>
         </button>
-        <div class="brand-icon" title="中点 · S 形曲线，正中间是我们相聚的那个点">
-          <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="中点 logo">
+        <div class="brand-icon" title="中点 · 一条路线穿过会面点">
+          <svg viewBox="0 0 34 34" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="中点 logo">
             <defs>
-              <!-- 底：蓝色微渐变（亮蓝→深蓝），左上到右下 -->
-              <linearGradient id="midBgGrad" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%"   stop-color="#4CA5FF"/>
-                <stop offset="100%" stop-color="#0057D9"/>
+              <linearGradient id="midBgGrad" x1="4" y1="2" x2="30" y2="33" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#66B8FF"/>
+                <stop offset="0.48" stop-color="#1688F8"/>
+                <stop offset="1" stop-color="#0062D6"/>
               </linearGradient>
-              <!-- 底光：左上柔白高光，模拟半立体 -->
-              <radialGradient id="midBgHi" cx="28%" cy="22%" r="70%">
-                <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.22"/>
-                <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+              <radialGradient id="midBgHi" cx="0" cy="0" r="1" gradientTransform="translate(10 7) rotate(51) scale(30)">
+                <stop stop-color="#FFFFFF" stop-opacity="0.34"/>
+                <stop offset="0.62" stop-color="#FFFFFF" stop-opacity="0"/>
               </radialGradient>
-              <!-- 线：橙色渐变（浅暖橙→深橙），与蓝底互补 -->
-              <linearGradient id="midLineGrad" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%"   stop-color="#FFB067"/>
-                <stop offset="100%" stop-color="#F76B15"/>
-              </linearGradient>
-              <!-- 中心点：暖奶油→琥珀径向渐变（发光会面点） -->
-              <radialGradient id="midDotGrad" cx="40%" cy="35%" r="70%">
-                <stop offset="0%"   stop-color="#FFF6E0"/>
-                <stop offset="100%" stop-color="#FFCB70"/>
-              </radialGradient>
+              <linearGradient id="midRope" x1="5" y1="0" x2="29" y2="0" gradientUnits="userSpaceOnUse"><stop stop-color="#87E7D0"/><stop offset="0.5" stop-color="#EAF8FF"/><stop offset="1" stop-color="#FFAD83"/></linearGradient>
+              <linearGradient id="midPick" x1="12" y1="9" x2="22" y2="27" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF"/><stop offset="0.58" stop-color="#EAF5FF"/><stop offset="1" stop-color="#C8E4FF"/></linearGradient>
+              <filter id="midPickShadow" x="6" y="5" width="23" height="25" filterUnits="userSpaceOnUse"><feDropShadow dx="0" dy="1.5" stdDeviation="1.2" flood-color="#004FAD" flood-opacity="0.38"/></filter>
             </defs>
-            <!-- 蓝底 + 左上高光叠加 -->
-            <rect width="32" height="32" rx="10" fill="url(#midBgGrad)"/>
-            <rect width="32" height="32" rx="10" fill="url(#midBgHi)"/>
-            <!-- S 形曲线：(6,8) → (26,24)，t=0.5 中点即 (16,16) -->
-            <path d="M 6 8 C 6 20, 26 12, 26 24" stroke="url(#midLineGrad)" stroke-width="2.6" stroke-linecap="round" fill="none"/>
-            <!-- 发光暖点 -->
-            <circle cx="16" cy="16" r="3.8" fill="url(#midDotGrad)"/>
+            <rect x="0.5" y="0.5" width="33" height="33" rx="10.5" fill="url(#midBgGrad)"/>
+            <rect x="0.5" y="0.5" width="33" height="33" rx="10.5" fill="url(#midBgHi)"/>
+            <rect x="1" y="1" width="32" height="32" rx="10" fill="none" stroke="#FFFFFF" stroke-opacity="0.24"/>
+            <path d="M5 15.2C10 11.5 12.5 20.4 17 17C21.2 13.8 24 18.5 29 15.5" fill="none" stroke="#0059BC" stroke-opacity="0.34" stroke-width="3.6" stroke-linecap="round"/>
+            <path d="M5 14.4C10 10.8 12.5 19.7 17 16.3C21.2 13.1 24 17.8 29 14.8" fill="none" stroke="url(#midRope)" stroke-width="2.45" stroke-linecap="round"/>
+            <path d="M17 7.7C22.8 7.7 25.8 11.2 23.9 16.8C22.2 21.6 17 27 17 27S11.8 21.6 10.1 16.8C8.2 11.2 11.2 7.7 17 7.7Z" fill="url(#midPick)" filter="url(#midPickShadow)"/>
+            <path d="M17 8.6C21.9 8.6 24.4 11.5 22.8 16.2" fill="none" stroke="#FFFFFF" stroke-opacity="0.78" stroke-width="1.1" stroke-linecap="round"/>
+            <path d="M13.1 16.5C14.4 18 15.7 17.3 17 16.3C18.3 15.3 19.5 15.2 20.9 16" fill="none" stroke="#91BDE8" stroke-width="3.5" stroke-linecap="round"/>
+            <path d="M13.1 15.8C14.4 17.3 15.7 16.6 17 15.6C18.3 14.6 19.5 14.5 20.9 15.3" fill="none" stroke="url(#midRope)" stroke-width="2.25" stroke-linecap="round"/>
+            <circle cx="5" cy="14.4" r="1.8" fill="#87E7D0"/>
+            <circle cx="29" cy="14.8" r="1.8" fill="#FFAD83"/>
           </svg>
         </div>
         <div>
@@ -2425,9 +2471,9 @@
 
       <main class="map-wrap" id="mapWrap">
         <div id="map"></div>
-        <button class="map-here-fab" id="mapHereBtn" type="button" title="用我的当前位置定这个点">
+        <button class="map-here-fab" id="mapHereBtn" type="button" title="定位到我的当前位置" aria-label="定位到我的当前位置">
           <i data-lucide="locate-fixed"></i>
-          <span>用我的位置</span>
+          <span>定位到我</span>
         </button>
         <div class="map-context-pill" id="mapContextPill" hidden>
           <button class="mctx-item mctx-anchor" id="mctxAnchor" title="修改锚点">
@@ -2458,13 +2504,13 @@
 
         <!-- ── AI 助手：右下浮球 + 折叠面板 ────────────────────── -->
         <button class="assist-fab" id="assistFab" title="小 Mid · 中点里的 AI 助手" aria-label="小 Mid 中点 AI 助手">
-          <span class="fab-emoji" aria-hidden="true">🧭</span>
+          <span class="mid-orb" aria-hidden="true"><span class="mid-orb-ring"></span><span class="mid-orb-dot"></span></span>
           <span class="fab-badge">AI</span>
         </button>
         <aside class="assist-panel" id="assistPanel" hidden>
           <header class="assist-head">
             <div class="assist-title">
-              <span class="assist-avatar" aria-hidden="true">🧭</span>
+              <span class="assist-avatar" aria-hidden="true"><span class="mid-orb"><span class="mid-orb-ring"></span><span class="mid-orb-dot"></span></span></span>
               <div>
                 <div class="assist-name">小 Mid</div>
                 <div class="assist-sub" id="assistSub">你的会面小雷达 · 换关键词 · 移锚点 · 重算路线</div>
@@ -2587,7 +2633,7 @@
         rf.type = 'button';
         rf.id = 'exampleRefreshBtn';
         rf.title = '换一批';
-        rf.innerHTML = `<i data-lucide="shuffle"></i><span>换一批</span>`;
+        rf.innerHTML = `<svg class="swap-flow-icon" viewBox="0 0 22 16" aria-hidden="true"><path class="path-a" d="M2 4 C7 4 7.5 12 13 12 H19"/><polyline class="arrow-head head-a" points="16.5,9.5 19,12 16.5,14.5"/><path class="path-b" d="M2 12 C7 12 7.5 4 13 4 H19"/><polyline class="arrow-head head-b" points="16.5,1.5 19,4 16.5,6.5"/></svg><span>换一批</span>`;
         rf.addEventListener('click', () => {
           rf.classList.remove('spinning');
           void rf.offsetWidth;
@@ -3429,73 +3475,69 @@
       setStatus('ok', '就绪');
     }
 
-    // HawkEye 拖拽期间，把 SVG <path> 挂上 .hk-preview 让 CSS 走虚线
-    // （松开后恢复实线）。AMap 2.0 内部是 SVG，不是 div+border——
-    // 老代码枚举 div[style*="border"] 全部失效，扒 DOM 才发现。
-    // 另外：Safari 对 SVG inline style 的 !important 覆盖偶尔不稳，
-    // 用 MutationObserver + 定时兜底直接改 element.style，绝对赢。
+    // 高德会频繁销毁并重建 HawkEye 的 SVG path，直接改 stroke 在 Safari
+    // 里不稳定。拖动时使用独立 HTML 覆盖层表示“松手后将移动到的视口”。
     function wireHawkEyePreviewTagging() {
-      console.log('[Middot] hawkeye v5 loaded (clone-and-hide)');
       const attempt = (retries) => {
         const container = document.querySelector('.amap-overlay-hawkeye') || document.querySelector('.amap-hawkeye');
         if (!container) {
           if (retries > 0) setTimeout(() => attempt(retries - 1), 200);
           return;
         }
-        // 可视诊断徽章：让用户零门槛判定新代码到底加载了没有
-        if (!container.querySelector('.hk-debug-badge')) {
-          const badge = document.createElement('div');
-          badge.className = 'hk-debug-badge';
-          badge.textContent = 'v5';
-          badge.style.cssText = 'position:absolute;top:0;left:0;background:#10b981;color:#fff;font-size:9px;line-height:1;padding:2px 4px;z-index:99999;font-family:monospace;border-radius:0 0 4px 0;pointer-events:none;';
-          container.appendChild(badge);
-        }
-        // ── Nuclear: 克隆-隐藏方案 ──
-        // AMap 的 path 带 inline style stroke: rgb(0,178,213)，Safari WebKit 里
-        // CSS !important / style.setProperty(!important) / setAttribute 都覆盖不掉。
-        // 之前 v4 filter hue-rotate 也不生效（filter 在 SVG element 上 Safari 支持不稳）。
-        // 现在改为：把 AMap 原 path 加类 hk-orig 隐藏；旁边插一份克隆 hk-clone，
-        // 克隆件是我们造的没有 inline style，CSS 完全接管。
-        let dragging = false;
-        const syncClones = () => {
-          const svgs = container.querySelectorAll('svg');
-          svgs.forEach(svg => {
-            const origs = svg.querySelectorAll('path:not(.hk-orig):not(.hk-clone)');
-            origs.forEach(p => {
-              p.classList.add('hk-orig');
-              const clone = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-              clone.classList.add('hk-clone');
-              clone.setAttribute('d', p.getAttribute('d') || '');
-              if (dragging) clone.classList.add('hk-preview');
-              clone.dataset.origIdx = String(Array.from(svg.children).indexOf(p));
-              p.parentNode.appendChild(clone);
-            });
-            // 已存在的 clone 同步 d + preview 类
-            svg.querySelectorAll('path.hk-clone').forEach(cl => {
-              const idx = parseInt(cl.dataset.origIdx || '-1', 10);
-              const orig = svg.children[idx];
-              if (orig && orig.classList && orig.classList.contains('hk-orig')) {
-                const newD = orig.getAttribute('d') || '';
-                if (cl.getAttribute('d') !== newD) cl.setAttribute('d', newD);
-              }
-              if (dragging) cl.classList.add('hk-preview');
-              else cl.classList.remove('hk-preview');
-            });
-          });
-        };
-        syncClones();
-        try {
-          new MutationObserver(syncClones).observe(container, {
-            subtree: true, childList: true, attributes: true,
-            attributeFilter: ['d', 'style']
-          });
-        } catch (_) {}
-        setInterval(syncClones, 200); // AMap 高频重绘，200ms 追一次
+        if (container.querySelector('.hk-drag-preview')) return;
 
-        const startDrag = () => { dragging = true; syncClones(); };
-        const endDrag = () => { if (!dragging) return; dragging = false; setTimeout(syncClones, 180); };
+        const preview = document.createElement('div');
+        preview.className = 'hk-drag-preview';
+        container.appendChild(preview);
+
+        let dragging = false;
+        let startX = 0, startY = 0;
+        let box = null;
+        const pointOf = (ev) => {
+          const t = ev.touches?.[0] || ev.changedTouches?.[0] || ev;
+          return { x: t.clientX, y: t.clientY };
+        };
+        const currentViewportBox = () => {
+          const cr = container.getBoundingClientRect();
+          const candidates = Array.from(container.querySelectorAll('svg path, svg rect'))
+            .map(el => el.getBoundingClientRect())
+            .filter(r => r.width > 12 && r.height > 12 && r.width < cr.width && r.height < cr.height)
+            .sort((a, b) => (b.width * b.height) - (a.width * a.height));
+          const r = candidates[0];
+          if (r) return { left: r.left - cr.left, top: r.top - cr.top, width: r.width, height: r.height };
+          const width = cr.width * .38;
+          const height = cr.height * .42;
+          return { left: (cr.width - width) / 2, top: (cr.height - height) / 2, width, height };
+        };
+        const movePreview = (ev) => {
+          if (!dragging || !box) return;
+          const p = pointOf(ev);
+          const maxLeft = Math.max(0, container.clientWidth - box.width);
+          const maxTop = Math.max(0, container.clientHeight - box.height);
+          const left = Math.max(0, Math.min(maxLeft, box.left + p.x - startX));
+          const top = Math.max(0, Math.min(maxTop, box.top + p.y - startY));
+          preview.style.transform = `translate(${left}px, ${top}px)`;
+        };
+        const startDrag = (ev) => {
+          const p = pointOf(ev);
+          dragging = true;
+          startX = p.x; startY = p.y;
+          box = currentViewportBox();
+          preview.style.width = `${box.width}px`;
+          preview.style.height = `${box.height}px`;
+          preview.style.transform = `translate(${box.left}px, ${box.top}px)`;
+          preview.style.display = 'block';
+        };
+        const endDrag = () => {
+          if (!dragging) return;
+          dragging = false;
+          box = null;
+          preview.style.display = 'none';
+        };
         container.addEventListener('mousedown', startDrag, true);
         container.addEventListener('touchstart', startDrag, { capture: true, passive: true });
+        window.addEventListener('mousemove', movePreview, true);
+        window.addEventListener('touchmove', movePreview, { capture: true, passive: true });
         window.addEventListener('mouseup', endDrag, true);
         window.addEventListener('touchend', endDrag, true);
         window.addEventListener('touchcancel', endDrag, true);
@@ -4915,13 +4957,15 @@
       });
       $('#mobileScrim').addEventListener('click', closeDrawer);
 
-      // 地图上"用我的位置"浮标：作用于当前 mapClickMode（锚点 or 某个参与者）
+      // 地图常驻定位按钮：默认只移动视图；选点模式下把当前位置填给对应对象。
       $('#mapHereBtn')?.addEventListener('click', () => {
         const mode = state.mapClickMode;
-        if (!mode) return;
         const btn = $('#mapHereBtn');
         fillFromMyLocation(btn, (loc) => {
-          if (mode === 'anchor') {
+          if (!mode) {
+            smoothCameraTo([loc.lng, loc.lat], 16);
+            toast('已定位到当前位置');
+          } else if (mode === 'anchor') {
             setAnchor({ lng: loc.lng, lat: loc.lat, name: loc.name, source: 'here' });
           } else {
             const p = state.participants.find(x => x.id === mode);
@@ -4932,8 +4976,10 @@
               refreshMapMarkers();
             }
           }
-          setMapClickMode(null);
-          recenterMap();
+          if (mode) {
+            setMapClickMode(null);
+            recenterMap();
+          }
         });
       });
 
@@ -5043,6 +5089,81 @@
       el.innerHTML = `<div class="bubble"></div>`;
       el.querySelector('.bubble').textContent = text;
       ASSIST_STATE.msgsEl.appendChild(el);
+      assistScroll();
+    }
+
+    function assistMyParticipant() {
+      if (ROOM.code) return state.participants.find(p => p.roomIsMe) || null;
+      return state.participants[0] || null;
+    }
+
+    function assistNeedsMyLocation(text) {
+      const me = assistMyParticipant();
+      if (!me || (me.lng != null && me.lat != null)) return false;
+      const s = String(text || '').trim();
+      if (!s) return false;
+      // 用户已经明确说了自己的出发地，就交给小 Mid 的地名解析，不额外请求定位。
+      if (/我(?:现在)?(?:在|从|住在|位于|的位置(?:是|在))\s*[^，。；]+/.test(s)) return false;
+      const explicitlyCurrent = /(当前位置|我的位置|我现在的位置|我这边|用.*定位|定位.*我)/.test(s);
+      const meetingIntent = /(吃|喝|餐厅|火锅|咖啡|酒吧|见面|碰面|聚|约|一起|看电影|逛|玩)/.test(s);
+      const peopleContext = /(我|我们|咱|朋友|同事|同学|家人|对象|闺蜜|伙伴)/.test(s);
+      return explicitlyCurrent || (meetingIntent && peopleContext);
+    }
+
+    function assistAskLocationConsent() {
+      return new Promise((resolve) => {
+        const el = document.createElement('div');
+        el.className = 'assist-msg bot assist-location-consent';
+        el.innerHTML = `
+          <div class="bubble">
+            <div><i data-lucide="map-pin" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"></i>为了计算你和朋友之间更合适的会面点，小 Mid 需要使用你当前的位置。</div>
+            <div class="assist-location-actions">
+              <button type="button" class="allow">允许一次</button>
+              <button type="button" class="skip">暂不允许</button>
+            </div>
+          </div>`;
+        ASSIST_STATE.msgsEl.appendChild(el);
+        refreshIcons();
+        assistScroll();
+        const buttons = el.querySelectorAll('button');
+        const finish = (allowed) => {
+          buttons.forEach(b => { b.disabled = true; });
+          resolve({ allowed, el });
+        };
+        el.querySelector('.allow').addEventListener('click', () => finish(true), { once: true });
+        el.querySelector('.skip').addEventListener('click', () => finish(false), { once: true });
+      });
+    }
+
+    async function assistMaybeAttachMyLocation(text) {
+      if (!assistNeedsMyLocation(text)) return;
+      let consent = null;
+      if (!_myLocationCache) {
+        consent = await assistAskLocationConsent();
+        if (!consent.allowed) {
+          consent.el.querySelector('.bubble').innerHTML = '<div>好的，我不会读取位置。你可以手动填写出发地后再让我规划。</div>';
+          return;
+        }
+        consent.el.querySelector('.bubble').innerHTML = '<div>正在获取当前位置…</div>';
+      }
+      try {
+        const loc = await useMyLocation();
+        const me = assistMyParticipant();
+        if (!me) return;
+        me.lng = loc.lng; me.lat = loc.lat; me.address = loc.name;
+        markManualEdit('participant', me.id);
+        renderParticipantList();
+        refreshMapMarkers();
+        renderMapContextPill();
+        if (ROOM.code && me.roomIsMe) {
+          roomDebouncedUpdate({ my_location: { lng: me.lng, lat: me.lat, address: me.address } });
+        }
+        if (consent?.el) consent.el.querySelector('.bubble').innerHTML = '<div>已获取当前位置，继续为你规划。</div>';
+      } catch (e) {
+        if (consent?.el) {
+          consent.el.querySelector('.bubble').innerHTML = `<div>暂时无法获取位置：${escapeHtml(e.message || String(e))}。你也可以手动填写出发地。</div>`;
+        }
+      }
       assistScroll();
     }
 
@@ -5979,9 +6100,10 @@
       input.style.height = 'auto';
 
       assistAddUser(text);
-      const typing = assistAddTyping();
       ASSIST_STATE.streaming = true;
       document.getElementById('assistSend').disabled = true;
+      await assistMaybeAttachMyLocation(text);
+      const typing = assistAddTyping();
 
       const payload = {
         session_id: state.sessionId || '',
