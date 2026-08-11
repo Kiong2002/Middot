@@ -2860,6 +2860,7 @@ _ASSISTANT_SYSTEM = """你是「中点 Middot 会面助手」，一个**只**服
 - **『我 / 我自己 / 咱』= [当前会话快照] 里 `me_index` 那一位**（每轮系统会告诉你 me_index 是几）。用户说"我在北大" → `set_participant_location(index=me_index, place_name="北大")`。**永远别硬编码 index=1**——房间模式下你可能是 index=2 或更后。
 - **【硬规则 · 地点先绑定语法主体】**：`X 的朋友/同事/家人` 中，地点 X 属于后面的那个人，不能因为整句话由“我想/我要/我和”开头就绑定给“我”。例如“我想和文三路的朋友吃火锅”表示**朋友在文三路、我的位置没有说**：必须把 `文三路` 用 `set_participant_location` 填到非 `me_index` 的朋友/空位，**绝不允许**写入 `me_index`。前端可能会另行征得定位许可补齐“我”，但这不改变朋友地点的归属。
 - **绝不猜测用户的当前位置**：当 me_index 对应参与者的 `lng`/`lat` 为空，而用户说“当前位置”“我和某地的朋友见面”或其他隐含需要本人出发地的表达时，前端会先尝试请求浏览器定位。如果定位仍为空，明确请用户点地图上的“定位到我”或手动填写；**禁止**把用户放到北京、当前 city、IP 定位城市或任意默认坐标。
+- **【硬规则 · 快照位置优先】**：本轮进入主 Agent 前，前端可能已经取得设备定位并写入 `[当前会话快照]`。只要 `me_index` 对应参与者的 `lng` 和 `lat` 非空，就代表“我”的位置**已经设置完成**，即使用户原句没有文字说明“我在哪”。此时禁止回复“你的位置还没设”、禁止再次索取位置，也不要再为“我”调用 `set_participant_location`；直接使用快照坐标继续规划。
 - **空位定义**：participants 里 `lng`/`lat` 为 `null` 的 slot 是**空位**（有名字，没位置）。solo 模式初始就有 2 个空位（「我 / 小伙伴」），随时可能因为用户 add 后没填位置而多出来。
 - **【硬规则 · 空位优先覆盖】**：只要列表里**有任何一个空位**，用户新提到的人**必须**用 `set_participant_location` 覆盖那个空位（配合 `new_nickname` 改名），**禁止**先调 `add_participant`。
   - 例：solo 模式默认「我(1) / 小伙伴(2)」都是空位。用户说"我在 A，我朋友 Lisa 在 B" → 两次 `set_participant_location`（index=1 定 A、index=2 定 B 并 `new_nickname="Lisa"`），**不要** `add_participant`。这条几乎在 90% 场景都成立，别绕开。
@@ -3172,12 +3173,16 @@ def api_v2_assistant_stream():
         me_idx = _compute_me_index(state["participants"], state.get("my_did") or "")
         me_p = state["participants"][me_idx - 1] if 0 < me_idx <= len(state["participants"]) else None
         me_name = (me_p or {}).get("name") or "（未命名）"
+        me_has_location = bool(
+            me_p and me_p.get("lng") is not None and me_p.get("lat") is not None
+        )
         in_room = bool(state.get("my_did")) and any(
             str(p.get("id") or "").startswith("room-") for p in state["participants"]
         )
         state_hint = (
             f"[当前会话快照] mode={'room' if in_room else 'solo'}  "
             f"me_index={me_idx}  me_name={me_name!r}  "
+            f"me_has_location={me_has_location}  "
             f"anchor={state['anchor']}  "
             f"participants={[{'idx':i+1,'name':p.get('name'),'lng':p.get('lng'),'lat':p.get('lat')} for i,p in enumerate(state['participants'])]}  "
             f"query={state['query']!r}  pois_count={len(state['pois'])}"
@@ -3185,6 +3190,12 @@ def api_v2_assistant_stream():
         messages: list[dict] = [
             {"role": "system", "content": _ASSISTANT_SYSTEM},
             {"role": "system", "content": state_hint},
+            {"role": "system", "content": (
+                "运行时位置约束：设备已为‘我’提供有效经纬度。无论用户原句是否写出本人地点，"
+                "都必须视为‘我’已定位；禁止声称其位置未设置、禁止要求再次定位。"
+                if me_has_location else
+                "运行时位置约束：快照中‘我’没有有效经纬度，不得猜测其位置。"
+            )},
             *history,
             {"role": "user", "content": user_msg},
         ]
@@ -3299,6 +3310,14 @@ def api_v2_assistant_stream():
                     }
                     messages.append(tool_msg)
                     _assistant_append_history(sid, tool_msg)
+
+                # 工具轮次后模型容易只关注刚执行的工具而遗忘初始设备定位，
+                # 因此在生成最终总结前重新注入不可被工具结果覆盖的位置事实。
+                if me_has_location:
+                    messages.append({
+                        "role": "system",
+                        "content": "最终回复校验：‘我’在本轮开始时已有设备定位。不得说‘你的位置没填/没设’，也不得让用户再次定位。",
+                    })
 
                 # 继续下一轮，让 LLM 基于工具结果生成回复
                 continue
