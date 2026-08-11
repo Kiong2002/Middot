@@ -2858,6 +2858,7 @@ _ASSISTANT_SYSTEM = """你是「中点 Middot 会面助手」，一个**只**服
 
 ## 关键约定
 - **『我 / 我自己 / 咱』= [当前会话快照] 里 `me_index` 那一位**（每轮系统会告诉你 me_index 是几）。用户说"我在北大" → `set_participant_location(index=me_index, place_name="北大")`。**永远别硬编码 index=1**——房间模式下你可能是 index=2 或更后。
+- **【硬规则 · 地点先绑定语法主体】**：`X 的朋友/同事/家人` 中，地点 X 属于后面的那个人，不能因为整句话由“我想/我要/我和”开头就绑定给“我”。例如“我想和文三路的朋友吃火锅”表示**朋友在文三路、我的位置没有说**：必须把 `文三路` 用 `set_participant_location` 填到非 `me_index` 的朋友/空位，**绝不允许**写入 `me_index`。前端可能会另行征得定位许可补齐“我”，但这不改变朋友地点的归属。
 - **绝不猜测用户的当前位置**：当 me_index 对应参与者的 `lng`/`lat` 为空，而用户说“当前位置”“我和某地的朋友见面”或其他隐含需要本人出发地的表达时，前端会先尝试请求浏览器定位。如果定位仍为空，明确请用户点地图上的“定位到我”或手动填写；**禁止**把用户放到北京、当前 city、IP 定位城市或任意默认坐标。
 - **空位定义**：participants 里 `lng`/`lat` 为 `null` 的 slot 是**空位**（有名字，没位置）。solo 模式初始就有 2 个空位（「我 / 小伙伴」），随时可能因为用户 add 后没填位置而多出来。
 - **【硬规则 · 空位优先覆盖】**：只要列表里**有任何一个空位**，用户新提到的人**必须**用 `set_participant_location` 覆盖那个空位（配合 `new_nickname` 改名），**禁止**先调 `add_participant`。
@@ -2896,6 +2897,14 @@ _ASSISTANT_SYSTEM = """你是「中点 Middot 会面助手」，一个**只**服
 - 完事条件满足（keyword 有 + 2 人都定位置）→ **必须再多调一次** `search_pois(keyword="火锅")`
 - 没说见面点 → **别调 shift_center**，中点系统自动算
 **你的回复**：位置都填上了，关键词已换成火锅，也帮你搜过了。
+
+**用户输**：我想和文三路的朋友吃火锅
+**你的解析**：
+- “文三路的朋友”是定中结构 → 文三路属于朋友，不属于“我”
+- 用 `set_participant_location` 把非 `me_index` 的朋友/空位设为文三路
+- “我”的位置没有在文字里给出，不得把文三路写给 `me_index`；设备定位由前端 Agent 征求授权后补齐
+- 调 `set_keyword(keyword="火锅")`
+**你的回复**：朋友的位置先设在文三路，火锅也选好了；再用你的当前位置一起找合适的店。
 
 **用户输**：加个从望京出发的同事王小明（solo 模式，列表已有「我(在国贸) / 小伙伴(在西直门) / 张三(在望京)」都有位置，无空位）
 **你的解析**：列表 3 人**都有位置**，无空位 → 允许 `add_participant(nickname="王小明", place_name="望京")`
@@ -3048,6 +3057,65 @@ def api_v2_apply_drafts():
         "participants": snap.get("participants"),
         "query": snap.get("query"),
     })
+
+
+@app.route("/api/v2/assistant/location-intent", methods=["POST"])
+def api_v2_assistant_location_intent():
+    """让语言模型判断本轮是否需要设备当前位置；不再由前端关键词抢跑。"""
+    data = request.json or {}
+    message = (data.get("message") or "").strip()[:1200]
+    participants = data.get("participants") or []
+    if not message:
+        return jsonify({"needs_current_location": False})
+    participant_hint = [
+        {
+            "name": str(p.get("name") or "")[:40],
+            "is_me": bool(p.get("is_me")),
+            "has_location": bool(p.get("has_location")),
+        }
+        for p in participants[:8]
+    ]
+    system = """你是会面应用的位置语义判定 Agent。只判断是否应请求当前设备的位置。
+输出 JSON：{"needs_current_location": boolean, "reason": string}。
+
+规则：
+1. 先判断地点属于谁，中文定语不可错绑：『文三路的朋友』= 朋友在文三路，不是用户在文三路。
+2. 用户明确给出自己的出发地（如『我在北大』『我从国贸出发』）时，不请求设备定位。
+3. 用户明确说『用我的当前位置』『定位我』时，请求设备定位。
+4. 会面规划需要用户出发地、用户本人位置仍为空、且句中只给了朋友位置时，请求设备定位。
+5. 只是闲聊、修改关键词、修改朋友位置或不需要本人出发地时，不请求。
+6. 不要根据『我想』『我和』就把后面的朋友地点归给用户。
+
+示例：
+- 『我想和文三路的朋友吃火锅』→ true；朋友在文三路，用户位置缺失。
+- 『我在文三路，想和朋友吃火锅』→ false；用户已明确在文三路。
+- 『把朋友的位置改成文三路』→ false。
+- 『用我的当前位置和黄龙的朋友找中点』→ true。
+只输出 JSON。"""
+    try:
+        completion = llm_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps({
+                    "message": message,
+                    "participants": participant_hint,
+                }, ensure_ascii=False)},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0,
+            stream=False,
+        )
+        raw = completion.choices[0].message.content or "{}"
+        parsed = json.loads(raw)
+        return jsonify({
+            "needs_current_location": parsed.get("needs_current_location") is True,
+            "reason": str(parsed.get("reason") or "")[:240],
+        })
+    except Exception as exc:
+        app.logger.warning("[location-intent] agent failed: %s", exc)
+        # 判断失败时不打断用户，也不退回关键词规则。
+        return jsonify({"needs_current_location": False, "reason": "agent_unavailable"})
 
 
 @app.route("/api/v2/assistant/stream", methods=["POST"])

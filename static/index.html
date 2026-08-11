@@ -540,42 +540,24 @@
       stroke-linecap: round;
       stroke-linejoin: round;
     }
-    .swap-flow-icon .flow-track { opacity: .52; }
-    .swap-flow-icon .flow-runner {
-      stroke-width: 2.15;
-      stroke-dasharray: .22 .78;
-      stroke-dashoffset: 1;
-      opacity: 0;
+    .swap-flow-icon .flow-old { opacity: 1; }
+    .swap-flow-icon .flow-new { opacity: 0; transform: translateX(-13px); }
+    .chip.chip-refresh.spinning .swap-flow-icon .flow-old {
+      animation: swapOldOut .72s var(--ease-standard) forwards;
     }
-    .chip.chip-refresh.spinning .swap-flow-icon .flow-runner { animation: swapRunner .78s linear; }
-    .chip.chip-refresh.spinning .swap-flow-icon .arrow-head { animation: swapFlowHead .78s var(--ease-standard); }
-    .swap-flow-icon .runner-head { opacity: 0; }
-    .chip.chip-refresh.spinning .swap-flow-icon .runner-head-a { animation: runnerHeadA .78s var(--ease-standard); }
-    .chip.chip-refresh.spinning .swap-flow-icon .runner-head-b { animation: runnerHeadB .78s var(--ease-standard) .09s; }
-    .chip.chip-refresh.spinning .swap-flow-icon .path-b,
-    .chip.chip-refresh.spinning .swap-flow-icon .head-b { animation-delay: .09s; }
-    @keyframes swapRunner {
-      0%   { stroke-dashoffset: 1; opacity: 0; }
-      14%  { opacity: 1; }
-      82%  { opacity: 1; }
-      100% { stroke-dashoffset: 0; opacity: 0; }
+    .chip.chip-refresh.spinning .swap-flow-icon .flow-new {
+      animation: swapNewIn .72s var(--ease-emphasized) forwards;
     }
-    @keyframes swapFlowHead {
+    @keyframes swapOldOut {
       0%   { transform: translateX(0); opacity: 1; }
-      72%  { transform: translateX(1.5px); opacity: .85; }
-      100% { transform: translateX(2px); opacity: 0; }
+      58%  { opacity: .35; }
+      100% { transform: translateX(9px); opacity: 0; }
     }
-    @keyframes runnerHeadA {
-      0%   { transform: translate(0, 0); opacity: 0; }
-      14%  { opacity: 1; }
-      52%  { transform: translate(8px, 4px); opacity: 1; }
-      100% { transform: translate(16px, 8px); opacity: 0; }
-    }
-    @keyframes runnerHeadB {
-      0%   { transform: translate(0, 0); opacity: 0; }
-      14%  { opacity: 1; }
-      52%  { transform: translate(8px, -4px); opacity: 1; }
-      100% { transform: translate(16px, -8px); opacity: 0; }
+    @keyframes swapNewIn {
+      0%   { transform: translateX(-13px); opacity: 0; }
+      24%  { opacity: .35; }
+      72%  { opacity: 1; }
+      100% { transform: translateX(0); opacity: 1; }
     }
 
     /* 高德 SDK 自带的 logo/版权标 —— 压 z-index，别遮 UI */
@@ -2655,7 +2637,7 @@
         rf.type = 'button';
         rf.id = 'exampleRefreshBtn';
         rf.title = '换一批';
-        rf.innerHTML = `<svg class="swap-flow-icon" viewBox="0 0 22 16" aria-hidden="true"><path class="flow-track path-a" d="M2 4 C7 4 7.5 12 13 12 H19"/><path class="flow-runner path-a" pathLength="1" d="M2 4 C7 4 7.5 12 13 12 H19"/><polyline class="arrow-head head-a" points="16.5,9.5 19,12 16.5,14.5"/><polyline class="runner-head runner-head-a" points="0.5,1.5 3,4 0.5,6.5"/><path class="flow-track path-b" d="M2 12 C7 12 7.5 4 13 4 H19"/><path class="flow-runner path-b" pathLength="1" d="M2 12 C7 12 7.5 4 13 4 H19"/><polyline class="arrow-head head-b" points="16.5,1.5 19,4 16.5,6.5"/><polyline class="runner-head runner-head-b" points="0.5,9.5 3,12 0.5,14.5"/></svg><span>换一批</span>`;
+        rf.innerHTML = `<svg class="swap-flow-icon" viewBox="0 0 22 16" aria-hidden="true"><g class="flow-old"><path d="M2 4 C7 4 7.5 12 13 12 H19"/><polyline points="16.5,9.5 19,12 16.5,14.5"/><path d="M2 12 C7 12 7.5 4 13 4 H19"/><polyline points="16.5,1.5 19,4 16.5,6.5"/></g><g class="flow-new"><path d="M2 4 C7 4 7.5 12 13 12 H19"/><polyline points="16.5,9.5 19,12 16.5,14.5"/><path d="M2 12 C7 12 7.5 4 13 4 H19"/><polyline points="16.5,1.5 19,4 16.5,6.5"/></g></svg><span>换一批</span>`;
         rf.addEventListener('click', () => {
           rf.classList.remove('spinning');
           void rf.offsetWidth;
@@ -5119,17 +5101,33 @@
       return state.participants[0] || null;
     }
 
-    function assistNeedsMyLocation(text) {
+    async function assistNeedsMyLocation(text) {
       const me = assistMyParticipant();
       if (!me || (me.lng != null && me.lat != null)) return false;
       const s = String(text || '').trim();
       if (!s) return false;
-      // 用户已经明确说了自己的出发地，就交给小 Mid 的地名解析，不额外请求定位。
-      if (/我(?:现在)?(?:在|从|住在|位于|的位置(?:是|在))\s*[^，。；]+/.test(s)) return false;
-      const explicitlyCurrent = /(当前位置|我的位置|我现在的位置|我这边|用.*定位|定位.*我)/.test(s);
-      const meetingIntent = /(吃|喝|餐厅|火锅|咖啡|酒吧|见面|碰面|聚|约|一起|看电影|逛|玩)/.test(s);
-      const peopleContext = /(我|我们|咱|朋友|同事|同学|家人|对象|闺蜜|伙伴)/.test(s);
-      return explicitlyCurrent || (meetingIntent && peopleContext);
+      try {
+        const result = await fetch('/api/v2/assistant/location-intent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: s,
+            participants: state.participants.map(p => ({
+              name: p.name,
+              is_me: p === me,
+              has_location: p.lng != null && p.lat != null,
+            })),
+          }),
+        }).then(r => {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        });
+        return result.needs_current_location === true;
+      } catch (e) {
+        // Agent 判断失败时宁可不弹，也不要退回关键词猜测打断用户。
+        console.warn('[location-intent]', e);
+        return false;
+      }
     }
 
     function assistAskLocationConsent() {
@@ -5158,7 +5156,7 @@
     }
 
     async function assistMaybeAttachMyLocation(text) {
-      if (!assistNeedsMyLocation(text)) return;
+      if (!(await assistNeedsMyLocation(text))) return;
       let consent = null;
       if (!_myLocationCache) {
         consent = await assistAskLocationConsent();
