@@ -540,24 +540,20 @@
       stroke-linecap: round;
       stroke-linejoin: round;
     }
-    .swap-flow-icon .flow-old { opacity: 1; }
-    .swap-flow-icon .flow-new { opacity: 0; transform: translateX(-13px); }
-    .chip.chip-refresh.spinning .swap-flow-icon .flow-old {
-      animation: swapOldOut .72s var(--ease-standard) forwards;
+    .swap-flow-icon path { stroke-dasharray: 5 2.5; }
+    .chip.chip-refresh.spinning .swap-flow-icon path { animation: swapFlowStroke .72s linear; }
+    .chip.chip-refresh.spinning .swap-flow-icon .arrow-head { animation: swapFlowHead .72s var(--ease-standard); }
+    .chip.chip-refresh.spinning .swap-flow-icon .path-b,
+    .chip.chip-refresh.spinning .swap-flow-icon .head-b { animation-delay: .09s; }
+    @keyframes swapFlowStroke {
+      from { stroke-dashoffset: 0; opacity: .55; }
+      45%  { opacity: 1; }
+      to   { stroke-dashoffset: -15; opacity: .7; }
     }
-    .chip.chip-refresh.spinning .swap-flow-icon .flow-new {
-      animation: swapNewIn .72s var(--ease-emphasized) forwards;
-    }
-    @keyframes swapOldOut {
-      0%   { transform: translateX(0); opacity: 1; }
-      58%  { opacity: .35; }
-      100% { transform: translateX(9px); opacity: 0; }
-    }
-    @keyframes swapNewIn {
-      0%   { transform: translateX(-13px); opacity: 0; }
-      24%  { opacity: .35; }
-      72%  { opacity: 1; }
-      100% { transform: translateX(0); opacity: 1; }
+    @keyframes swapFlowHead {
+      0%   { transform: translateX(-2px); opacity: .5; }
+      55%  { opacity: 1; }
+      100% { transform: translateX(1.5px); opacity: .8; }
     }
 
     /* 高德 SDK 自带的 logo/版权标 —— 压 z-index，别遮 UI */
@@ -2637,7 +2633,7 @@
         rf.type = 'button';
         rf.id = 'exampleRefreshBtn';
         rf.title = '换一批';
-        rf.innerHTML = `<svg class="swap-flow-icon" viewBox="0 0 22 16" aria-hidden="true"><g class="flow-old"><path d="M2 4 C7 4 7.5 12 13 12 H19"/><polyline points="16.5,9.5 19,12 16.5,14.5"/><path d="M2 12 C7 12 7.5 4 13 4 H19"/><polyline points="16.5,1.5 19,4 16.5,6.5"/></g><g class="flow-new"><path d="M2 4 C7 4 7.5 12 13 12 H19"/><polyline points="16.5,9.5 19,12 16.5,14.5"/><path d="M2 12 C7 12 7.5 4 13 4 H19"/><polyline points="16.5,1.5 19,4 16.5,6.5"/></g></svg><span>换一批</span>`;
+        rf.innerHTML = `<svg class="swap-flow-icon" viewBox="0 0 22 16" aria-hidden="true"><path class="path-a" d="M2 4 C7 4 7.5 12 13 12 H19"/><polyline class="arrow-head head-a" points="16.5,9.5 19,12 16.5,14.5"/><path class="path-b" d="M2 12 C7 12 7.5 4 13 4 H19"/><polyline class="arrow-head head-b" points="16.5,1.5 19,4 16.5,6.5"/></svg><span>换一批</span>`;
         rf.addEventListener('click', () => {
           rf.classList.remove('spinning');
           void rf.offsetWidth;
