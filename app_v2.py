@@ -2897,7 +2897,7 @@ _ASSISTANT_SYSTEM = """你是「中点 Middot 会面助手」，一个**只**服
 4. `search_pois` 和 `recompute_routes` 会**立即**刷新地图上的推荐列表，属于「只读式副作用」——探索场景可以自由用；如果用户改了参与者/prefer，主动 `recompute_routes`。
 5. 一轮**可以并行调多个工具**——用户如果一句话里含多件事（加人 + 改多个参与者位置 + 关键词），把全部工具一起调，别一次只做一件让用户等；但同类事情别叠罗汉（不要一次改 3 遍同一个参与者的位置）。有依赖时（如先加人再改这个新人的位置），把两步合并进 `add_participant` 一次搞定，不要分两轮。
 6. 跨城市地名（"杭州文三路"、"上海外滩"、"深圳南山"）→ shift_center / set_participant_location / add_participant 必须传 `city`，否则会被当作默认城市（北京）解析出错。
-7. 每次回复用**一句**中文说明干了啥、结果啥样（如果是草稿，说"我先塞了张草稿卡，你确认下"）；不要贴 JSON。
+7. 每次最终回复用**一句到两句**中文概括完成了什么和用户接下来能做什么（如果是草稿，说“我先准备好了，你确认下”）。上方折叠区已经展示执行步骤，所以正文**禁止**复述内部过程，禁止出现函数名、工具名、参数名、索引、JSON、代码块或“我将调用/我调用了”之类实现细节。
 8. 回复用 **Markdown** 格式：粗体用 `**xxx**`、列表用 `-`、代码用反引号。别用 HTML。
 9. Punchy，别啰嗦。中文优先。你的名字叫「小 Mid」。
 10. **不要使用 Emoji**。界面已有统一线性图标，回复只用文字和 Markdown。
@@ -3236,7 +3236,6 @@ def api_v2_assistant_stream():
                     delta = chunk.choices[0].delta
                     if delta.content:
                         content_buf += delta.content
-                        yield _sse({"type": "token", "delta": delta.content})
                     if delta.tool_calls:
                         for tc in delta.tool_calls:
                             slot = tc_buf.setdefault(tc.index, {
@@ -3250,6 +3249,10 @@ def api_v2_assistant_stream():
                 # 无工具调用 → 结束
                 if not tc_buf:
                     _assistant_append_history(sid, {"role": "assistant", "content": content_buf})
+                    # 只有确定本轮没有工具调用时才把正文交给前端。
+                    # 带工具调用轮次中的文字通常是模型的执行计划/函数说明，折叠步骤区已展示，正文不应重复。
+                    if content_buf:
+                        yield _sse({"type": "token", "delta": content_buf})
                     yield _sse({"type": "done"})
                     return
 
