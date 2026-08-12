@@ -8,7 +8,9 @@
 import math
 import datetime
 import os
+import time
 import requests
+from requests import exceptions as request_exceptions
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 
@@ -29,7 +31,18 @@ def amap_geocode(address: str, city: str | None = None) -> dict:
     params = {"key": AMAP_KEY, "address": address, "output": "json"}
     if city:
         params["city"] = city
-    resp = requests.get(url, params=params, timeout=10)
+    # 公网服务器到高德偶尔会在连接或读取阶段瞬时超时。地理编码是幂等请求，
+    # 因此仅对网络超时做短退避重试；业务错误仍立即返回，避免掩盖真实问题。
+    resp = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, params=params, timeout=(6, 12))
+            break
+        except (request_exceptions.ConnectTimeout, request_exceptions.ReadTimeout):
+            if attempt == 2:
+                return {"success": False, "error": "定位服务暂时不可用，请稍后重试"}
+            time.sleep(0.35 * (attempt + 1))
+    assert resp is not None
     data = resp.json()
     if data.get("status") == "1" and data.get("geocodes"):
         geocode = data["geocodes"][0]
