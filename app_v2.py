@@ -2555,6 +2555,22 @@ def _assistant_get_state(sid: str) -> dict:
     }
 
 
+def _poi_reason(poi: dict) -> str:
+    """只用真实结果字段生成推荐理由，避免模型臆造。"""
+    legs = [x for x in (poi.get("legs") or []) if x.get("duration_minutes") is not None]
+    bits = []
+    if legs:
+        times = [int(round(float(x["duration_minutes"]))) for x in legs]
+        bits.append("各方约" + "、".join(f"{t}分钟" for t in times))
+        if len(times) > 1:
+            bits.append(f"耗时相差{max(times) - min(times)}分钟")
+    if poi.get("rating") not in (None, ""):
+        bits.append(f"评分{poi.get('rating')}")
+    if poi.get("cost_per_person") not in (None, "", 0):
+        bits.append(f"人均约{poi.get('cost_per_person')}元")
+    return "，".join(bits) or "按当前综合排序推荐"
+
+
 def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
     st = _assistant_get_state(sid)
     keyword = (args.get("keyword") or "").strip()
@@ -2607,6 +2623,7 @@ def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
             "address":         p.get("address"),
             "rating":          p.get("rating"),
             "cost_per_person": p.get("cost_per_person"),
+            "reason":          _poi_reason(p),
         }
         for p in enriched[:6]
     ]
@@ -2968,6 +2985,7 @@ def _tool_get_current_result(sid: str, args: dict) -> tuple[dict, dict | None]:
             "rating": p.get("rating"),
             "max_time_minutes": p.get("max_time_minutes"),
             "address": p.get("address"),
+            "reason": _poi_reason(p),
         }
         for p in (st["pois"] or [])[:6]
     ]
@@ -3227,7 +3245,7 @@ def _tool_remember_feedback(sid: str, args: dict) -> tuple[dict, dict | None]:
     return {"ok": True, "summary": f"已记录你对{name}的反馈"}, None
 
 
-def _tool_offer_choices(_sid: str, args: dict) -> tuple[dict, dict | None]:
+def _tool_offer_choices(sid: str, args: dict) -> tuple[dict, dict | None]:
     question=(args.get("question") or "请选择").strip()[:120]
     mode=args.get("mode") if args.get("mode") in ("single","multiple") else "single"
     # 防止模型把同一人的互斥交通方式错误标成多选。
@@ -3238,6 +3256,14 @@ def _tool_offer_choices(_sid: str, args: dict) -> tuple[dict, dict | None]:
         label=(raw.get("label") or "").strip()[:30]; value=(raw.get("value") or label).strip()[:120]
         if label and value: options.append({"label":label,"value":value})
     if len(options)<2: return {"ok":False,"error":"至少需要两个候选项"},None
+    task = dict((session_get(sid) or {}).get("agent_task") or {})
+    task.update({
+        "status": "waiting_user",
+        "waiting_for": question,
+        "choices": options,
+        "updated_at": int(time.time()),
+    })
+    session_update(sid, {"agent_task": task})
     return {"ok":True,"summary":"已给出可选答案"},{"type":"choices","question":question,"mode":mode,"options":options}
 
 
@@ -3313,6 +3339,8 @@ _ASSISTANT_SYSTEM = """你是「中点 Middot 会面助手」，一个**只**服
 8. 回复用 **Markdown** 格式：粗体用 `**xxx**`、列表用 `-`、代码用反引号。别用 HTML。
 9. Punchy，别啰嗦。中文优先。你的名字叫「小 Mid」。
 10. **不要使用 Emoji**。界面已有统一线性图标，回复只用文字和 Markdown。
+11. 如果同一偏好在当前会话中反复出现，但用户没有明确说“记住”，只能询问是否保存，禁止直接写入长期记忆。一次性安排永远不建议保存。
+12. 工具返回的候选地点若带 `reason`，推荐解释必须以该字段为依据，不得自行编造耗时、评分、价格或公平性理由。
 
 ## 例子
 
@@ -3447,6 +3475,88 @@ def _assistant_append_history(sid: str, msg: dict) -> None:
     hist = s.setdefault("chat_history", [])
     hist.append(msg)
     _compact_assistant_history(s)
+
+
+def _agent_task_begin(sid: str, message: str) -> dict:
+    """把新消息接回未完成任务；状态只记录任务事实，不替代对话历史。"""
+    s = session_get(sid) or {}
+    previous = dict(s.get("agent_task") or {})
+    now = int(time.time())
+    if previous.get("status") == "waiting_user":
+        task = {
+            **previous,
+            "status": "running",
+            "answer": message,
+            "waiting_for": "",
+            "choices": [],
+            "updated_at": now,
+        }
+    else:
+        task = {
+            "id": uuid.uuid4().hex[:10],
+            "goal": message[:500],
+            "status": "running",
+            "completed": [],
+            "failures": [],
+            "updated_at": now,
+        }
+    session_update(sid, {"agent_task": task})
+    return task
+
+
+def _agent_task_record(sid: str, name: str, result: dict) -> None:
+    s = session_get(sid) or {}
+    task = dict(s.get("agent_task") or {})
+    if not task:
+        return
+    entry = {"action": name, "summary": result.get("summary") or result.get("error") or ""}
+    bucket = "completed" if result.get("ok") else "failures"
+    rows = list(task.get(bucket) or [])
+    rows.append(entry)
+    task[bucket] = rows[-12:]
+    if name != "offer_choices" or task.get("status") != "waiting_user":
+        task["status"] = "running" if result.get("ok") else "recoverable_error"
+    task["updated_at"] = int(time.time())
+    session_update(sid, {"agent_task": task})
+
+
+def _agent_task_finish(sid: str) -> None:
+    s = session_get(sid) or {}
+    task = dict(s.get("agent_task") or {})
+    if task and task.get("status") not in ("waiting_user", "recoverable_error"):
+        task["status"] = "completed"
+        task["updated_at"] = int(time.time())
+        session_update(sid, {"agent_task": task})
+
+
+def _agent_task_context(sid: str) -> str:
+    task = dict((session_get(sid) or {}).get("agent_task") or {})
+    if not task:
+        return "[当前任务] 无。"
+    return "[当前任务状态] " + json.dumps(task, ensure_ascii=False)
+
+
+def _verify_agent_outcome(sid: str, called_names: set[str]) -> list[str]:
+    """用状态事实兜底验证高频不变量；模型负责语义，代码负责一致性。"""
+    st = _assistant_get_state(sid)
+    issues = []
+    participants = st.get("participants") or []
+    pois = st.get("pois") or []
+    if "search_pois" in called_names and not pois:
+        issues.append("搜索完成但结果列表为空")
+    if ("set_participant_prefer" in called_names or "set_participant_location" in called_names) and pois:
+        for poi in pois[:6]:
+            legs = poi.get("legs") or []
+            by_name = {str(x.get("name") or ""): x for x in legs}
+            for p in participants:
+                prefer = p.get("prefer") or "auto"
+                leg = by_name.get(str(p.get("name") or ""))
+                if prefer != "auto" and leg and leg.get("mode") != prefer:
+                    issues.append(f"{p.get('name','参与者')}的路线仍不是最新交通方式")
+                    break
+            if issues:
+                break
+    return issues
 
 
 @app.route("/api/v2/session/apply-drafts", methods=["POST"])
@@ -3653,6 +3763,7 @@ def api_v2_assistant_stream():
     # 长期记忆身份与房间里的 my_did 语义分离，并在进入 SSE worker 前固定下来。
     session_update(sid, {"memory_did": caller_did})
     _apply_confirmed_memory_defaults(sid, caller_did)
+    _agent_task_begin(sid, user_msg)
 
     def generate():
         yield _sse({"type": "session", "session_id": sid})
@@ -3689,6 +3800,7 @@ def api_v2_assistant_stream():
             {"role": "system", "content": _ASSISTANT_SYSTEM},
             {"role": "system", "content": state_hint},
             {"role": "system", "content": _memory_context(caller_did)},
+            {"role": "system", "content": _agent_task_context(sid)},
             {"role": "system", "content": (
                 "[较早对话的滚动摘要] " + history_summary +
                 "。这是被压缩的会话上下文，不是长期记忆；若与当前快照或本轮消息冲突，以更新的信息为准。"
@@ -3738,7 +3850,11 @@ def api_v2_assistant_stream():
                 # 无工具调用 → 结束
                 if not tc_buf:
                     content_buf = _guard_assistant_location_claim(content_buf, me_has_location)
+                    final_issues = _verify_agent_outcome(sid, set())
+                    if final_issues:
+                        content_buf = (content_buf + "\n\n" if content_buf else "") + "当前状态仍需处理：" + "；".join(final_issues)
                     _assistant_append_history(sid, {"role": "assistant", "content": content_buf})
+                    _agent_task_finish(sid)
                     # 只有确定本轮没有工具调用时才把正文交给前端。
                     # 带工具调用轮次中的文字通常是模型的执行计划/函数说明，折叠步骤区已展示，正文不应重复。
                     if content_buf:
@@ -3768,8 +3884,10 @@ def api_v2_assistant_stream():
 
                 # 逐个执行工具
                 prefer_changed_this_batch = False
+                called_names_this_batch: set[str] = set()
                 for tc in tool_calls_serialized:
                     name = tc["function"]["name"]
+                    called_names_this_batch.add(name)
                     try:
                         args = json.loads(tc["function"]["arguments"] or "{}")
                     except json.JSONDecodeError:
@@ -3805,6 +3923,8 @@ def api_v2_assistant_stream():
                                     name == "set_participant_location" and args.get("prefer")
                                 ):
                                     prefer_changed_this_batch = True
+
+                    _agent_task_record(sid, name, tool_result)
 
                     yield _sse({
                         "type": "tool_result",
@@ -3843,6 +3963,14 @@ def api_v2_assistant_stream():
                         if auto_patch:
                             yield _sse({"type":"state_patch","patch":auto_patch})
                         routes_recomputed_after_prefer = bool(auto_result.get("ok"))
+                        _agent_task_record(sid, "recompute_routes", auto_result)
+
+                verification_issues = _verify_agent_outcome(sid, called_names_this_batch)
+                if verification_issues:
+                    messages.append({
+                        "role": "system",
+                        "content": "执行校验发现尚未闭环：" + "；".join(verification_issues) + "。请修复后再向用户宣称完成。",
+                    })
 
                 # 工具轮次后模型容易只关注刚执行的工具而遗忘初始设备定位，
                 # 因此在生成最终总结前重新注入不可被工具结果覆盖的位置事实。
