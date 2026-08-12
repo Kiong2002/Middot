@@ -2688,14 +2688,33 @@ _KNOWN_CITY_HINTS = (
 
 
 def _extract_city(name: str) -> str | None:
-    """从地名字符串前缀里提取城市名，找不到返回 None。"""
+    """从一段地址或自然语言中提取城市名，找不到返回 None。"""
     if not name:
         return None
-    n = name.strip()
+    n = str(name).strip()
     for c in _KNOWN_CITY_HINTS:
-        if n.startswith(c) or n.startswith(c + "市"):
+        if c in n or (c + "市") in n:
             return c
     return None
+
+
+def _infer_assistant_city(message: str, bootstrap: dict, current: dict | None = None) -> str:
+    """为本轮地点检索确定城市；具体地址证据优先于前端历史默认值。"""
+    current = current or {}
+    explicit = _extract_city(message)
+    if explicit:
+        return explicit
+    evidence = []
+    for p in (bootstrap.get("participants") or current.get("participants") or []):
+        if p.get("lng") is not None and p.get("lat") is not None:
+            evidence.extend((p.get("address"), p.get("name")))
+    anchor = bootstrap.get("anchor") or current.get("anchor") or {}
+    evidence.extend((anchor.get("name"), anchor.get("address")))
+    for value in evidence:
+        city = _extract_city(value or "")
+        if city:
+            return city
+    return _extract_city(bootstrap.get("city") or "") or _extract_city(current.get("city") or "") or ""
 
 
 _PLACE_ALIAS_FALLBACK = {
@@ -3469,9 +3488,15 @@ def _tool_clarify_participant_location(sid: str, args: dict) -> tuple[dict, dict
 
     center = None
     if near_hint:
-        geo = amap_geocode(near_hint, city=st.get("city") or None)
+        city = st.get("city") or ""
+        if not city:
+            return {"ok": False, "error": f"“{near_hint}”缺少所在城市，请先告诉我城市"}, None
+        geo = amap_geocode(near_hint, city=city)
         if geo.get("success"):
             center = {"lng": geo["lng"], "lat": geo["lat"]}
+            resolved_city = _extract_city(geo.get("city") or "") or city
+            if resolved_city != st.get("city"):
+                session_update(sid, {"city": resolved_city})
     if not center:
         anchor = st.get("anchor") or {}
         if anchor.get("lng") is not None and anchor.get("lat") is not None:
@@ -3525,6 +3550,7 @@ def _tool_clarify_participant_location(sid: str, args: dict) -> tuple[dict, dict
         "location_choice_token": token,
         "location_target": {"index": idx, "id": target.get("id"), "name": target.get("name")},
         "location_candidates": candidates,
+        "location_city": (session_get(sid) or {}).get("city") or "",
         "updated_at": int(time.time()),
     })
     session_update(sid, {"agent_task": task})
@@ -4050,6 +4076,8 @@ def api_v2_assistant_stream():
     sid = data.get("session_id") or ""
     user_msg = (data.get("message") or "").strip()
     bootstrap = data.get("bootstrap") or {}
+    existing = session_get(sid) if sid else None
+    inferred_city = _infer_assistant_city(user_msg, bootstrap, existing)
     location_choice = data.get("location_choice") if isinstance(data.get("location_choice"), dict) else None
 
     if not user_msg:
@@ -4064,7 +4092,7 @@ def api_v2_assistant_stream():
             "participants": bootstrap.get("participants") or [],
             "last_pois":    bootstrap.get("pois") or [],
             "query":        bootstrap.get("query", ""),
-            "city":         bootstrap.get("city", "北京"),
+            "city":         inferred_city,
             "chat_history": [],
         })
     else:
@@ -4074,6 +4102,7 @@ def api_v2_assistant_stream():
         if "participants" in bootstrap: updates["participants"] = bootstrap["participants"]
         if "pois" in bootstrap:         updates["last_pois"] = bootstrap["pois"]
         if "query" in bootstrap:        updates["query"] = bootstrap["query"]
+        if inferred_city:                updates["city"] = inferred_city
         session_update(sid, updates)
 
     if location_choice:

@@ -1835,6 +1835,21 @@
     .assist-choice:hover { border-color:var(--brand); color:var(--brand); }
     .assist-choice.selected { border-color:var(--brand); background:var(--brand-tint); color:var(--brand); box-shadow:0 0 0 1px color-mix(in oklch,var(--brand) 22%,transparent); }
     .assist-choice-hint { margin-top:8px; font-size:11px; color:var(--text-3); }
+    .assist-location-card { width:min(100%,520px); max-width:96%; padding:0; overflow:hidden; }
+    .assist-location-card .assist-choice-question { padding:14px 16px 10px; margin:0; font-size:14px; }
+    .assist-location-list { display:flex; flex-direction:column; padding:0 10px; }
+    .assist-location-option { width:100%; display:grid; grid-template-columns:20px minmax(0,1fr) auto; align-items:center; gap:10px; padding:11px 6px; border:0; border-top:1px solid var(--line); border-radius:0; background:transparent; color:var(--text-1); text-align:left; }
+    .assist-location-option:first-child { border-top:0; }
+    .assist-location-option:hover { background:var(--panel-2); }
+    .assist-location-option.selected { background:var(--brand-tint); }
+    .assist-location-radio { width:17px; height:17px; border:1.5px solid var(--line-2); border-radius:50%; position:relative; }
+    .assist-location-option.selected .assist-location-radio { border-color:var(--brand); }
+    .assist-location-option.selected .assist-location-radio::after { content:""; position:absolute; inset:3px; border-radius:50%; background:var(--brand); }
+    .assist-location-copy { min-width:0; }
+    .assist-location-name { display:block; font-size:13px; font-weight:600; color:var(--text-1); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .assist-location-address { display:block; margin-top:3px; font-size:11px; line-height:1.35; color:var(--text-3); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .assist-location-distance { font-size:11px; color:var(--text-3); white-space:nowrap; }
+    .assist-location-card .assist-choice-hint { padding:10px 16px 13px; margin:0; border-top:1px solid var(--line); }
     .assist-selected-bar { display:flex; flex-wrap:wrap; gap:5px; padding:7px 10px 0; }
     .assist-selected-bar:empty { display:none; }
     .assist-selected-token { display:flex; align-items:center; gap:4px; padding:4px 8px; border-radius:999px; background:var(--brand-tint); color:var(--brand); font-size:11px; }
@@ -5293,13 +5308,14 @@
     }
 
     function assistRenderLocationChoices(patch) {
-      const turn=_ensureTurn(); const el=document.createElement('div'); el.className='assist-choice-card';
-      el.innerHTML=`<div class="assist-choice-question">${escapeHtml(patch.question||'请选择具体位置')}</div><div class="assist-choice-options">${(patch.options||[]).map(o=>`<button type="button" class="assist-choice" data-id="${escapeHtml(o.id)}"><span>${escapeHtml(o.label)}</span><small style="display:block;margin-top:3px;color:var(--text-3)">${escapeHtml(o.address||'')}${o.distance_m!=null?` · ${Number(o.distance_m)>=1000?(Number(o.distance_m)/1000).toFixed(1)+' km':Number(o.distance_m)+' m'}`:''}</small></button>`).join('')}</div><div class="assist-choice-hint">这里只确认出发位置，不会改变当前推荐结果；选择后可以继续补充文字。</div>`;
-      el.querySelectorAll('.assist-choice').forEach(btn=>btn.addEventListener('click',()=>{
-        el.querySelectorAll('.assist-choice').forEach(x=>x.classList.remove('selected'));
+      const turn=_ensureTurn(); const el=document.createElement('div'); el.className='assist-choice-card assist-location-card';
+      const fmtDist=o=>o.distance_m==null?'':Number(o.distance_m)>=1000?(Number(o.distance_m)/1000).toFixed(1)+' km':Number(o.distance_m)+' m';
+      el.innerHTML=`<div class="assist-choice-question">${escapeHtml(patch.question||'请选择具体位置')}</div><div class="assist-location-list">${(patch.options||[]).map(o=>`<button type="button" class="assist-location-option" data-id="${escapeHtml(o.id)}"><span class="assist-location-radio"></span><span class="assist-location-copy"><span class="assist-location-name">${escapeHtml(o.label)}</span><span class="assist-location-address">${escapeHtml(o.address||'')}</span></span><span class="assist-location-distance">${escapeHtml(fmtDist(o))}</span></button>`).join('')}</div><div class="assist-choice-hint">选择后可继续补充文字；这里只确认出发位置。</div>`;
+      el.querySelectorAll('.assist-location-option').forEach(btn=>btn.addEventListener('click',()=>{
+        el.querySelectorAll('.assist-location-option').forEach(x=>x.classList.remove('selected'));
         btn.classList.add('selected');
         ASSIST_STATE.selectedChoices=[];
-        ASSIST_STATE.selectedLocationChoice={token:patch.token,candidate_id:btn.dataset.id,label:btn.querySelector('span')?.textContent||'所选位置'};
+        ASSIST_STATE.selectedLocationChoice={token:patch.token,candidate_id:btn.dataset.id,label:btn.querySelector('.assist-location-name')?.textContent||'所选位置'};
         assistRenderSelectedChoices(); document.getElementById('assistInput')?.focus();
       }));
       turn.appendChild(el); assistScroll();
@@ -6227,6 +6243,7 @@
           })),
           pois:         state.resultData?.pois || [],
           query:        (document.getElementById('queryInput')?.value || '').trim(),
+          city:         state.currentCity || '',
         },
       };
 
