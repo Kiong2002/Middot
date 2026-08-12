@@ -2739,6 +2739,49 @@ canonical_candidates最多4个，不得扩展成其他品牌。只输出JSON。"
                 "canonical_candidates":aliases or [raw], "needs_disambiguation":bool(aliases), "reason":"fallback"}
 
 
+def _parse_meeting_utterance(message: str, participants: list[dict], me_index: int) -> dict:
+    """整句先解析一次，避免逐工具理解把人物、地点和噪声粘连。"""
+    system = """你是会面规划的整句语义解析器。只抽取用户明确表达的事实，输出JSON：
+{"intent":"meeting|location_update|other","activity":"","locations":[{"owner":"我或人物名","participant_index":1,"expression":"","kind":"area|address|named_place","area_hint":"","raw_entity":"","canonical_candidates":[],"needs_disambiguation":false}],"ignored_text":[]}。
+规则：先绑定人物再绑定地点；同一人物最多一个位置；范围宽泛不等于歧义，杭州市/西湖/文三路可直接接受；俗名、简称、多门店品牌才需消歧并给正式名称候选；网络梗或无关尾巴放 ignored_text，不得拼进位置。
+例：“我要和阿杰吃烧烤。我在西湖边的v我50，阿杰在浙大紫金港”→我=西湖边(false)，阿杰=浙大紫金港(false)，activity=烧烤，ignored_text=[v我50]。
+“我在文三路这边的星爸爸”→我，area_hint=文三路，raw_entity=星爸爸，候选=[星巴克,Starbucks]，true。只输出JSON。"""
+    try:
+        completion = llm_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role":"system","content":system},{"role":"user","content":json.dumps({
+                "message": message,
+                "me_index": me_index,
+                "participants": [{"index":i+1,"name":p.get("name")} for i,p in enumerate(participants)],
+            }, ensure_ascii=False)}],
+            response_format={"type":"json_object"}, temperature=0, stream=False,
+        )
+        parsed = json.loads(completion.choices[0].message.content or "{}")
+    except Exception as exc:
+        app.logger.warning("[utterance-parse] failed: %s", exc)
+        return {"intent":"other","activity":"","locations":[],"ignored_text":[]}
+    out = []; seen = set()
+    for loc in parsed.get("locations") or []:
+        try: idx = int(loc.get("participant_index") or 0)
+        except (TypeError, ValueError): idx = 0
+        owner = str(loc.get("owner") or "").strip()
+        if owner in ("我","我自己","本人"): idx = me_index
+        if not idx:
+            idx = next((i+1 for i,p in enumerate(participants) if str(p.get("name") or "").strip()==owner), 0)
+        if not (1 <= idx <= len(participants)) or idx in seen: continue
+        seen.add(idx)
+        out.append({
+            "participant_index":idx, "owner":participants[idx-1].get("name") or owner,
+            "expression":str(loc.get("expression") or "").strip(),
+            "kind":loc.get("kind") if loc.get("kind") in ("area","address","named_place") else "area",
+            "area_hint":str(loc.get("area_hint") or "").strip(), "raw_entity":str(loc.get("raw_entity") or "").strip(),
+            "canonical_candidates":[str(x).strip() for x in (loc.get("canonical_candidates") or []) if str(x).strip()][:4],
+            "needs_disambiguation":loc.get("needs_disambiguation") is True,
+        })
+    return {"intent":parsed.get("intent") or "other","activity":str(parsed.get("activity") or "").strip(),
+            "locations":out,"ignored_text":[str(x) for x in (parsed.get("ignored_text") or [])][:8]}
+
+
 def _tool_shift_center(sid: str, args: dict) -> tuple[dict, dict | None]:
     """草稿档：只算出建议锚点，不落盘。等用户在草稿卡按"应用"后 client 会调 apply-drafts 同步。"""
     lng = args.get("lng")
@@ -2827,21 +2870,33 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
     explicit_city = (args.get("city") or "").strip() or None
     session_city = st.get("city") or "北京"
     new_nickname = (args.get("new_nickname") or "").strip() or None
+    new_prefer = (args.get("prefer") or "").strip().lower() or None
+    if new_prefer and new_prefer not in {"auto", "transit", "driving", "walking", "cycling"}:
+        new_prefer = None
 
-    # 允许"只改昵称不改位置"：place_name/lng/lat 全空但 new_nickname 有 → 只 rename
+    # 允许"只改昵称/只改 prefer/只改位置"：三者至少一个
     location_specified = bool(place_name) or (lng is not None and lat is not None)
-    if not location_specified and not new_nickname:
-        return {"ok": False, "error": "需要 place_name / (lng,lat) 或 new_nickname 至少一个"}, None
+    if not location_specified and not new_nickname and not new_prefer:
+        return {"ok": False, "error": "需要 place_name / (lng,lat) / new_nickname / prefer 至少一个"}, None
 
     address = None
     if location_specified:
         if lng is None or lat is None:
-            original_message = str((session_get(sid) or {}).get("current_user_message") or "")
-            semantics = _analyze_location_semantics(place_name, original_message)
+            session_data = session_get(sid) or {}
+            turn_parse = session_data.get("current_utterance_parse") or {}
+            parsed_location = next(
+                (x for x in (turn_parse.get("locations") or []) if x.get("participant_index") == parts.index(target) + 1),
+                None,
+            )
+            original_message = str(session_data.get("current_user_message") or "")
+            semantics = parsed_location or _analyze_location_semantics(place_name, original_message)
+            if parsed_location and parsed_location.get("expression"):
+                # 整句解析是本轮人物位置的事实源，覆盖主 Agent 可能粘入的噪声文本。
+                place_name = str(parsed_location["expression"]).strip()
             if semantics.get("needs_disambiguation"):
                 clarify_args = {
                     "index": parts.index(target) + 1,
-                    "keyword": semantics.get("raw_entity") or place_name,
+                    "keyword": semantics.get("raw_entity") or semantics.get("expression") or place_name,
                     "near_hint": semantics.get("area_hint") or explicit_city or session_city,
                     "aliases": semantics.get("canonical_candidates") or [],
                     "radius_m": 8000,
@@ -4031,7 +4086,10 @@ def api_v2_assistant_stream():
     # 长期记忆身份与房间里的 my_did 语义分离，并在进入 SSE worker 前固定下来。
     session_update(sid, {"memory_did": caller_did})
     _apply_confirmed_memory_defaults(sid, caller_did)
-    session_update(sid, {"current_user_message": user_msg})
+    pre_state = _assistant_get_state(sid)
+    pre_me_idx = _compute_me_index(pre_state["participants"], pre_state.get("my_did") or "")
+    utterance_parse = _parse_meeting_utterance(user_msg, pre_state["participants"], pre_me_idx)
+    session_update(sid, {"current_user_message": user_msg, "current_utterance_parse": utterance_parse})
     _agent_task_begin(sid, user_msg)
 
     def generate():
@@ -4070,6 +4128,10 @@ def api_v2_assistant_stream():
             {"role": "system", "content": state_hint},
             {"role": "system", "content": _memory_context(caller_did)},
             {"role": "system", "content": _agent_task_context(sid)},
+            {"role": "system", "content": (
+                "[本轮整句结构化解析] " + json.dumps(utterance_parse, ensure_ascii=False) +
+                "。人物位置必须严格按此结果执行；ignored_text 禁止写入位置；同一 participant_index 不得重复设置。"
+            )},
             {"role": "system", "content": (
                 "[较早对话的滚动摘要] " + history_summary +
                 "。这是被压缩的会话上下文，不是长期记忆；若与当前快照或本轮消息冲突，以更新的信息为准。"
@@ -4155,6 +4217,7 @@ def api_v2_assistant_stream():
                 prefer_changed_this_batch = False
                 called_names_this_batch: set[str] = set()
                 waiting_for_location_choice = False
+                location_targets_seen: set[int | str] = set()
                 for tc in tool_calls_serialized:
                     name = tc["function"]["name"]
                     called_names_this_batch.add(name)
@@ -4162,7 +4225,19 @@ def api_v2_assistant_stream():
                         args = json.loads(tc["function"]["arguments"] or "{}")
                     except json.JSONDecodeError:
                         args = {}
+                    if name == "set_participant_location":
+                        target_key: int | str = args.get("index") or str(args.get("participant_name") or "")
+                        if target_key in location_targets_seen:
+                            tool_msg = {
+                                "role":"tool", "tool_call_id":tc["id"], "name":name,
+                                "content":json.dumps({"ok":False,"error":"同一人物本轮已有位置动作，重复调用已忽略"}, ensure_ascii=False),
+                            }
+                            messages.append(tool_msg); _assistant_append_history(sid, tool_msg)
+                            continue
+                        location_targets_seen.add(target_key)
                     if waiting_for_location_choice:
+                        # 同一批并行工具中，一旦出现地点消歧，后续动作全部暂停。
+                        # 不向前端创建虚假的失败步骤，也不执行模型编出的第二套选项。
                         tool_msg = {
                             "role": "tool", "tool_call_id": tc["id"], "name": name,
                             "content": json.dumps({"ok": False, "error": "正在等待用户确认具体位置"}, ensure_ascii=False),
