@@ -4594,6 +4594,21 @@
       return arr;
     }
 
+    function formatDurationMinutes(value, { compact = false } = {}) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < 0 || n >= 999) return '未知';
+      const total = Math.round(n);
+      if (total < 60) return `${total} 分钟`;
+      const days = Math.floor(total / 1440);
+      const hours = Math.floor((total % 1440) / 60);
+      const mins = total % 60;
+      const parts = [];
+      if (days) parts.push(`${days} 天`);
+      if (hours) parts.push(`${hours} 小时`);
+      if (mins && (!days || !compact)) parts.push(`${mins} 分钟`);
+      return parts.join(' ') || '0 分钟';
+    }
+
     function applyView() {
       const data = state.resultData;
       if (!data) return;
@@ -4676,13 +4691,13 @@
               <span class="leg-dot"></span>
               <span>${escapeHtml(p.name || `P${li+1}`)}</span>
               <i data-lucide="${MODE_ICON[leg.mode] || 'route'}"></i>
-              <span>${leg.duration_minutes ?? '?'}m</span>
+              <span>${formatDurationMinutes(leg.duration_minutes, { compact: true })}</span>
             </span>`;
         }).join('');
 
         const cost   = poi.cost_per_person ? `¥${escapeHtml(poi.cost_per_person)}/人` : '';
         const rating = poi.rating && poi.rating > 0 ? poi.rating.toFixed(1) : null;
-        const maxT   = poi.max_time_minutes ?? '?';
+        const maxT   = formatDurationMinutes(poi.max_time_minutes);
         const std    = poi.time_std_minutes ?? poi.std_minutes ?? null;
 
         const photo = Array.isArray(poi.photos) && poi.photos.length ? poi.photos[0] : '';
@@ -4715,7 +4730,7 @@
               </div>` : ''}
               <div class="poi-stats">
                 ${cost ? `<span class="poi-stat"><i data-lucide="wallet"></i>${cost}</span>` : ''}
-                <span class="poi-stat"><i data-lucide="timer"></i>最长 <b>${maxT}</b> 分钟</span>
+                <span class="poi-stat"><i data-lucide="timer"></i>最长 <b>${maxT}</b></span>
                 ${std !== null ? `<span class="poi-stat"><i data-lucide="scale"></i>σ <b>${std}</b> 分</span>` : ''}
               </div>
               ${legHtml ? `<div class="poi-legs">${legHtml}</div>` : ''}
