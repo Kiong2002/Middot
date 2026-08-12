@@ -2698,28 +2698,45 @@ def _extract_city(name: str) -> str | None:
     return None
 
 
-_ADMIN_ONLY_RE = re.compile(r"^(?:[^省]+省)?[^市]+市(?:[^区县]+[区县])?$")
-_NEARBY_STORE_RE = re.compile(
-    r"^(?P<near>.+?)(?:旁边|附近|周边|边上|一带)(?:的)?(?P<poi>[^路街道号]+)$"
-)
+_PLACE_ALIAS_FALLBACK = {
+    "雪王": ["蜜雪冰城", "雪王"], "某巴克": ["星巴克", "Starbucks"],
+    "星爸爸": ["星巴克", "Starbucks"], "kfc": ["肯德基", "KFC"],
+    "麦当当": ["麦当劳", "McDonald's"], "金拱门": ["麦当劳", "McDonald's"],
+}
 
 
-def _ambiguous_place_parts(place_name: str, formatted_address: str) -> tuple[str, str] | None:
-    """识别“区域附近的门店”被地理编码降级成行政区的情况。"""
+def _analyze_location_semantics(place_name: str, original_message: str = "") -> dict:
+    """由模型判断名称歧义；范围大不等于有歧义。"""
     raw = (place_name or "").strip()
-    address = re.sub(r"\s+", "", formatted_address or "")
-    match = _NEARBY_STORE_RE.match(raw)
-    if not match:
-        return None
-    near = match.group("near").strip(" ，,的")
-    poi = match.group("poi").strip(" ，,")
-    if not near or not poi:
-        return None
-    # 带“旁边/附近”的门店表达本身就是范围描述；若编码结果没有门店名，
-    # 或仅落到行政区，都必须让用户选具体 POI。
-    administrative = bool(_ADMIN_ONLY_RE.match(address)) or address.endswith(("市", "区", "县"))
-    missing_poi = poi not in address
-    return (near, poi) if administrative or missing_poi else None
+    system = """你是地图位置语义解析器。判断用户给的位置表达是否需要选一个具体地点。
+输出JSON字段：kind(area|address|named_place), area_hint, raw_entity, canonical_candidates, needs_disambiguation, reason。
+原则：范围宽泛不是歧义，杭州市/西湖区/文三路都可以直接接受；俗名、简称、多门店品牌、某家/那家等需要消歧。
+例：杭州市→false；文三路→false；文三路这边的星爸爸→area_hint文三路、raw_entity星爸爸、候选星巴克/Starbucks、true；西湖旁边的某巴克→true。
+canonical_candidates最多4个，不得扩展成其他品牌。只输出JSON。"""
+    try:
+        completion = llm_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role":"system","content":system},{"role":"user","content":json.dumps({
+                "tool_place_name": raw,
+                "original_user_message": original_message or raw,
+            }, ensure_ascii=False)}],
+            response_format={"type":"json_object"}, temperature=0, stream=False,
+        )
+        parsed = json.loads(completion.choices[0].message.content or "{}")
+        candidates = [str(x).strip() for x in (parsed.get("canonical_candidates") or []) if str(x).strip()][:4]
+        return {
+            "kind": parsed.get("kind") if parsed.get("kind") in ("area","address","named_place") else "named_place",
+            "area_hint": str(parsed.get("area_hint") or "").strip(),
+            "raw_entity": str(parsed.get("raw_entity") or raw).strip(),
+            "canonical_candidates": candidates or [raw],
+            "needs_disambiguation": parsed.get("needs_disambiguation") is True,
+            "reason": str(parsed.get("reason") or "")[:160],
+        }
+    except Exception as exc:
+        app.logger.warning("[location-semantics] analyze failed: %s", exc)
+        aliases = _PLACE_ALIAS_FALLBACK.get(raw.lower()) or _PLACE_ALIAS_FALLBACK.get(raw)
+        return {"kind":"named_place" if aliases else "area", "area_hint":"", "raw_entity":raw,
+                "canonical_candidates":aliases or [raw], "needs_disambiguation":bool(aliases), "reason":"fallback"}
 
 
 def _tool_shift_center(sid: str, args: dict) -> tuple[dict, dict | None]:
@@ -2819,6 +2836,20 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
     address = None
     if location_specified:
         if lng is None or lat is None:
+            original_message = str((session_get(sid) or {}).get("current_user_message") or "")
+            semantics = _analyze_location_semantics(place_name, original_message)
+            if semantics.get("needs_disambiguation"):
+                clarify_args = {
+                    "index": parts.index(target) + 1,
+                    "keyword": semantics.get("raw_entity") or place_name,
+                    "near_hint": semantics.get("area_hint") or explicit_city or session_city,
+                    "aliases": semantics.get("canonical_candidates") or [],
+                    "radius_m": 8000,
+                }
+                result, patch = _tool_clarify_participant_location(sid, clarify_args)
+                if result.get("ok"):
+                    result["summary"] = f"“{place_name}”有多个可能地点，等待用户确认"
+                return result, patch
             detected = _extract_city(place_name)
             target_city = explicit_city or detected or session_city
             query = place_name if detected else f"{target_city}{place_name}"
@@ -2827,21 +2858,6 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
                 geo = amap_geocode(place_name, city=target_city)
             if not geo.get("success"):
                 return {"ok": False, "error": geo.get("error", f"『{place_name}』无法定位")}, None
-            # 门店式模糊描述若只被解析到区/市级行政区，禁止当成精确出发地落盘。
-            # 即使 Agent 误用了普通位置工具，也在工具层自动转入结构化地点消歧。
-            vague = _ambiguous_place_parts(place_name, geo.get("formatted_address") or "")
-            if vague:
-                near_hint, poi_keyword = vague
-                clarify_args = {
-                    "index": parts.index(target) + 1,
-                    "keyword": poi_keyword,
-                    "near_hint": near_hint,
-                    "radius_m": 8000,
-                }
-                result, patch = _tool_clarify_participant_location(sid, clarify_args)
-                if result.get("ok"):
-                    result["summary"] = f"“{place_name}”无法精确到具体门店，已请用户确认"
-                return result, patch
             lng = geo["lng"]; lat = geo["lat"]
             address = geo.get("formatted_address") or place_name
         else:
@@ -4015,6 +4031,7 @@ def api_v2_assistant_stream():
     # 长期记忆身份与房间里的 my_did 语义分离，并在进入 SSE worker 前固定下来。
     session_update(sid, {"memory_did": caller_did})
     _apply_confirmed_memory_defaults(sid, caller_did)
+    session_update(sid, {"current_user_message": user_msg})
     _agent_task_begin(sid, user_msg)
 
     def generate():
