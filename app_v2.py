@@ -3358,6 +3358,34 @@ def _resolve_participant(parts: list[dict], args: dict) -> tuple[int, dict] | tu
     return None, None
 
 
+_PLACE_ALIAS_FALLBACK = {
+    "雪王": ["蜜雪冰城", "雪王"], "kfc": ["肯德基", "KFC"],
+    "麦当当": ["麦当劳", "McDonald's"], "金拱门": ["麦当劳", "McDonald's"],
+    "星爸爸": ["星巴克", "Starbucks"],
+}
+
+
+def _expand_place_aliases(keyword: str) -> list[str]:
+    raw = keyword.strip()
+    fallback = _PLACE_ALIAS_FALLBACK.get(raw.lower()) or _PLACE_ALIAS_FALLBACK.get(raw) or [raw]
+    try:
+        completion = llm_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": "你是地图地点名称规范化器。将品牌俗名、简称或中英文名扩写为地图正式名称。只输出JSON：{\"terms\":[...]}; 最多4项，第一项优先正式名称。不得扩展成其他品牌；不确定就只返回原词。"},
+                {"role": "user", "content": raw},
+            ], response_format={"type": "json_object"}, temperature=0, stream=False,
+        )
+        parsed = json.loads(completion.choices[0].message.content or "{}")
+        terms = [str(x).strip() for x in (parsed.get("terms") or []) if str(x).strip()]
+    except Exception as exc:
+        app.logger.warning("[place-alias] expand failed: %s", exc); terms = []
+    out = []
+    for term in [*fallback, *terms, raw]:
+        if term and term.lower() not in {x.lower() for x in out}: out.append(term)
+    return out[:4]
+
+
 def _tool_clarify_participant_location(sid: str, args: dict) -> tuple[dict, dict | None]:
     st = _assistant_get_state(sid)
     idx, target = _resolve_participant(st.get("participants") or [], args)
@@ -3386,17 +3414,35 @@ def _tool_clarify_participant_location(sid: str, args: dict) -> tuple[dict, dict
     if not center:
         return {"ok": False, "error": "需要一个附近区域才能查找同名地点"}, None
 
-    radius = max(1000, min(20000, int(args.get("radius_m") or 5000)))
-    found = amap_search_nearby(float(center["lng"]), float(center["lat"]), keyword, radius=radius)
-    if not found.get("success"):
-        return {"ok": False, "error": found.get("error") or "地点候选搜索失败"}, None
+    aliases = _expand_place_aliases(keyword)
+    max_radius = max(2000, min(10000, int(args.get("radius_m") or 5000)))
+    found = None
+    matched: list[dict] = []
+    used_radius = 2000
+    for radius in (2000, 5000, 10000):
+        if radius > max_radius:
+            break
+        used_radius = radius
+        rows = []
+        for term in aliases:
+            one = amap_search_nearby(float(center["lng"]), float(center["lat"]), term, radius=radius)
+            if one.get("success"): rows.extend(one.get("pois") or []); found = one
+        if not found: continue
+        dedup = {str(p.get("id") or f"{p.get('name')}:{p.get('lng')}:{p.get('lat')}"): p for p in rows}
+        matched = [p for p in dedup.values() if any(a.lower() in str(p.get("name") or "").lower() for a in aliases)]
+        matched.sort(key=lambda p: int(p.get("distance") or 10**9))
+        if len(matched) >= 3 or radius == max_radius:
+            break
+    if not found or not found.get("success"):
+        return {"ok": False, "error": (found or {}).get("error") or "地点候选搜索失败"}, None
     candidates = []
-    for p in (found.get("pois") or [])[:5]:
+    for p in matched[:5]:
         candidates.append({
             "id": p.get("id") or uuid.uuid4().hex[:8],
             "label": p.get("name") or keyword,
             "address": p.get("address") or "地址未提供",
             "lng": p.get("lng"), "lat": p.get("lat"),
+            "distance_m": p.get("distance"),
         })
     if not candidates:
         return {"ok": False, "error": f"附近没有找到“{keyword}”"}, None
@@ -3415,12 +3461,15 @@ def _tool_clarify_participant_location(sid: str, args: dict) -> tuple[dict, dict
         "ok": True,
         "summary": f"找到 {len(candidates)} 个同名地点，等待确认",
         "count": len(candidates),
+        "waiting_for_user": True,
+        "matched_as": aliases[0],
     }, {
         "type": "location_choices",
         "question": f"你指的是哪一个{keyword}？",
         "token": token,
         "target_name": target.get("name") or "参与者",
         "options": candidates,
+        "radius_m": used_radius,
     }
 
 
@@ -4088,6 +4137,7 @@ def api_v2_assistant_stream():
                 # 逐个执行工具
                 prefer_changed_this_batch = False
                 called_names_this_batch: set[str] = set()
+                waiting_for_location_choice = False
                 for tc in tool_calls_serialized:
                     name = tc["function"]["name"]
                     called_names_this_batch.add(name)
@@ -4095,6 +4145,14 @@ def api_v2_assistant_stream():
                         args = json.loads(tc["function"]["arguments"] or "{}")
                     except json.JSONDecodeError:
                         args = {}
+                    if waiting_for_location_choice:
+                        tool_msg = {
+                            "role": "tool", "tool_call_id": tc["id"], "name": name,
+                            "content": json.dumps({"ok": False, "error": "正在等待用户确认具体位置"}, ensure_ascii=False),
+                        }
+                        messages.append(tool_msg)
+                        _assistant_append_history(sid, tool_msg)
+                        continue
                     yield _sse({
                         "type": "tool_call",
                         "id": tc["id"], "name": name, "args": args,
@@ -4138,6 +4196,8 @@ def api_v2_assistant_stream():
                     })
                     if state_patch:
                         yield _sse({"type": "state_patch", "patch": state_patch})
+                        if state_patch.get("type") == "location_choices":
+                            waiting_for_location_choice = True
 
                     tool_msg = {
                         "role": "tool",
@@ -4147,6 +4207,11 @@ def api_v2_assistant_stream():
                     }
                     messages.append(tool_msg)
                     _assistant_append_history(sid, tool_msg)
+
+                if waiting_for_location_choice:
+                    yield _sse({"type": "waiting", "kind": "location_choice", "label": "等待你选择"})
+                    yield _sse({"type": "done"})
+                    return
 
                 # 交通方式变化会使现有路线全部失效。若 Agent 忘记显式重算，
                 # 服务端在同一轮原子补做一次，并把新 legs 推给前端。

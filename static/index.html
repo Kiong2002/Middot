@@ -5294,7 +5294,7 @@
 
     function assistRenderLocationChoices(patch) {
       const turn=_ensureTurn(); const el=document.createElement('div'); el.className='assist-choice-card';
-      el.innerHTML=`<div class="assist-choice-question">${escapeHtml(patch.question||'请选择具体位置')}</div><div class="assist-choice-options">${(patch.options||[]).map(o=>`<button type="button" class="assist-choice" data-id="${escapeHtml(o.id)}"><span>${escapeHtml(o.label)}</span><small style="display:block;margin-top:3px;color:var(--text-3)">${escapeHtml(o.address||'')}</small></button>`).join('')}</div><div class="assist-choice-hint">这里只确认出发位置，不会改变当前推荐结果；选择后可以继续补充文字。</div>`;
+      el.innerHTML=`<div class="assist-choice-question">${escapeHtml(patch.question||'请选择具体位置')}</div><div class="assist-choice-options">${(patch.options||[]).map(o=>`<button type="button" class="assist-choice" data-id="${escapeHtml(o.id)}"><span>${escapeHtml(o.label)}</span><small style="display:block;margin-top:3px;color:var(--text-3)">${escapeHtml(o.address||'')}${o.distance_m!=null?` · ${Number(o.distance_m)>=1000?(Number(o.distance_m)/1000).toFixed(1)+' km':Number(o.distance_m)+' m'}`:''}</small></button>`).join('')}</div><div class="assist-choice-hint">这里只确认出发位置，不会改变当前推荐结果；选择后可以继续补充文字。</div>`;
       el.querySelectorAll('.assist-choice').forEach(btn=>btn.addEventListener('click',()=>{
         el.querySelectorAll('.assist-choice').forEach(x=>x.classList.remove('selected'));
         btn.classList.add('selected');
