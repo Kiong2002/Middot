@@ -191,6 +191,19 @@ def init_middot_db():
           results_summary_json  TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_hist_dev ON run_history(device_id, ran_at DESC);
+        CREATE TABLE IF NOT EXISTS agent_memories (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id     TEXT NOT NULL,
+          category      TEXT NOT NULL,
+          memory_key    TEXT NOT NULL,
+          memory_value  TEXT NOT NULL,
+          source        TEXT NOT NULL DEFAULT 'explicit',
+          status        TEXT NOT NULL DEFAULT 'confirmed',
+          created_at    INTEGER NOT NULL,
+          updated_at    INTEGER NOT NULL,
+          UNIQUE(device_id, category, memory_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_device ON agent_memories(device_id, category, updated_at DESC);
         """)
         # updated_by / last_ai_actions_json / locked_until 列：老库需要 in-place 迁移
         try:
@@ -2266,6 +2279,45 @@ ASSISTANT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "remember_preference",
+            "description": "保存用户明确要求长期记住的个人偏好。仅限交通、饮食、预算；一次性的‘今天/这次’不要保存，位置和朋友资料禁止保存。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "enum": ["transport", "food", "budget"]},
+                    "key": {"type": "string", "description": "规范键：交通用 default_mode；饮食用具体偏好键；预算用 per_person_max。"},
+                    "value": {"type": "string", "description": "简洁、用户可读的记忆内容。交通统一用 公交/骑行/驾车/步行/最快；预算只写金额数字。"},
+                },
+                "required": ["category", "key", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_memories",
+            "description": "读取小 Mid 已为当前用户保存的长期偏好。用户问‘你记得我什么’时调用。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forget_memory",
+            "description": "按类别或具体键忘记当前用户的长期偏好。用户说忘掉、删除、不再记住时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "enum": ["transport", "food", "budget", "all"]},
+                    "key": {"type": "string", "description": "可选；省略则删除整个类别。"},
+                },
+                "required": ["category"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_pois",
             "description": "在指定坐标周围搜索 POI（餐厅/咖啡/景点等）。会替换掉当前的推荐结果列表并把新结果传回前端展示。",
             "parameters": {
@@ -2677,6 +2729,7 @@ def _tool_add_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
         loc_hint = f"当前定位『{existing.get('address', '')}』" if has_loc else "当前无定位"
         return {
             "ok": False,
+    """草稿档：改搜索关键词。"""
             "error": (
                 f"已有同名参与者「{nickname_stripped}」(index={idx}，{loc_hint})。"
                 f"若要修改他的位置或城市，请用 `set_participant_location(index={idx}, place_name=..., city=...)`，"
@@ -2729,7 +2782,6 @@ def _tool_add_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
 
 
 def _tool_set_keyword(sid: str, args: dict) -> tuple[dict, dict | None]:
-    """草稿档：改搜索关键词。"""
     kw = (args.get("keyword") or "").strip()
     if not kw:
         return {"ok": False, "error": "缺少 keyword"}, None
@@ -2840,7 +2892,119 @@ def _tool_get_current_result(sid: str, args: dict) -> tuple[dict, dict | None]:
     )
 
 
+_MEMORY_CATEGORY_LABELS = {"transport": "出行", "food": "饮食", "budget": "预算"}
+
+
+def _memory_rows(device_id: str) -> list[dict]:
+    conn = _db_connect()
+    try:
+        rows = conn.execute(
+            "SELECT category, memory_key, memory_value, source, status, updated_at "
+            "FROM agent_memories WHERE device_id=? ORDER BY category, updated_at DESC",
+            (device_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def _memory_context(device_id: str) -> str:
+    rows = _memory_rows(device_id)
+    if not rows:
+        return "[已确认长期记忆] 无。不得凭空假设用户有车、交通方式、饮食或预算偏好。"
+    items = [f"{r['category']}.{r['memory_key']}={r['memory_value']}" for r in rows]
+    return (
+        "[已确认长期记忆] " + "; ".join(items) +
+        "。这些记忆只属于当前用户，不得套给朋友。若本轮明确表达冲突，以本轮为准；"
+        "使用记忆影响规划时，在最终回复中用自然语言简短说明。"
+    )
+
+
+def _apply_confirmed_memory_defaults(sid: str, device_id: str) -> None:
+    """仅在用户尚未选择交通方式（auto）时，把已确认的本人默认方式用于本轮。"""
+    mode_map = {"公交": "transit", "骑行": "cycling", "驾车": "driving", "步行": "walking", "最快": "auto"}
+    transport = next(
+        (r for r in _memory_rows(device_id)
+         if r["category"] == "transport" and r["memory_key"] == "default_mode"),
+        None,
+    )
+    prefer = mode_map.get((transport or {}).get("memory_value", ""))
+    if not prefer or prefer == "auto":
+        return
+    st = session_get(sid) or {}
+    parts = [dict(p) for p in (st.get("participants") or [])]
+    me_idx = _compute_me_index(parts, st.get("my_did") or "")
+    if 0 < me_idx <= len(parts) and (parts[me_idx - 1].get("prefer") or "auto") == "auto":
+        parts[me_idx - 1]["prefer"] = prefer
+        session_update(sid, {"participants": parts})
+
+
+def _memory_device_id(sid: str) -> str:
+    return str((session_get(sid) or {}).get("memory_did") or (session_get(sid) or {}).get("my_did") or "").strip()
+
+
+def _tool_remember_preference(sid: str, args: dict) -> tuple[dict, dict | None]:
+    device_id = _memory_device_id(sid)
+    category = (args.get("category") or "").strip()
+    key = (args.get("key") or "").strip()[:60]
+    value = (args.get("value") or "").strip()[:160]
+    if category not in _MEMORY_CATEGORY_LABELS or not key or not value:
+        return {"ok": False, "error": "记忆类别、键或内容无效"}, None
+    # 第一版只接受显式个人偏好；阻断位置、人物等越界写入。
+    blocked = ("位置", "地址", "经度", "纬度", "朋友", "同事", "家人", "住址", "公司")
+    if any(x in key + value for x in blocked):
+        return {"ok": False, "error": "第一版不长期保存位置或人物资料"}, None
+    now = _now()
+    conn = _db_connect()
+    try:
+        conn.execute(
+            "INSERT INTO agent_memories(device_id,category,memory_key,memory_value,source,status,created_at,updated_at) "
+            "VALUES(?,?,?,?, 'explicit','confirmed',?,?) "
+            "ON CONFLICT(device_id,category,memory_key) DO UPDATE SET "
+            "memory_value=excluded.memory_value,source='explicit',status='confirmed',updated_at=excluded.updated_at",
+            (device_id, category, key, value, now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "summary": f"已记住{_MEMORY_CATEGORY_LABELS[category]}偏好：{value}"}, None
+
+
+def _tool_list_memories(sid: str, _args: dict) -> tuple[dict, dict | None]:
+    rows = _memory_rows(_memory_device_id(sid))
+    return {"ok": True, "summary": f"已保存 {len(rows)} 条长期偏好", "memories": rows}, None
+
+
+def _tool_forget_memory(sid: str, args: dict) -> tuple[dict, dict | None]:
+    device_id = _memory_device_id(sid)
+    category = (args.get("category") or "").strip()
+    key = (args.get("key") or "").strip()
+    if category not in {*_MEMORY_CATEGORY_LABELS, "all"}:
+        return {"ok": False, "error": "记忆类别无效"}, None
+    conn = _db_connect()
+    try:
+        if category == "all":
+            cur = conn.execute("DELETE FROM agent_memories WHERE device_id=?", (device_id,))
+        elif key:
+            cur = conn.execute(
+                "DELETE FROM agent_memories WHERE device_id=? AND category=? AND memory_key=?",
+                (device_id, category, key),
+            )
+        else:
+            cur = conn.execute(
+                "DELETE FROM agent_memories WHERE device_id=? AND category=?",
+                (device_id, category),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "summary": f"已忘记 {cur.rowcount} 条记忆"}, None
+
+
 TOOL_HANDLERS = {
+    "remember_preference":      _tool_remember_preference,
+    "list_memories":           _tool_list_memories,
+    "forget_memory":           _tool_forget_memory,
     "search_pois":              _tool_search_pois,
     "shift_center":             _tool_shift_center,
     "set_participant_location": _tool_set_participant_location,
@@ -2873,6 +3037,8 @@ _ASSISTANT_SYSTEM = """你是「中点 Middot 会面助手」，一个**只**服
 > 你可以试试：**"找家咖啡厅"**、**"锚点挪到国贸"**、**"加个从望京出发的人"**
 
 ## 关键约定
+- **【长期记忆】**：用户明确说“记住/以后默认/以后别推荐”时，才可调用记忆工具保存交通、饮食或预算偏好；“今天/这次”只用于本轮，禁止长期保存。用户问“你记得我什么”时读取记忆；说“忘掉/删除记忆”时删除。当前位置、地址、朋友资料和推断出的敏感属性禁止长期保存。
+- 已确认记忆只属于“我”，不得复制给朋友。本轮明确表达永远优先于旧记忆。使用长期偏好影响规划时，要在最终回复中自然说明，例如“已按你平时的公交方式规划”，但不要暴露内部字段。
 - **『我 / 我自己 / 咱』= [当前会话快照] 里 `me_index` 那一位**（每轮系统会告诉你 me_index 是几）。用户说"我在北大" → `set_participant_location(index=me_index, place_name="北大")`。**永远别硬编码 index=1**——房间模式下你可能是 index=2 或更后。
 - **【硬规则 · 地点先绑定语法主体】**：`X 的朋友/同事/家人` 中，地点 X 属于后面的那个人，不能因为整句话由“我想/我要/我和”开头就绑定给“我”。例如“我想和文三路的朋友吃火锅”表示**朋友在文三路、我的位置没有说**：必须把 `文三路` 用 `set_participant_location` 填到非 `me_index` 的朋友/空位，**绝不允许**写入 `me_index`。前端可能会另行征得定位许可补齐“我”，但这不改变朋友地点的归属。
 - **绝不猜测用户的当前位置**：当 me_index 对应参与者的 `lng`/`lat` 为空，而用户说“当前位置”“我和某地的朋友见面”或其他隐含需要本人出发地的表达时，前端会先尝试请求浏览器定位。如果定位仍为空，明确请用户点地图上的“定位到我”或手动填写；**禁止**把用户放到北京、当前 city、IP 定位城市或任意默认坐标。
@@ -2994,6 +3160,7 @@ def api_v2_apply_drafts():
 
     for d in drafts:
         if not isinstance(d, dict):
+            "my_did":       g.device_id,
             continue
         kind = d.get("kind")
         body = d.get("data") or {}
@@ -3160,7 +3327,6 @@ def api_v2_assistant_stream():
             "last_pois":    bootstrap.get("pois") or [],
             "query":        bootstrap.get("query", ""),
             "city":         bootstrap.get("city", "北京"),
-            "my_did":       g.device_id,
             "chat_history": [],
         })
     else:
@@ -3173,6 +3339,9 @@ def api_v2_assistant_stream():
         session_update(sid, updates)
 
     caller_did = g.device_id
+    # 长期记忆身份与房间里的 my_did 语义分离，并在进入 SSE worker 前固定下来。
+    session_update(sid, {"memory_did": caller_did})
+    _apply_confirmed_memory_defaults(sid, caller_did)
 
     def generate():
         yield _sse({"type": "session", "session_id": sid})
@@ -3206,6 +3375,7 @@ def api_v2_assistant_stream():
         messages: list[dict] = [
             {"role": "system", "content": _ASSISTANT_SYSTEM},
             {"role": "system", "content": state_hint},
+            {"role": "system", "content": _memory_context(caller_did)},
             {"role": "system", "content": (
                 "运行时位置约束：设备已为‘我’提供有效经纬度。无论用户原句是否写出本人地点，"
                 "都必须视为‘我’已定位；禁止声称其位置未设置、禁止要求再次定位。"
