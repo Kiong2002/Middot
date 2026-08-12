@@ -2350,6 +2350,24 @@ ASSISTANT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "clarify_participant_location",
+            "description": "当用户描述的是某位参与者的出发位置，但同名门店或地点有多个时，生成位置消歧单选项。候选只出现在聊天中，绝不替换正式推荐面板。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {"type":"integer","description":"目标参与者序号；‘我’必须使用 me_index"},
+                    "participant_name": {"type":"string"},
+                    "keyword": {"type":"string","description":"需要消歧的地点或门店名，如海底捞"},
+                    "near_hint": {"type":"string","description":"用户给出的附近区域，如西湖；可省略"},
+                    "radius_m": {"type":"integer","description":"候选搜索半径，默认5000"}
+                },
+                "required": ["keyword"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remember_preference",
             "description": "保存用户明确要求长期记住的个人偏好。仅限交通、饮食、预算；一次性的‘今天/这次’不要保存，位置和朋友资料禁止保存。",
             "parameters": {
@@ -2553,6 +2571,22 @@ def _assistant_get_state(sid: str) -> dict:
         "city":         s.get("city", "北京"),
         "my_did":       s.get("my_did") or "",
     }
+
+
+def _poi_reason(poi: dict) -> str:
+    """只用真实结果字段生成推荐理由，避免模型臆造。"""
+    legs = [x for x in (poi.get("legs") or []) if x.get("duration_minutes") is not None]
+    bits = []
+    if legs:
+        times = [int(round(float(x["duration_minutes"]))) for x in legs]
+        bits.append("各方约" + "、".join(f"{t}分钟" for t in times))
+        if len(times) > 1:
+            bits.append(f"耗时相差{max(times) - min(times)}分钟")
+    if poi.get("rating") not in (None, ""):
+        bits.append(f"评分{poi.get('rating')}")
+    if poi.get("cost_per_person") not in (None, "", 0):
+        bits.append(f"人均约{poi.get('cost_per_person')}元")
+    return "，".join(bits) or "按当前综合排序推荐"
 
 
 def _poi_reason(poi: dict) -> str:
@@ -3267,8 +3301,86 @@ def _tool_offer_choices(sid: str, args: dict) -> tuple[dict, dict | None]:
     return {"ok":True,"summary":"已给出可选答案"},{"type":"choices","question":question,"mode":mode,"options":options}
 
 
+def _resolve_participant(parts: list[dict], args: dict) -> tuple[int, dict] | tuple[None, None]:
+    idx = args.get("index")
+    name = (args.get("participant_name") or "").strip()
+    if isinstance(idx, int) and 1 <= idx <= len(parts):
+        return idx, parts[idx - 1]
+    for i, p in enumerate(parts, start=1):
+        if name and (p.get("name") or "").strip() == name:
+            return i, p
+    return None, None
+
+
+def _tool_clarify_participant_location(sid: str, args: dict) -> tuple[dict, dict | None]:
+    st = _assistant_get_state(sid)
+    idx, target = _resolve_participant(st.get("participants") or [], args)
+    if not target:
+        return {"ok": False, "error": "找不到要确认位置的参与者"}, None
+    keyword = (args.get("keyword") or "").strip()
+    near_hint = (args.get("near_hint") or "").strip()
+    if not keyword:
+        return {"ok": False, "error": "缺少要确认的地点名"}, None
+
+    center = None
+    if near_hint:
+        geo = amap_geocode(near_hint, city=st.get("city") or None)
+        if geo.get("success"):
+            center = {"lng": geo["lng"], "lat": geo["lat"]}
+    if not center:
+        anchor = st.get("anchor") or {}
+        if anchor.get("lng") is not None and anchor.get("lat") is not None:
+            center = {"lng": anchor["lng"], "lat": anchor["lat"]}
+    if not center:
+        located = [p for p in st.get("participants", []) if p.get("lng") is not None and p.get("lat") is not None]
+        if located:
+            mp = fair_meeting_point(located).get("midpoint") or {}
+            if mp.get("lng") is not None:
+                center = {"lng": mp["lng"], "lat": mp["lat"]}
+    if not center:
+        return {"ok": False, "error": "需要一个附近区域才能查找同名地点"}, None
+
+    radius = max(1000, min(20000, int(args.get("radius_m") or 5000)))
+    found = amap_search_nearby(float(center["lng"]), float(center["lat"]), keyword, radius=radius)
+    if not found.get("success"):
+        return {"ok": False, "error": found.get("error") or "地点候选搜索失败"}, None
+    candidates = []
+    for p in (found.get("pois") or [])[:5]:
+        candidates.append({
+            "id": p.get("id") or uuid.uuid4().hex[:8],
+            "label": p.get("name") or keyword,
+            "address": p.get("address") or "地址未提供",
+            "lng": p.get("lng"), "lat": p.get("lat"),
+        })
+    if not candidates:
+        return {"ok": False, "error": f"附近没有找到“{keyword}”"}, None
+    token = uuid.uuid4().hex[:12]
+    task = dict((session_get(sid) or {}).get("agent_task") or {})
+    task.update({
+        "status": "waiting_location_choice",
+        "waiting_for": f"确认{target.get('name','参与者')}的位置",
+        "location_choice_token": token,
+        "location_target": {"index": idx, "id": target.get("id"), "name": target.get("name")},
+        "location_candidates": candidates,
+        "updated_at": int(time.time()),
+    })
+    session_update(sid, {"agent_task": task})
+    return {
+        "ok": True,
+        "summary": f"找到 {len(candidates)} 个同名地点，等待确认",
+        "count": len(candidates),
+    }, {
+        "type": "location_choices",
+        "question": f"你指的是哪一个{keyword}？",
+        "token": token,
+        "target_name": target.get("name") or "参与者",
+        "options": candidates,
+    }
+
+
 TOOL_HANDLERS = {
     "offer_choices":            _tool_offer_choices,
+    "clarify_participant_location": _tool_clarify_participant_location,
     "remember_preference":      _tool_remember_preference,
     "list_memories":           _tool_list_memories,
     "forget_memory":           _tool_forget_memory,
@@ -3324,6 +3436,8 @@ _ASSISTANT_SYSTEM = """你是「中点 Middot 会面助手」，一个**只**服
   - **不允许**：用户只说自己/朋友在哪（"我在国贸上班"= 我的位置，用 `set_participant_location`，不要 `shift_center`）
   - **不允许**：用户说"我们在朝阳吃火锅"这种含地区+活动的模糊表达（朝阳太大，不是明确会面点，让系统按中点算）
 - **『我要吃 X』/『我们想吃 X』/『找家 X』**：是搜索关键词，调 `set_keyword`。用户表达**对活动/场所类型的偏好**（吃/喝/玩/看/买/聊）都算，别只匹配"吃 X"字面。
+- **【出发地消歧不是正式推荐】**：用户说“我在西湖边的海底捞”“阿杰在附近某家星巴克”，是在描述参与者出发地；同名门店无法唯一确定时必须调用 `clarify_participant_location`，禁止用 `search_pois`。消歧候选只用于确认位置，不能替换中央推荐面板。
+- “去海底捞吃饭/找海底捞”才是正式搜索目标；“我在海底捞/阿杰从海底捞出发”是参与者位置。必须先绑定语法主体再选工具。
 - **房间模式下 `add_participant` 被禁用**（服务端会拒），要加人请让用户分享房间码给对方，让本人自己加入。
 - **【硬规则 · 改错走 set，别再 add】**：如果发现之前 `add_participant` 或 `set_participant_location` 把某人定错了城市/位置（比如"北航"被解析到深圳而不是北京），**必须**用 `set_participant_location(participant_name="那个名字", place_name=..., city="北京")` 修改原有那位，**禁止**再 `add_participant` 加一个同名的（服务端也会拒）。同名去重是硬约束：同一个名字只能有一位。
 
@@ -3482,7 +3596,7 @@ def _agent_task_begin(sid: str, message: str) -> dict:
     s = session_get(sid) or {}
     previous = dict(s.get("agent_task") or {})
     now = int(time.time())
-    if previous.get("status") == "waiting_user":
+    if previous.get("status") in ("waiting_user", "waiting_location_choice"):
         task = {
             **previous,
             "status": "running",
@@ -3523,7 +3637,7 @@ def _agent_task_record(sid: str, name: str, result: dict) -> None:
 def _agent_task_finish(sid: str) -> None:
     s = session_get(sid) or {}
     task = dict(s.get("agent_task") or {})
-    if task and task.get("status") not in ("waiting_user", "recoverable_error"):
+    if task and task.get("status") not in ("waiting_user", "waiting_location_choice", "recoverable_error"):
         task["status"] = "completed"
         task["updated_at"] = int(time.time())
         session_update(sid, {"agent_task": task})
@@ -3534,6 +3648,42 @@ def _agent_task_context(sid: str) -> str:
     if not task:
         return "[当前任务] 无。"
     return "[当前任务状态] " + json.dumps(task, ensure_ascii=False)
+
+
+def _apply_location_choice(sid: str, choice: dict) -> tuple[bool, str]:
+    s = session_get(sid) or {}
+    task = dict(s.get("agent_task") or {})
+    if task.get("status") != "waiting_location_choice":
+        return False, "当前没有待确认的位置"
+    if choice.get("token") != task.get("location_choice_token"):
+        return False, "位置选项已过期，请重新选择"
+    selected = next(
+        (x for x in (task.get("location_candidates") or []) if str(x.get("id")) == str(choice.get("candidate_id"))),
+        None,
+    )
+    target = task.get("location_target") or {}
+    if not selected:
+        return False, "找不到所选地点"
+    parts = [dict(p) for p in (s.get("participants") or [])]
+    row = next((p for p in parts if p.get("id") == target.get("id")), None)
+    if row is None and isinstance(target.get("index"), int) and 1 <= target["index"] <= len(parts):
+        row = parts[target["index"] - 1]
+    if row is None:
+        return False, "要设置位置的参与者已不存在"
+    row.update({
+        "lng": float(selected["lng"]), "lat": float(selected["lat"]),
+        "address": f"{selected.get('label')} · {selected.get('address')}",
+    })
+    task.update({
+        "status": "running",
+        "answer": f"{target.get('name','参与者')}在{selected.get('label')}（{selected.get('address')}）",
+        "waiting_for": "",
+        "location_candidates": [],
+        "location_choice_token": "",
+        "updated_at": int(time.time()),
+    })
+    session_update(sid, {"participants": parts, "agent_task": task})
+    return True, task["answer"]
 
 
 def _verify_agent_outcome(sid: str, called_names: set[str]) -> list[str]:
@@ -3734,6 +3884,7 @@ def api_v2_assistant_stream():
     sid = data.get("session_id") or ""
     user_msg = (data.get("message") or "").strip()
     bootstrap = data.get("bootstrap") or {}
+    location_choice = data.get("location_choice") if isinstance(data.get("location_choice"), dict) else None
 
     if not user_msg:
         return jsonify({"success": False, "error": "缺少 message"}), 400
@@ -3758,6 +3909,12 @@ def api_v2_assistant_stream():
         if "pois" in bootstrap:         updates["last_pois"] = bootstrap["pois"]
         if "query" in bootstrap:        updates["query"] = bootstrap["query"]
         session_update(sid, updates)
+
+    if location_choice:
+        ok, resolved_message = _apply_location_choice(sid, location_choice)
+        if not ok:
+            return jsonify({"success": False, "error": resolved_message}), 409
+        user_msg = resolved_message + (f"；补充：{user_msg}" if user_msg else "")
 
     caller_did = g.device_id
     # 长期记忆身份与房间里的 my_did 语义分离，并在进入 SSE worker 前固定下来。

@@ -5091,6 +5091,7 @@
       drafts: [],           // 本轮内累积的未应用草稿（按 kind 去重）
       draftCardEl: null,    // 当前展示的草稿卡（未点应用/取消时）
       selectedChoices: [],  // 用户点选后暂存，发送时与自由输入合并
+      selectedLocationChoice: null,
     };
 
     function assistOpen() {
@@ -5286,6 +5287,19 @@
         const at=ASSIST_STATE.selectedChoices.findIndex(x=>x.value===value);
         if(at>=0){ASSIST_STATE.selectedChoices.splice(at,1);btn.classList.remove('selected');}
         else {ASSIST_STATE.selectedChoices.push({label,value});btn.classList.add('selected');}
+        assistRenderSelectedChoices(); document.getElementById('assistInput')?.focus();
+      }));
+      turn.appendChild(el); assistScroll();
+    }
+
+    function assistRenderLocationChoices(patch) {
+      const turn=_ensureTurn(); const el=document.createElement('div'); el.className='assist-choice-card';
+      el.innerHTML=`<div class="assist-choice-question">${escapeHtml(patch.question||'请选择具体位置')}</div><div class="assist-choice-options">${(patch.options||[]).map(o=>`<button type="button" class="assist-choice" data-id="${escapeHtml(o.id)}"><span>${escapeHtml(o.label)}</span><small style="display:block;margin-top:3px;color:var(--text-3)">${escapeHtml(o.address||'')}</small></button>`).join('')}</div><div class="assist-choice-hint">这里只确认出发位置，不会改变当前推荐结果；选择后可以继续补充文字。</div>`;
+      el.querySelectorAll('.assist-choice').forEach(btn=>btn.addEventListener('click',()=>{
+        el.querySelectorAll('.assist-choice').forEach(x=>x.classList.remove('selected'));
+        btn.classList.add('selected');
+        ASSIST_STATE.selectedChoices=[];
+        ASSIST_STATE.selectedLocationChoice={token:patch.token,candidate_id:btn.dataset.id,label:btn.querySelector('span')?.textContent||'所选位置'};
         assistRenderSelectedChoices(); document.getElementById('assistInput')?.focus();
       }));
       turn.appendChild(el); assistScroll();
@@ -6183,12 +6197,14 @@
       const typed = (input.value || '').trim();
       const picked = ASSIST_STATE.selectedChoices.map(x=>x.value).join('；');
       const text = [picked,typed].filter(Boolean).join('；补充：');
-      if (!text) return;
+      const locationChoice = ASSIST_STATE.selectedLocationChoice;
+      if (!text && !locationChoice) return;
       input.value = '';
       ASSIST_STATE.selectedChoices=[]; assistRenderSelectedChoices();
+      ASSIST_STATE.selectedLocationChoice=null;
       input.style.height = 'auto';
 
-      assistAddUser(text);
+      assistAddUser(text || `选择：${locationChoice?.label || '所选位置'}`);
       ASSIST_STATE.streaming = true;
       document.getElementById('assistSend').disabled = true;
       await assistMaybeAttachMyLocation(text);
@@ -6197,6 +6213,7 @@
       const payload = {
         session_id: state.sessionId || '',
         message: text,
+        location_choice: locationChoice,
         bootstrap: {
           anchor:       state.anchor,
           // 空位（lng/lat=null）必须一起发给后端 —— AI 才能看到「我/小伙伴」两个默认空位，
@@ -6272,6 +6289,7 @@
           break;
         case 'state_patch':
           if(ev.patch?.type==='choices') assistRenderChoices(ev.patch);
+          else if(ev.patch?.type==='location_choices') assistRenderLocationChoices(ev.patch);
           else assistApplyPatch(ev.patch);
           break;
         case 'error':
