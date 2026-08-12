@@ -2436,8 +2436,23 @@ def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
     if not r.get("success"):
         return {"ok": False, "error": r.get("error", "搜索失败")}, None
     pois = r.get("pois", []) or []
+    # 对高德返回的全部候选计算路线和综合分；不能只让距离靠前的少数 POI 参与排名。
+    participants_for_routes = [
+        p for p in (st.get("participants") or [])
+        if p.get("lng") is not None and p.get("lat") is not None
+    ]
+    enriched = pois
+    if pois and participants_for_routes:
+        try:
+            enriched = calculate_routes(
+                pois, participants_for_routes,
+                st.get("city", "北京"), None,
+                sort_weights=None,
+            )
+        except Exception as e:
+            print(f"[assistant search_pois] calculate_routes 失败：{e}")
     # 更新 session
-    session_update(sid, {"last_pois": pois, "query": keyword})
+    session_update(sid, {"last_pois": enriched, "query": keyword})
     top = [
         {
             "name":            p.get("name"),
@@ -2445,12 +2460,13 @@ def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
             "rating":          p.get("rating"),
             "cost_per_person": p.get("cost_per_person"),
         }
-        for p in pois[:6]
+        for p in enriched[:6]
     ]
-    summary = f"在 ({center_lng:.4f},{center_lat:.4f}) 附近 {radius}m 内找到 {len(pois)} 家「{keyword}」"
-    return {"ok": True, "summary": summary, "count": len(pois), "top": top}, {
+    summary = f"在 ({center_lng:.4f},{center_lat:.4f}) 附近 {radius}m 内找到 {len(enriched)} 家「{keyword}」"
+    return {"ok": True, "summary": summary, "count": len(enriched), "top": top}, {
         "type":  "pois_replaced",
-        "pois":  pois,
+        "pois":  enriched,
+        "participants": participants_for_routes,
         "anchor": st["anchor"],
         "center": {"lng": float(center_lng), "lat": float(center_lat), "radius_m": radius},
     }
