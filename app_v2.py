@@ -42,6 +42,8 @@ from amap_client import (
     fair_meeting_point,
     amap_district_polygon,
     amap_search_in_area,
+    simulate_route_minutes,
+    find_min_max_center,
 )
 
 app = Flask(__name__, static_folder="static")
@@ -61,9 +63,13 @@ _sessions: dict[str, dict] = {}
 SESSION_TTL = 3600
 
 
-def session_create(data: dict) -> str:
-    sid = str(uuid.uuid4())[:8]
-    _sessions[sid] = {"data": data, "expires_at": time.time() + SESSION_TTL}
+def session_create(data: dict, owner_did: str | None = None) -> str:
+    # 16 hex chars = 64bit, 比原来的 32bit 抗枚举 4B×
+    sid = uuid.uuid4().hex[:16]
+    payload = dict(data)
+    if owner_did:
+        payload["my_did"] = owner_did
+    _sessions[sid] = {"data": payload, "expires_at": time.time() + SESSION_TTL}
     _session_cleanup()
     return sid
 
@@ -81,6 +87,20 @@ def session_update(sid: str, data: dict) -> bool:
     _sessions[sid]["data"].update(data)
     _sessions[sid]["expires_at"] = time.time() + SESSION_TTL
     return True
+
+
+def _session_check_owner(sid: str) -> tuple[dict | None, tuple | None]:
+    """返回 (session_data, error_tuple)。error_tuple = (json_response, status_code) 或 None。
+    my_did 为空（老数据/legacy）视作 public，跳过校验以免破坏兼容。
+    """
+    s = session_get(sid)
+    if not s:
+        return None, (jsonify({"success": False, "error": "会话已过期"}), 404)
+    owner = s.get("my_did") or ""
+    caller = getattr(g, "device_id", "") or ""
+    if owner and caller and owner != caller:
+        return None, (jsonify({"success": False, "error": "无权访问该会话"}), 403)
+    return s, None
 
 
 def _session_cleanup():
@@ -233,6 +253,8 @@ def init_middot_db():
                 conn.execute("ALTER TABLE rooms ADD COLUMN last_ai_actions_json TEXT")
             if "locked_until" not in cols:
                 conn.execute("ALTER TABLE rooms ADD COLUMN locked_until INTEGER")
+            if "search_snapshot_json" not in cols:
+                conn.execute("ALTER TABLE rooms ADD COLUMN search_snapshot_json TEXT")
         except Exception:
             pass
         conn.commit()
@@ -455,7 +477,8 @@ def _room_snapshot(conn: sqlite3.Connection, code: str, me_did: str) -> dict | N
     """一次读 rooms + room_members，按 device_id 打 is_me 标。"""
     row = conn.execute(
         "SELECT code, host_device_id, keyword, anchor_json, revision, status, "
-        "created_at, last_active_at, updated_by, last_ai_actions_json, locked_until "
+        "created_at, last_active_at, updated_by, last_ai_actions_json, locked_until, "
+        "search_snapshot_json "
         "FROM rooms WHERE code=?",
         (code,),
     ).fetchone()
@@ -470,6 +493,10 @@ def _room_snapshot(conn: sqlite3.Connection, code: str, me_did: str) -> dict | N
         last_ai = json.loads(row["last_ai_actions_json"] or "[]")
     except (TypeError, ValueError):
         last_ai = []
+    try:
+        search_snap = json.loads(row["search_snapshot_json"]) if row["search_snapshot_json"] else None
+    except (TypeError, ValueError):
+        search_snap = None
     return {
         "code":            row["code"],
         "revision":        row["revision"],
@@ -481,6 +508,7 @@ def _room_snapshot(conn: sqlite3.Connection, code: str, me_did: str) -> dict | N
         "last_active_at":  row["last_active_at"],
         "locked_until":    row["locked_until"] or 0,
         "last_ai_actions": last_ai,
+        "search_snapshot": search_snap,
         "members": [
             {
                 "device_id": m["device_id"],
@@ -507,7 +535,7 @@ def _room_bump_revision(conn: sqlite3.Connection, code: str, updated_by: str | N
 _AI_ACTION_LOG_MAX = 20
 _AI_WRITE_LAST: dict[str, float] = {}       # device_id → monotonic()
 _AI_WRITE_COOLDOWN_S = 10.0
-_AI_WRITE_TOOLS = {"shift_center", "set_participant_location", "set_keyword", "set_radius", "add_participant"}
+_AI_WRITE_TOOLS = {"shift_center", "set_participant_location", "set_participant_prefer", "set_keyword", "set_radius", "add_participant"}
 
 
 def _append_ai_action(
@@ -723,7 +751,11 @@ def api_rooms_join():
     code = (data.get("code") or "").strip().upper()
     if not code:
         return jsonify({"error": "缺少 code"}), 400
-    nickname = (data.get("nickname") or "").strip()[:24] or "访客"
+    # 关键：区分"没传 nickname"和"传了空字符串"——rejoin 时若客户端没送 nickname，
+    # 要保留 DB 里已存的（否则每次刷新都被冲成 "访客"）。
+    nickname_raw = (data.get("nickname") or "").strip()[:24]
+    nickname_supplied = bool(nickname_raw)  # 客户端是否显式送了名字
+    nickname = nickname_raw or "访客"
     location = data.get("location")
     loc_s = json.dumps(location, ensure_ascii=False) if location else None
     prefer = (data.get("prefer") or "auto").strip()[:16] or "auto"
@@ -748,10 +780,14 @@ def api_rooms_join():
             conn.rollback()
             return jsonify({"error": "房间已锁定，不再接受新成员"}), 403
         if existed:
+            # nickname 只在客户端显式提供时才更新；否则 COALESCE 保留旧值
             conn.execute(
-                "UPDATE room_members SET nickname=?, location_json=COALESCE(?, location_json), "
-                "prefer=COALESCE(?, prefer) WHERE room_code=? AND device_id=?",
-                (nickname, loc_s, prefer, code, g.device_id),
+                "UPDATE room_members SET "
+                "nickname=COALESCE(?, nickname), "
+                "location_json=COALESCE(?, location_json), "
+                "prefer=COALESCE(?, prefer) "
+                "WHERE room_code=? AND device_id=?",
+                (nickname if nickname_supplied else None, loc_s, prefer, code, g.device_id),
             )
         else:
             conn.execute(
@@ -829,6 +865,15 @@ def api_rooms_update(code: str):
         if "keyword" in data:
             kw = (data.get("keyword") or "").strip()[:120] or None
             conn.execute("UPDATE rooms SET keyword=? WHERE code=?", (kw, code))
+        if "search_snapshot" in data:
+            # 结果共享：整个 payload 压缩后存 blob。前端用 session_id 判定新旧，
+            # 无需在服务端保存额外索引。size 上限保守限制在 128KB。
+            snap = data.get("search_snapshot")
+            snap_s = json.dumps(snap, ensure_ascii=False) if snap else None
+            if snap_s and len(snap_s.encode("utf-8")) > 128 * 1024:
+                conn.rollback()
+                return jsonify({"error": "搜索结果过大，无法共享"}), 413
+            conn.execute("UPDATE rooms SET search_snapshot_json=? WHERE code=?", (snap_s, code))
 
         # 成员自己的字段：只能改自己那行
         member_dirty = False
@@ -1038,57 +1083,61 @@ def _compact_poi(p: dict) -> dict:
     }
 
 
-def _persist_run_history(anchor, participants, keyword, city, enriched):
-    """在 run_pipeline 成功后调，把这次搜索存到 run_history。"""
+def _persist_run_history(device_id, anchor, participants, keyword, city, enriched):
+    """在 run_pipeline 成功后调，把这次搜索存到 run_history。
+    device_id 必须显式传入（SSE 走 worker 线程，Flask g 不可用）。"""
     try:
-        did = getattr(g, "device_id", None)
+        did = device_id
         if not did:
             return
-        conn = _db()
-        # 参与者也精简，避免存太多冗余
-        parts_min = [
-            {
-                "name":    p.get("name"),
-                "address": p.get("address"),
-                "lng":     p.get("lng"),
-                "lat":     p.get("lat"),
-                "prefer":  p.get("prefer", "auto"),
-            } for p in participants
-        ]
-        top5 = [_compact_poi(x) for x in (enriched or [])[:5]]
-        conn.execute(
-            "INSERT INTO run_history(device_id, ran_at, anchor_json, participants_json, "
-            "keyword, city, results_summary_json) VALUES(?,?,?,?,?,?,?)",
-            (
-                did, _now(),
-                json.dumps(anchor, ensure_ascii=False) if anchor else None,
-                json.dumps(parts_min, ensure_ascii=False),
-                keyword or None,
-                city or None,
-                json.dumps(top5, ensure_ascii=False),
-            ),
-        )
-        # 限制每 device 最多 100 条，超过删最老的
-        conn.execute(
-            "DELETE FROM run_history WHERE device_id=? AND id NOT IN "
-            "(SELECT id FROM run_history WHERE device_id=? ORDER BY ran_at DESC LIMIT 100)",
-            (did, did),
-        )
-        people_names = [p.get("name") for p in participants if p.get("name") and p.get("name") != "我"]
-        top = (enriched or [{}])[0] if enriched else {}
-        summary = f"和{'、'.join(people_names) or '朋友'}找了{keyword or '会面地点'}"
-        if top.get("name"): summary += f"，首选推荐是{top['name']}"
-        conn.execute(
-            "INSERT INTO memory_episodes(device_id,happened_at,keyword,people_json,chosen_poi_json,summary) VALUES(?,?,?,?,?,?)",
-            (did,_now(),keyword or None,json.dumps(people_names,ensure_ascii=False),
-             json.dumps(_compact_poi(top),ensure_ascii=False) if top else None,summary),
-        )
-        conn.execute(
-            "DELETE FROM memory_episodes WHERE device_id=? AND id NOT IN "
-            "(SELECT id FROM memory_episodes WHERE device_id=? ORDER BY happened_at DESC LIMIT 100)",
-            (did,did),
-        )
-        conn.commit()
+        conn = _db_connect()  # 独立连接，线程安全
+        try:
+            # 参与者也精简，避免存太多冗余
+            parts_min = [
+                {
+                    "name":    p.get("name"),
+                    "address": p.get("address"),
+                    "lng":     p.get("lng"),
+                    "lat":     p.get("lat"),
+                    "prefer":  p.get("prefer", "auto"),
+                } for p in participants
+            ]
+            top5 = [_compact_poi(x) for x in (enriched or [])[:5]]
+            conn.execute(
+                "INSERT INTO run_history(device_id, ran_at, anchor_json, participants_json, "
+                "keyword, city, results_summary_json) VALUES(?,?,?,?,?,?,?)",
+                (
+                    did, _now(),
+                    json.dumps(anchor, ensure_ascii=False) if anchor else None,
+                    json.dumps(parts_min, ensure_ascii=False),
+                    keyword or None,
+                    city or None,
+                    json.dumps(top5, ensure_ascii=False),
+                ),
+            )
+            # 限制每 device 最多 100 条，超过删最老的
+            conn.execute(
+                "DELETE FROM run_history WHERE device_id=? AND id NOT IN "
+                "(SELECT id FROM run_history WHERE device_id=? ORDER BY ran_at DESC LIMIT 100)",
+                (did, did),
+            )
+            people_names = [p.get("name") for p in participants if p.get("name") and p.get("name") != "我"]
+            top = (enriched or [{}])[0] if enriched else {}
+            summary = f"和{'、'.join(people_names) or '朋友'}找了{keyword or '会面地点'}"
+            if top.get("name"): summary += f"，首选推荐是{top['name']}"
+            conn.execute(
+                "INSERT INTO memory_episodes(device_id,happened_at,keyword,people_json,chosen_poi_json,summary) VALUES(?,?,?,?,?,?)",
+                (did,_now(),keyword or None,json.dumps(people_names,ensure_ascii=False),
+                 json.dumps(_compact_poi(top),ensure_ascii=False) if top else None,summary),
+            )
+            conn.execute(
+                "DELETE FROM memory_episodes WHERE device_id=? AND id NOT IN "
+                "(SELECT id FROM memory_episodes WHERE device_id=? ORDER BY happened_at DESC LIMIT 100)",
+                (did,did),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     except Exception as e:
         app.logger.warning("[history] persist failed: %s", e)
 
@@ -1818,6 +1867,109 @@ def _normalize_participants(data: dict) -> list[dict]:
     return out
 
 
+# ──────────────────────────────────────────────────────
+# 排序偏好：min-max（时间最公平）两阶段中心搜索
+# ──────────────────────────────────────────────────────
+
+def _find_fairest_time_center(
+    valid_participants: list[dict],
+    anchor_hint: dict | None,
+    city: str,
+    departure_time: str | None,
+    cb,
+) -> tuple[dict | None, dict | None]:
+    """
+    两阶段搜索"让最慢那位尽量不慢"的中心（min-max）：
+    1) find_min_max_center：撒 5×5 网格候选，用 simulate_route_minutes 粗筛 top 3（零高德）
+    2) 对 top 3 用 amap_get_best_route 真实测每人时长，取真 max 最小者
+
+    seed（撒网格中心 + 半径）：
+      - 用户设了 anchor → 用 anchor.lng/lat 和 anchor.radius_m
+      - 没设 → 用 fair_meeting_point 的几何中点 + suggested_search_radius_m
+
+    返回 (adjusted_anchor, info) 或 (None, None)
+    """
+    if anchor_hint and anchor_hint.get("lng") is not None:
+        seed = {
+            "lng": float(anchor_hint["lng"]),
+            "lat": float(anchor_hint["lat"]),
+        }
+        seed_r = int(anchor_hint.get("radius_m") or 5000)
+        keep_radius = int(anchor_hint.get("radius_m") or 3000)
+        base_name = anchor_hint.get("name") or "自定义锚点"
+    else:
+        fm = fair_meeting_point(valid_participants)
+        mid = fm.get("midpoint") or {}
+        if mid.get("lng") is None:
+            return None, None
+        seed = {"lng": float(mid["lng"]), "lat": float(mid["lat"])}
+        seed_r = int(fm.get("suggested_search_radius_m") or 5000)
+        keep_radius = seed_r
+        base_name = "几何中点"
+
+    # 第 1 阶段：网格粗筛 top 3
+    top = find_min_max_center(
+        valid_participants, seed, seed_r, grid_n=5, top_k=3,
+    )
+    if not top:
+        return None, None
+    cb("center_search",
+       f"粗筛 25 个候选点，取时间最公平 top 3（模拟最长 {round(top[0]['sim_max_min'])} 分钟）")
+
+    # 第 2 阶段：对 top 3 用高德实测，取真 max 最小者
+    def _measure(cand: dict) -> tuple[dict, float, list[float]]:
+        times: list[float] = []
+        for p in valid_participants:
+            r = amap_get_best_route(
+                p["lng"], p["lat"],
+                cand["lng"], cand["lat"],
+                city, p.get("prefer") or "auto", departure_time,
+            )
+            if r.get("success"):
+                times.append(float(r.get("duration_minutes", 999)))
+            else:
+                # 高德挂了：兜底用模拟值，让流程不断
+                times.append(simulate_route_minutes(
+                    p["lng"], p["lat"], cand["lng"], cand["lat"],
+                    p.get("prefer") or "auto",
+                ))
+        return cand, (max(times) if times else 999.0), times
+
+    best = None
+    best_max = float("inf")
+    best_times: list[float] = []
+    # 3 个候选 × N 人 = 3N 次调用；并发起 3 个候选
+    with ThreadPoolExecutor(max_workers=min(3, len(top))) as pool:
+        for cand, mx, times in pool.map(_measure, top):
+            if mx < best_max:
+                best_max = mx
+                best = cand
+                best_times = times
+
+    if best is None:
+        return None, None
+
+    adjusted_anchor = {
+        "lng": float(best["lng"]),
+        "lat": float(best["lat"]),
+        "name": f"{base_name} · 时间最公平点",
+        "radius_m": keep_radius,
+        "source": "fairest_time",
+    }
+    info = {
+        "seed":         seed,
+        "seed_radius_m": seed_r,
+        "sim_max_min":  round(best["sim_max_min"], 1),
+        "real_max_min": round(best_max, 1),
+        "real_times":   [round(t, 1) for t in best_times],
+        "candidates_probed": len(top),
+    }
+    cb("center_adjusted",
+       f"已把搜索中心挪到时间最公平点（最长 {int(round(best_max))} 分钟）",
+       {"anchor": adjusted_anchor, "info": info})
+    return adjusted_anchor, info
+
+
 def run_pipeline(
     user_query: str,
     participants: list[dict],
@@ -1825,6 +1977,8 @@ def run_pipeline(
     departure_time: str | None = None,
     anchor_hint: dict | None = None,
     progress_cb=None,
+    owner_did: str | None = None,
+    sort_preference: str = "balanced",
 ) -> dict:
     """
     运行完整多 Agent 流水线（N 人 + 可选锚点）。
@@ -1842,6 +1996,20 @@ def run_pipeline(
     cb("plan_done",
        f"关键词 {kw}（评分 ≥ {plan.get('min_rating', 4.0)}，取前 {plan.get('top_n', 10)}）{fb_txt}",
        {"plan": plan})
+
+    # ── 排序偏好预处理：sort_preference == "fairest_time" 时，
+    #    在正式搜索前把 anchor 挪到"时间最公平点"（min-max 两阶段找）。
+    center_adjusted_info = None
+    if sort_preference == "fairest_time":
+        valid = [p for p in participants
+                 if p.get("lng") is not None and p.get("lat") is not None]
+        if len(valid) >= 2:
+            adjusted, info = _find_fairest_time_center(
+                valid, anchor_hint, city, departure_time, cb,
+            )
+            if adjusted:
+                anchor_hint = adjusted
+                center_adjusted_info = info
 
     # ── Agent 2：搜索（锚点优先） ──
     search_ctx: dict = {"pois": []}
@@ -1900,7 +2068,7 @@ def run_pipeline(
         "last_pois":       enriched,
         "departure_time":  departure_time,
         "chat_history":    [],
-    })
+    }, owner_did=owner_did)
 
     result = {
         "success":         True,
@@ -1913,6 +2081,8 @@ def run_pipeline(
         "anchor":          anchor,
         "pois":            enriched,
     }
+    if center_adjusted_info:
+        result["center_adjusted"] = center_adjusted_info
     # 老前端兼容字段
     if len(participants) >= 2:
         result["midpoint"] = center
@@ -1955,6 +2125,7 @@ def api_v2_search():
     city           = data.get("city", "北京")
     departure_time = data.get("departure_time") or None
     anchor         = data.get("anchor") or None
+    sort_preference = (data.get("sort_preference") or "balanced").strip().lower()
     # 老字段兼容：如果传的还是 target_area，忽略并打日志（新模型下无意义）
     if anchor is None and data.get("target_area"):
         print(f"[Compat] 收到旧字段 target_area={data.get('target_area')}，已忽略（请改传 anchor）")
@@ -1976,7 +2147,15 @@ def api_v2_search():
             city=city,
             departure_time=departure_time,
             anchor_hint=anchor,
+            owner_did=getattr(g, "device_id", None),
+            sort_preference=sort_preference,
         )
+        if result.get("success"):
+            _persist_run_history(
+                getattr(g, "device_id", None),
+                result.get("anchor"), result.get("participants"),
+                user_query, city, result.get("pois"),
+            )
         return jsonify(result), (200 if result.get("success") else 500)
     except Exception as e:
         import traceback; traceback.print_exc()
@@ -1997,6 +2176,7 @@ def api_v2_search_stream():
     city           = data.get("city", "北京")
     departure_time = data.get("departure_time") or None
     anchor         = data.get("anchor") or None
+    sort_preference = (data.get("sort_preference") or "balanced").strip().lower()
     if anchor is None and data.get("target_area"):
         print(f"[Compat] search-stream 收到旧字段 target_area={data.get('target_area')}，已忽略")
 
@@ -2019,6 +2199,8 @@ def api_v2_search_stream():
 
     events: "queue.Queue" = queue.Queue()
     SENTINEL = object()
+    # 主线程捕获 device_id；worker 里 Flask g 不可用
+    _hist_did = getattr(g, "device_id", None)
 
     def cb(stage: str, msg: str = "", extra=None):
         events.put({"stage": stage, "msg": msg, "data": extra})
@@ -2031,8 +2213,15 @@ def api_v2_search_stream():
                 departure_time=departure_time,
                 anchor_hint=anchor,
                 progress_cb=cb,
+                owner_did=_hist_did,
+                sort_preference=sort_preference,
             )
             if r.get("success"):
+                _persist_run_history(
+                    _hist_did,
+                    r.get("anchor"), r.get("participants"),
+                    user_query, city, r.get("pois"),
+                )
                 events.put({"stage": "result", "msg": "完成", "data": r})
             else:
                 events.put({"stage": "error", "msg": r.get("error", "未知错误"), "data": None})
@@ -2080,8 +2269,10 @@ def api_v2_routes():
     if not session_id:
         return jsonify({"success": False, "error": "缺少 session_id，请先执行搜索"}), 400
 
-    session = session_get(session_id)
-    if not session:
+    session, err = _session_check_owner(session_id)
+    if err:
+        return err
+    if session is None:
         return jsonify({"success": False, "error": "会话已过期，请重新搜索"}), 404
 
     pois_base = session.get("pois_base", [])
@@ -2089,10 +2280,13 @@ def api_v2_routes():
         return jsonify({"success": False, "error": "缓存的搜索结果为空"}), 400
 
     participants = [dict(p) for p in session.get("participants", [])]
-    # 合并 prefer 覆盖
+    # 合并 prefer 覆盖：优先按 id 匹配（稳定），再按 name / 索引兜底
     for i, person in enumerate(participants):
-        override = prefer_overrides.get(person.get("name")) \
-                or prefer_overrides.get(str(i))
+        override = (
+            prefer_overrides.get(person.get("id"))
+            or prefer_overrides.get(person.get("name"))
+            or prefer_overrides.get(str(i))
+        )
         if override:
             person["prefer"] = override
         elif i == 0 and prefer_a:
@@ -2138,9 +2332,13 @@ def api_v2_routes():
 @app.route("/api/v2/session/<session_id>", methods=["GET"])
 def api_v2_session_info(session_id):
     """查看 Session 摘要（调试用）"""
-    s = session_get(session_id)
-    if not s:
-        return jsonify({"exists": False}), 404
+    s, err = _session_check_owner(session_id)
+    if err:
+        # 保持原有 {"exists": False} 语义，避免前端 404 分支破坏
+        code = err[1]
+        if code == 404:
+            return jsonify({"exists": False}), 404
+        return err
     return jsonify({
         "exists":       True,
         "query":        s.get("query"),
@@ -2466,18 +2664,35 @@ ASSISTANT_TOOLS = [
         "type": "function",
         "function": {
             "name": "set_participant_location",
-            "description": "【草稿】提议改某个参与者的位置**或/和昵称**。用 index (1-based) 或 participant_name 定位。可以只改昵称（省略 place_name）、只改位置（省略 new_nickname）、或两个一起改。**不会立刻生效**，进草稿卡等用户确认。",
+            "description": "【草稿】提议改某个参与者的位置**或/和昵称**或/和**交通偏好**。用 index (1-based) 或 participant_name 定位。三个字段（place_name / new_nickname / prefer）**至少给一个**，全部可选。**不会立刻生效**，进草稿卡等用户确认。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "index":            {"type": "integer", "description": "参与者序号（1-based）。和 participant_name 二选一。用户说『我 / 我自己 / 咱』时，**必须**用 [当前会话快照] 里的 `me_index`——**永远别硬编码 1**，房间模式下你可能是 index=2 或更后。"},
                     "participant_name": {"type": "string",  "description": "参与者姓名精确匹配"},
-                    "place_name":       {"type": "string",  "description": "新位置的地名，如『望京SOHO』。只改昵称时可省略。"},
+                    "place_name":       {"type": "string",  "description": "新位置的地名，如『望京SOHO』。不改位置时可省略。"},
                     "city":             {"type": "string",  "description": "跨城市时必填"},
                     "lng":               {"type": "number"},
                     "lat":               {"type": "number"},
                     "new_nickname":     {"type": "string",  "description": "新昵称。用户提到朋友名字（如『我闺蜜 Lisa』『同事小王』）时，把对应参与者的昵称改成那个人名字（Lisa / 小王）。"},
+                    "prefer":           {"type": "string",  "enum": ["auto","transit","driving","walking","cycling"], "description": "交通偏好。用户说『开车』→driving、『走路』→walking、『骑车』→cycling、『地铁/公交』→transit、『最快』→auto。用户在同一句里既说了地点又说了怎么去（例：『我在北大要开车』），一起带上 prefer 别拆两次。"},
                 },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_participant_prefer",
+            "description": "【草稿】只改某人的交通偏好（不动位置、不改名）。用户单独说『我改坐地铁』『小王走路来』时用这个。用 index 或 participant_name 定位；一次只能改一个人（要一次改多个人开车，请调多次或用 set_participant_location 合并）。**不会立刻生效**，进草稿卡等用户确认。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index":            {"type": "integer", "description": "参与者序号（1-based）。『我』必须用 me_index。"},
+                    "participant_name": {"type": "string",  "description": "参与者姓名精确匹配"},
+                    "prefer":           {"type": "string",  "enum": ["auto","transit","driving","walking","cycling"], "description": "开车→driving、走路→walking、骑车→cycling、地铁/公交→transit、最快→auto"},
+                },
+                "required": ["prefer"],
             },
         },
     },
@@ -2589,22 +2804,6 @@ def _poi_reason(poi: dict) -> str:
     return "，".join(bits) or "按当前综合排序推荐"
 
 
-def _poi_reason(poi: dict) -> str:
-    """只用真实结果字段生成推荐理由，避免模型臆造。"""
-    legs = [x for x in (poi.get("legs") or []) if x.get("duration_minutes") is not None]
-    bits = []
-    if legs:
-        times = [int(round(float(x["duration_minutes"]))) for x in legs]
-        bits.append("各方约" + "、".join(f"{t}分钟" for t in times))
-        if len(times) > 1:
-            bits.append(f"耗时相差{max(times) - min(times)}分钟")
-    if poi.get("rating") not in (None, ""):
-        bits.append(f"评分{poi.get('rating')}")
-    if poi.get("cost_per_person") not in (None, "", 0):
-        bits.append(f"人均约{poi.get('cost_per_person')}元")
-    return "，".join(bits) or "按当前综合排序推荐"
-
-
 def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
     st = _assistant_get_state(sid)
     task = dict((session_get(sid) or {}).get("agent_task") or {})
@@ -2640,7 +2839,8 @@ def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
     if not r.get("success"):
         return {"ok": False, "error": r.get("error", "搜索失败")}, None
     pois = r.get("pois", []) or []
-    # 对高德返回的全部候选计算路线和综合分；不能只让距离靠前的少数 POI 参与排名。
+    # AI 走这条工具时，也要给全部候选算路线时长和综合分。
+    # 不能只算高德按距离返回的前几家，否则后面的 POI 永远没有机会进入推荐前列。
     participants_for_routes = [
         p for p in (st.get("participants") or [])
         if p.get("lng") is not None and p.get("lat") is not None
@@ -2672,6 +2872,7 @@ def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
     return {"ok": True, "summary": summary, "count": len(enriched), "top": top}, {
         "type":  "pois_replaced",
         "pois":  enriched,
+        # 前端画线要用同一批 participants，否则线会从旧位置出发
         "participants": participants_for_routes,
         "anchor": st["anchor"],
         "center": {"lng": float(center_lng), "lat": float(center_lat), "radius_m": radius},
@@ -2761,10 +2962,12 @@ canonical_candidates最多4个，不得扩展成其他品牌。只输出JSON。"
 def _parse_meeting_utterance(message: str, participants: list[dict], me_index: int) -> dict:
     """整句先解析一次，避免逐工具理解把人物、地点和噪声粘连。"""
     system = """你是会面规划的整句语义解析器。只抽取用户明确表达的事实，输出JSON：
-{"intent":"meeting|location_update|other","activity":"","locations":[{"owner":"我或人物名","participant_index":1,"expression":"","kind":"area|address|named_place","area_hint":"","raw_entity":"","canonical_candidates":[],"needs_disambiguation":false}],"ignored_text":[]}。
+{"intent":"meeting|location_update|other","activity":"","city_context":"","locations":[{"owner":"我或人物名","participant_index":1,"expression":"","kind":"area|address|named_place","area_hint":"","raw_entity":"","canonical_candidates":[],"needs_disambiguation":false}],"ignored_text":[]}。
 规则：先绑定人物再绑定地点；同一人物最多一个位置；范围宽泛不等于歧义，杭州市/西湖/文三路可直接接受；俗名、简称、多门店品牌才需消歧并给正式名称候选；网络梗或无关尾巴放 ignored_text，不得拼进位置。
+city_context 表示这些地点最可信的城市。可根据中国常识解析明确的地标或行政区，例如“西湖旁边”是杭州、“外滩”是上海；确实无法判断才留空。不得沿用调用方默认城市。
 例：“我要和阿杰吃烧烤。我在西湖边的v我50，阿杰在浙大紫金港”→我=西湖边(false)，阿杰=浙大紫金港(false)，activity=烧烤，ignored_text=[v我50]。
-“我在文三路这边的星爸爸”→我，area_hint=文三路，raw_entity=星爸爸，候选=[星巴克,Starbucks]，true。只输出JSON。"""
+“我在西湖旁边的麦麦”→city_context=杭州，我，area_hint=西湖，raw_entity=麦麦，候选=[麦当劳,McDonald's]，true。
+“我在文三路这边的星爸爸”→city_context=杭州，我，area_hint=文三路，raw_entity=星爸爸，候选=[星巴克,Starbucks]，true。只输出JSON。"""
     try:
         completion = llm_client.chat.completions.create(
             model="deepseek-chat",
@@ -2798,6 +3001,7 @@ def _parse_meeting_utterance(message: str, participants: list[dict], me_index: i
             "needs_disambiguation":loc.get("needs_disambiguation") is True,
         })
     return {"intent":parsed.get("intent") or "other","activity":str(parsed.get("activity") or "").strip(),
+            "city_context":_extract_city(str(parsed.get("city_context") or "")) or "",
             "locations":out,"ignored_text":[str(x) for x in (parsed.get("ignored_text") or [])][:8]}
 
 
@@ -2844,6 +3048,10 @@ def _tool_shift_center(sid: str, args: dict) -> tuple[dict, dict | None]:
         "radius_m": radius_m, "source": "assistant",
     }
     label = f"锚点 → {anchor['name']}"
+    # 同 stream 内 search_pois 会用 anchor 做搜索中心，必须立刻落盘（anchor）。
+    # 但 city 不能立即落——用户可能取消这张 shift_center 草稿，city 却已经切了，
+    # 会污染后续 transit 计算。city 只在 draft.data 里，apply-drafts 时再持久化。
+    session_update(sid, {"anchor": anchor})
     return (
         {"ok": True, "summary": f"提议把锚点移到 {anchor['name']}（待你在草稿卡确认）"},
         {
@@ -2938,27 +3146,47 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
             address = place_name or f"{lat:.4f}, {lng:.4f}"
 
     old_name = target.get("name", "?")
+    old_prefer = (target.get("prefer") or "auto")
     display_name = new_nickname or old_name
-    if location_specified and new_nickname:
-        label = f"{old_name} → {new_nickname} @ {address}"
-        detail = f"改名 + 定位到 {address}"
-    elif location_specified:
-        label = f"{old_name} → {address}"
-        detail = f"{lng:.4f}, {lat:.4f}"
-    else:
-        label = f"{old_name} → 昵称改为 {new_nickname}"
-        detail = ""
+    # 用于 label 的 prefer 中文
+    _prefer_zh = {"auto": "最快", "driving": "驾车", "walking": "步行", "cycling": "骑行", "transit": "公交"}
+    prefer_zh_new = _prefer_zh.get(new_prefer or "", "")
+
+    # 组 label / detail：把三种变更拼起来
+    parts_label = []
+    if location_specified: parts_label.append(f"定位 {address}")
+    if new_nickname:       parts_label.append(f"改名 {new_nickname}")
+    if new_prefer:         parts_label.append(f"改交通 {prefer_zh_new}")
+    label = f"{old_name} → " + " · ".join(parts_label) if parts_label else old_name
+    detail = f"{lng:.4f}, {lat:.4f}" if location_specified else ""
 
     data: dict = {"participant_id": target.get("id")}
     if location_specified:
         data["lng"] = float(lng); data["lat"] = float(lat); data["address"] = address
     if new_nickname:
         data["new_nickname"] = new_nickname
+    if new_prefer:
+        data["prefer"] = new_prefer
 
-    summary = (
-        f"提议把 {old_name} 改名为 {new_nickname}"
-        + (f"、位置改为 {address}" if location_specified else "")
-    ) if new_nickname else f"提议把 {old_name} 的位置改为 {address}"
+    summary_bits = []
+    if location_specified: summary_bits.append(f"位置改为 {address}")
+    if new_nickname:       summary_bits.append(f"改名为 {new_nickname}")
+    if new_prefer:         summary_bits.append(f"交通换成 {prefer_zh_new}")
+    summary = f"提议把 {old_name} " + "、".join(summary_bits)
+
+    # 同 stream 内的下一个工具（尤其 search_pois 算路线）必须看到 AI 已提议的位置/prefer，
+    # 否则拿旧位置算出错误 legs → 前端画出从错人身上出发的线。
+    # 用户在草稿卡"取消"→ 下一轮 assistant/stream 的 bootstrap 会覆盖回前端真实状态，自愈。
+    for p in parts:
+        if p.get("id") == target.get("id"):
+            if location_specified:
+                p["lng"] = float(lng); p["lat"] = float(lat); p["address"] = address
+            if new_nickname:
+                p["name"] = new_nickname
+            if new_prefer:
+                p["prefer"] = new_prefer
+            break
+    session_update(sid, {"participants": parts})
 
     return (
         {"ok": True, "summary": summary},
@@ -3012,7 +3240,6 @@ def _tool_add_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
         loc_hint = f"当前定位『{existing.get('address', '')}』" if has_loc else "当前无定位"
         return {
             "ok": False,
-    """草稿档：改搜索关键词。"""
             "error": (
                 f"已有同名参与者「{nickname_stripped}」(index={idx}，{loc_hint})。"
                 f"若要修改他的位置或城市，请用 `set_participant_location(index={idx}, place_name=..., city=...)`，"
@@ -3060,6 +3287,63 @@ def _tool_add_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
             "type": "draft", "kind": "add_participant", "label": label,
             "detail": detail,
             "data": data,
+        },
+    )
+
+
+def _tool_set_participant_prefer(sid: str, args: dict) -> tuple[dict, dict | None]:
+    """草稿档：只改某位参与者的 prefer（交通偏好）。"""
+    st = _assistant_get_state(sid)
+    parts = st.get("participants") or []
+    if not parts:
+        return {"ok": False, "error": "当前没有参与者"}, None
+
+    prefer = (args.get("prefer") or "").strip().lower()
+    if prefer not in {"auto", "transit", "driving", "walking", "cycling"}:
+        return {"ok": False, "error": "prefer 必须是 auto/transit/driving/walking/cycling 之一"}, None
+
+    idx = args.get("index")
+    name_key = (args.get("participant_name") or "").strip()
+    target = None
+    if isinstance(idx, int) and 1 <= idx <= len(parts):
+        target = parts[idx - 1]
+    elif name_key:
+        for p in parts:
+            if (p.get("name") or "").strip() == name_key:
+                target = p; break
+    if not target:
+        return {"ok": False, "error": "找不到指定的参与者，请给 index 或 participant_name"}, None
+
+    my_did = st.get("my_did") or ""
+    tid = str(target.get("id") or "")
+    if tid.startswith("room-") and my_did and tid != f"room-{my_did}":
+        return {
+            "ok": False,
+            "error": f"房间模式下你只能通过 AI 改自己的交通方式。要改 {target.get('name','?')} 的，请让本人在自己端操作。",
+        }, None
+
+    old_prefer = (target.get("prefer") or "auto")
+    if old_prefer == prefer:
+        return {"ok": True, "summary": f"{target.get('name','?')} 的交通方式已经是「{prefer}」，不用改"}, None
+
+    _prefer_zh = {"auto": "最快", "driving": "驾车", "walking": "步行", "cycling": "骑行", "transit": "公交"}
+    new_zh = _prefer_zh.get(prefer, prefer)
+    old_zh = _prefer_zh.get(old_prefer, old_prefer)
+
+    # 同 stream 内后续 tool 需要看到新 prefer（如 search_pois 会算路线）
+    for p in parts:
+        if p.get("id") == target.get("id"):
+            p["prefer"] = prefer
+            break
+    session_update(sid, {"participants": parts})
+
+    return (
+        {"ok": True, "summary": f"提议把 {target.get('name','?')} 的交通换成「{new_zh}」"},
+        {
+            "type": "draft", "kind": "set_participant_prefer",
+            "label": f"{target.get('name','?')} → 交通改{new_zh}",
+            "detail": f"原：{old_zh}",
+            "data": {"participant_id": target.get("id"), "prefer": prefer, "prev_prefer": old_prefer},
         },
     )
 
@@ -3143,7 +3427,13 @@ def _tool_recompute_routes(sid: str, args: dict) -> tuple[dict, dict | None]:
             {"name": p.get("name"), "max_time_minutes": p["max_time_minutes"]}
             for p in enriched[:5]
         ]},
-        {"type": "pois_replaced", "pois": enriched, "anchor": st["anchor"]},
+        {
+            "type": "pois_replaced",
+            "pois": enriched,
+            "anchor": st["anchor"],
+            # 必须把 participants 塞回去，否则前端画路径的起点还是旧的（chip 变了但线没动）
+            "participants": participants,
+        },
     )
 
 
@@ -3448,34 +3738,6 @@ def _resolve_participant(parts: list[dict], args: dict) -> tuple[int, dict] | tu
     return None, None
 
 
-_PLACE_ALIAS_FALLBACK = {
-    "雪王": ["蜜雪冰城", "雪王"], "kfc": ["肯德基", "KFC"],
-    "麦当当": ["麦当劳", "McDonald's"], "金拱门": ["麦当劳", "McDonald's"],
-    "星爸爸": ["星巴克", "Starbucks"],
-}
-
-
-def _expand_place_aliases(keyword: str) -> list[str]:
-    raw = keyword.strip()
-    fallback = _PLACE_ALIAS_FALLBACK.get(raw.lower()) or _PLACE_ALIAS_FALLBACK.get(raw) or [raw]
-    try:
-        completion = llm_client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": "你是地图地点名称规范化器。将品牌俗名、简称或中英文名扩写为地图正式名称。只输出JSON：{\"terms\":[...]}; 最多4项，第一项优先正式名称。不得扩展成其他品牌；不确定就只返回原词。"},
-                {"role": "user", "content": raw},
-            ], response_format={"type": "json_object"}, temperature=0, stream=False,
-        )
-        parsed = json.loads(completion.choices[0].message.content or "{}")
-        terms = [str(x).strip() for x in (parsed.get("terms") or []) if str(x).strip()]
-    except Exception as exc:
-        app.logger.warning("[place-alias] expand failed: %s", exc); terms = []
-    out = []
-    for term in [*fallback, *terms, raw]:
-        if term and term.lower() not in {x.lower() for x in out}: out.append(term)
-    return out[:4]
-
-
 def _tool_clarify_participant_location(sid: str, args: dict) -> tuple[dict, dict | None]:
     st = _assistant_get_state(sid)
     idx, target = _resolve_participant(st.get("participants") or [], args)
@@ -3510,7 +3772,9 @@ def _tool_clarify_participant_location(sid: str, args: dict) -> tuple[dict, dict
     if not center:
         return {"ok": False, "error": "需要一个附近区域才能查找同名地点"}, None
 
-    aliases = _expand_place_aliases(keyword)
+    aliases = [str(x).strip() for x in (args.get("aliases") or []) if str(x).strip()][:4]
+    if not aliases:
+        aliases = _PLACE_ALIAS_FALLBACK.get(keyword.lower()) or _PLACE_ALIAS_FALLBACK.get(keyword) or [keyword]
     max_radius = max(2000, min(10000, int(args.get("radius_m") or 5000)))
     found = None
     matched: list[dict] = []
@@ -3522,8 +3786,10 @@ def _tool_clarify_participant_location(sid: str, args: dict) -> tuple[dict, dict
         rows = []
         for term in aliases:
             one = amap_search_nearby(float(center["lng"]), float(center["lat"]), term, radius=radius)
-            if one.get("success"): rows.extend(one.get("pois") or []); found = one
-        if not found: continue
+            if one.get("success"):
+                rows.extend(one.get("pois") or []); found = one
+        if not found:
+            continue
         dedup = {str(p.get("id") or f"{p.get('name')}:{p.get('lng')}:{p.get('lat')}"): p for p in rows}
         matched = [p for p in dedup.values() if any(a.lower() in str(p.get("name") or "").lower() for a in aliases)]
         matched.sort(key=lambda p: int(p.get("distance") or 10**9))
@@ -3559,7 +3825,6 @@ def _tool_clarify_participant_location(sid: str, args: dict) -> tuple[dict, dict
         "summary": f"找到 {len(candidates)} 个同名地点，等待确认",
         "count": len(candidates),
         "waiting_for_user": True,
-        "matched_as": aliases[0],
     }, {
         "type": "location_choices",
         "question": f"你指的是哪一个{keyword}？",
@@ -3581,6 +3846,7 @@ TOOL_HANDLERS = {
     "search_pois":              _tool_search_pois,
     "shift_center":             _tool_shift_center,
     "set_participant_location": _tool_set_participant_location,
+    "set_participant_prefer":   _tool_set_participant_prefer,
     "add_participant":          _tool_add_participant,
     "set_keyword":              _tool_set_keyword,
     "set_radius":               _tool_set_radius,
@@ -3911,15 +4177,20 @@ def api_v2_apply_drafts():
     data = request.json or {}
     sid = data.get("session_id") or ""
     drafts = data.get("drafts") or []
-    if not sid or not session_get(sid):
+    if not sid:
         return jsonify({"ok": False, "error": "会话不存在"}), 404
+    s, err = _session_check_owner(sid)
+    if err:
+        code = err[1]
+        if code == 404:
+            return jsonify({"ok": False, "error": "会话不存在"}), 404
+        return err
     if not isinstance(drafts, list) or not drafts:
         return jsonify({"ok": False, "error": "drafts 空"}), 400
 
     updates: dict = {}
     applied: list[str] = []
-    s = session_get(sid) or {}
-    parts = list(s.get("participants") or [])
+    parts = list((s or {}).get("participants") or [])
     parts_dirty = False
 
     for d in drafts:
@@ -3940,8 +4211,11 @@ def api_v2_apply_drafts():
             lng = body.get("lng"); lat = body.get("lat")
             addr = body.get("address") or ""
             new_nickname = (body.get("new_nickname") or "").strip()
+            new_prefer = (body.get("prefer") or "").strip().lower()
+            if new_prefer not in {"auto", "transit", "driving", "walking", "cycling"}:
+                new_prefer = ""
             if pid is not None and (
-                (lng is not None and lat is not None) or new_nickname
+                (lng is not None and lat is not None) or new_nickname or new_prefer
             ):
                 for p in parts:
                     if p.get("id") == pid:
@@ -3950,6 +4224,18 @@ def api_v2_apply_drafts():
                             if addr: p["address"] = addr
                         if new_nickname:
                             p["name"] = new_nickname
+                        if new_prefer:
+                            p["prefer"] = new_prefer
+                        parts_dirty = True
+                        break
+                applied.append(kind)
+        elif kind == "set_participant_prefer":
+            pid = body.get("participant_id")
+            new_prefer = (body.get("prefer") or "").strip().lower()
+            if pid is not None and new_prefer in {"auto", "transit", "driving", "walking", "cycling"}:
+                for p in parts:
+                    if p.get("id") == pid:
+                        p["prefer"] = new_prefer
                         parts_dirty = True
                         break
                 applied.append(kind)
@@ -4094,16 +4380,37 @@ def api_v2_assistant_stream():
             "query":        bootstrap.get("query", ""),
             "city":         inferred_city,
             "chat_history": [],
-        })
+            "chat_summary": "",
+        }, owner_did=g.device_id)
     else:
-        # 用最新的 bootstrap 覆盖动态字段（前端能保证是最新的）
-        updates = {"my_did": g.device_id}
-        if "anchor" in bootstrap:       updates["anchor"] = bootstrap["anchor"]
-        if "participants" in bootstrap: updates["participants"] = bootstrap["participants"]
-        if "pois" in bootstrap:         updates["last_pois"] = bootstrap["pois"]
-        if "query" in bootstrap:        updates["query"] = bootstrap["query"]
-        if inferred_city:                updates["city"] = inferred_city
-        session_update(sid, updates)
+        # 已有 session：校验所有权，不覆盖 my_did（否则会被最新一次调用者盗走会话）
+        s_check, err = _session_check_owner(sid)
+        if err:
+            code = err[1]
+            if code == 404:
+                # 后端 session 已过期，走 bootstrap 重建
+                sid = session_create({
+                    "anchor":       bootstrap.get("anchor"),
+                    "participants": bootstrap.get("participants") or [],
+                    "last_pois":    bootstrap.get("pois") or [],
+                    "query":        bootstrap.get("query", ""),
+                    "city":         inferred_city,
+                    "chat_history": [],
+                    "chat_summary": "",
+                }, owner_did=g.device_id)
+            else:
+                return err
+        else:
+            updates: dict = {}
+            if not (s_check or {}).get("my_did"):
+                updates["my_did"] = g.device_id
+            if "anchor" in bootstrap:       updates["anchor"] = bootstrap["anchor"]
+            if "participants" in bootstrap: updates["participants"] = bootstrap["participants"]
+            if "pois" in bootstrap:         updates["last_pois"] = bootstrap["pois"]
+            if "query" in bootstrap:        updates["query"] = bootstrap["query"]
+            if inferred_city:                updates["city"] = inferred_city
+            if updates:
+                session_update(sid, updates)
 
     if location_choice:
         ok, resolved_message = _apply_location_choice(sid, location_choice)
@@ -4118,7 +4425,9 @@ def api_v2_assistant_stream():
     pre_state = _assistant_get_state(sid)
     pre_me_idx = _compute_me_index(pre_state["participants"], pre_state.get("my_did") or "")
     utterance_parse = _parse_meeting_utterance(user_msg, pre_state["participants"], pre_me_idx)
-    session_update(sid, {"current_user_message": user_msg, "current_utterance_parse": utterance_parse})
+    turn_city = utterance_parse.get("city_context") or inferred_city
+    session_update(sid, {"current_user_message": user_msg, "current_utterance_parse": utterance_parse,
+                         **({"city": turn_city} if turn_city else {})})
     _agent_task_begin(sid, user_msg)
 
     def generate():
@@ -4330,6 +4639,7 @@ def api_v2_assistant_stream():
                     _assistant_append_history(sid, tool_msg)
 
                 if waiting_for_location_choice:
+                    # 地点卡已经把任务置为等待态，本轮到此结束；不再让模型追加普通选项或正文。
                     yield _sse({"type": "waiting", "kind": "location_choice", "label": "等待你选择"})
                     yield _sse({"type": "done"})
                     return
