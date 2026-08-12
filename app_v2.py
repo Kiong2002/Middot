@@ -3372,15 +3372,81 @@ def _assistant_history(sid: str) -> list[dict]:
     return s.setdefault("chat_history", [])
 
 
+_ASSISTANT_HISTORY_TRIGGER = 40
+_ASSISTANT_HISTORY_KEEP = 24
+_ASSISTANT_SUMMARY_MAX_CHARS = 5000
+
+
+def _history_summary_input(messages: list[dict]) -> str:
+    """把旧消息转成可总结文本，去掉 tool_call id、参数 JSON 等实现噪音。"""
+    lines = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role == "user" and content:
+            lines.append(f"用户：{content}")
+        elif role == "assistant" and content:
+            lines.append(f"小 Mid：{content}")
+        elif role == "tool" and content:
+            try:
+                result = json.loads(content)
+                summary = result.get("summary") or result.get("error")
+            except (TypeError, json.JSONDecodeError):
+                summary = None
+            if summary:
+                lines.append(f"操作结果：{summary}")
+    return "\n".join(lines)
+
+
+def _merge_history_summary(previous: str, removed: list[dict]) -> str:
+    source = _history_summary_input(removed)
+    if not source:
+        return previous
+    prompt = """把旧对话压缩成供会面规划 Agent 继续使用的滚动摘要。
+只保留用户目标、人物与指代、已确认的决定、尚未解决的问题、用户纠正和重要操作结果。
+不要保存工具名、参数、调用过程、寒暄和助手的猜测；不要把临时信息说成长期偏好。
+若新内容与旧摘要冲突，以新内容为准。用简洁中文分点，最多 900 字。"""
+    try:
+        completion = llm_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": f"已有摘要：\n{previous or '无'}\n\n本次归档：\n{source}"},
+            ],
+            temperature=0,
+            stream=False,
+        )
+        merged = (completion.choices[0].message.content or "").strip()
+        return merged[:_ASSISTANT_SUMMARY_MAX_CHARS] or previous
+    except Exception as exc:
+        app.logger.warning("[assistant-summary] compact failed: %s", exc)
+        # 摘要服务失败不能阻塞聊天；保留一份有界的事实文本，下次压缩时再整理。
+        fallback = "\n".join(x for x in (previous, source) if x)
+        return fallback[-_ASSISTANT_SUMMARY_MAX_CHARS:]
+
+
+def _compact_assistant_history(s: dict) -> None:
+    hist = s.setdefault("chat_history", [])
+    if len(hist) <= _ASSISTANT_HISTORY_TRIGGER:
+        return
+    cut = max(1, len(hist) - _ASSISTANT_HISTORY_KEEP)
+    # 最近窗口必须从一条 user 消息开始，避免留下孤立的 tool 响应破坏 API 消息结构。
+    while cut < len(hist) and hist[cut].get("role") != "user":
+        cut += 1
+    if cut >= len(hist):
+        return
+    removed = hist[:cut]
+    s["chat_summary"] = _merge_history_summary(s.get("chat_summary") or "", removed)
+    del hist[:cut]
+
+
 def _assistant_append_history(sid: str, msg: dict) -> None:
     s = session_get(sid)
     if not s:
         return
     hist = s.setdefault("chat_history", [])
     hist.append(msg)
-    # 限制历史长度，保留最近 20 轮
-    if len(hist) > 40:
-        del hist[: len(hist) - 40]
+    _compact_assistant_history(s)
 
 
 @app.route("/api/v2/session/apply-drafts", methods=["POST"])
@@ -3599,6 +3665,7 @@ def api_v2_assistant_stream():
         routes_recomputed_after_prefer = False
 
         history = list(_assistant_history(sid))
+        history_summary = str((session_get(sid) or {}).get("chat_summary") or "").strip()
         # 系统消息 + 历史 + 本次
         state = _assistant_get_state(sid)
         me_idx = _compute_me_index(state["participants"], state.get("my_did") or "")
@@ -3622,6 +3689,12 @@ def api_v2_assistant_stream():
             {"role": "system", "content": _ASSISTANT_SYSTEM},
             {"role": "system", "content": state_hint},
             {"role": "system", "content": _memory_context(caller_did)},
+            {"role": "system", "content": (
+                "[较早对话的滚动摘要] " + history_summary +
+                "。这是被压缩的会话上下文，不是长期记忆；若与当前快照或本轮消息冲突，以更新的信息为准。"
+                if history_summary else
+                "[较早对话的滚动摘要] 无。"
+            )},
             {"role": "system", "content": (
                 "运行时位置约束：设备已为‘我’提供有效经纬度。无论用户原句是否写出本人地点，"
                 "都必须视为‘我’已定位；禁止声称其位置未设置、禁止要求再次定位。"
