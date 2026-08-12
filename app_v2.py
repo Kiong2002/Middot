@@ -2312,6 +2312,25 @@ ASSISTANT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "offer_choices",
+            "description": "当缺少的信息适合用户点击选择时，展示2到5个候选项。用户可以选择后补充文字再发送，也可以忽略选项直接输入。只用于澄清/选择，不要在信息已足够时滥用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type":"string","description":"简短问题"},
+                    "mode": {"type":"string","enum":["single","multiple"],"description":"互斥答案必须用single：同一人的交通方式、是否采用记忆、预算区间。只有可同时成立的条件（如多个忌口，或分别为不同人物选择）才用multiple。"},
+                    "options": {"type":"array","minItems":2,"maxItems":5,"items":{"type":"object","properties":{
+                        "label":{"type":"string","description":"按钮短标签"},
+                        "value":{"type":"string","description":"合并进用户下一条消息的自然语言内容"}
+                    },"required":["label","value"]}}
+                },
+                "required":["question","mode","options"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remember_preference",
             "description": "保存用户明确要求长期记住的个人偏好。仅限交通、饮食、预算；一次性的‘今天/这次’不要保存，位置和朋友资料禁止保存。",
             "parameters": {
@@ -3189,7 +3208,22 @@ def _tool_remember_feedback(sid: str, args: dict) -> tuple[dict, dict | None]:
     return {"ok": True, "summary": f"已记录你对{name}的反馈"}, None
 
 
+def _tool_offer_choices(_sid: str, args: dict) -> tuple[dict, dict | None]:
+    question=(args.get("question") or "请选择").strip()[:120]
+    mode=args.get("mode") if args.get("mode") in ("single","multiple") else "single"
+    # 防止模型把同一人的互斥交通方式错误标成多选。
+    if mode == "multiple" and any(x in question for x in ("怎么过去", "交通方式", "出行方式")):
+        mode = "single"
+    options=[]
+    for raw in (args.get("options") or [])[:5]:
+        label=(raw.get("label") or "").strip()[:30]; value=(raw.get("value") or label).strip()[:120]
+        if label and value: options.append({"label":label,"value":value})
+    if len(options)<2: return {"ok":False,"error":"至少需要两个候选项"},None
+    return {"ok":True,"summary":"已给出可选答案"},{"type":"choices","question":question,"mode":mode,"options":options}
+
+
 TOOL_HANDLERS = {
+    "offer_choices":            _tool_offer_choices,
     "remember_preference":      _tool_remember_preference,
     "list_memories":           _tool_list_memories,
     "forget_memory":           _tool_forget_memory,
@@ -3248,6 +3282,7 @@ _ASSISTANT_SYSTEM = """你是「中点 Middot 会面助手」，一个**只**服
 - **【硬规则 · 改错走 set，别再 add】**：如果发现之前 `add_participant` 或 `set_participant_location` 把某人定错了城市/位置（比如"北航"被解析到深圳而不是北京），**必须**用 `set_participant_location(participant_name="那个名字", place_name=..., city="北京")` 修改原有那位，**禁止**再 `add_participant` 加一个同名的（服务端也会拒）。同名去重是硬约束：同一个名字只能有一位。
 
 ## 工作原则
+0. 当任务因缺少一个适合点击回答的信息而暂停时，优先用 `offer_choices`。**同一个人的交通方式、是否采用记忆地点、预算区间必须用 single**，绝不能让用户同时选“打车”和“开车”；忌口、氛围偏好等可并存答案用 multiple。若要分别设置多人交通，可用 multiple，但每个选项必须明确写人物与方式（如“我坐公交”“阿杰开车”）。给2～5项即可。选项的 value 必须是能直接作为用户下一句话的自然语言。调用后用一句话邀请用户选择或自行输入，本轮不要继续猜测执行。
 1. 用 `get_current_result` 查看当前状态；不要盲猜。
 2. 用户说「换个方向」「以 X 为中心」「再远点」「把小王的位置改到望京」「换成日料」类需求 → **优先调工具**而不是只回复文字。
 3. **草稿档工具（shift_center / set_participant_location / add_participant / set_keyword / set_radius）不会直接改用户的设置**，只是把你的提议塞进一张草稿卡等用户点"应用"。所以：即使用户没明说"你去改"，只要意图明确，就大胆调；用户来把关，不会被你覆盖。

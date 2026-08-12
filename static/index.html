@@ -1828,6 +1828,17 @@
     .assist-msg.bot  .bubble h1,
     .assist-msg.bot  .bubble h2,
     .assist-msg.bot  .bubble h3 { margin: 8px 0 4px; font-size: 14px; font-weight: 600; }
+    .assist-choice-card { align-self:flex-start; max-width:94%; padding:10px 12px; border:1px solid var(--line); border-radius:14px; background:var(--panel); }
+    .assist-choice-question { font-size:12.5px; font-weight:600; color:var(--text-1); margin-bottom:8px; }
+    .assist-choice-options { display:flex; flex-wrap:wrap; gap:7px; }
+    .assist-choice { padding:7px 11px; border:1px solid var(--line-2); border-radius:999px; background:var(--panel-2); color:var(--text-2); font-size:12px; transition:all .14s var(--ease-standard); }
+    .assist-choice:hover { border-color:var(--brand); color:var(--brand); }
+    .assist-choice.selected { border-color:var(--brand); background:var(--brand-tint); color:var(--brand); box-shadow:0 0 0 1px color-mix(in oklch,var(--brand) 22%,transparent); }
+    .assist-choice-hint { margin-top:8px; font-size:11px; color:var(--text-3); }
+    .assist-selected-bar { display:flex; flex-wrap:wrap; gap:5px; padding:7px 10px 0; }
+    .assist-selected-bar:empty { display:none; }
+    .assist-selected-token { display:flex; align-items:center; gap:4px; padding:4px 8px; border-radius:999px; background:var(--brand-tint); color:var(--brand); font-size:11px; }
+    .assist-selected-token button { color:inherit; line-height:1; font-size:14px; }
 
     .assist-tool {
       align-self: flex-start;
@@ -2542,6 +2553,7 @@
               <div class="assist-suggestions" id="assistSuggestions"></div>
             </div>
           </div>
+          <div class="assist-selected-bar" id="assistSelectedBar"></div>
           <form class="assist-input-wrap" id="assistForm" autocomplete="off">
             <textarea class="assist-input" id="assistInput" rows="1"
               placeholder="想去哪种地方？告诉我，或让我调整方案…" maxlength="500"></textarea>
@@ -5063,6 +5075,7 @@
       currentBotEl: null,   // 当前正在拼的机器人气泡
       drafts: [],           // 本轮内累积的未应用草稿（按 kind 去重）
       draftCardEl: null,    // 当前展示的草稿卡（未点应用/取消时）
+      selectedChoices: [],  // 用户点选后暂存，发送时与自由输入合并
     };
 
     function assistOpen() {
@@ -5236,6 +5249,31 @@
       ASSIST_STATE.currentBotRaw = (ASSIST_STATE.currentBotRaw || '') + delta;
       ASSIST_STATE.currentBotEl.innerHTML = renderMarkdown(ASSIST_STATE.currentBotRaw);
       assistScroll();
+    }
+
+    function assistRenderSelectedChoices() {
+      const bar=document.getElementById('assistSelectedBar'); if(!bar) return;
+      bar.innerHTML=ASSIST_STATE.selectedChoices.map((x,i)=>`<span class="assist-selected-token">${escapeHtml(x.label)}<button type="button" data-i="${i}" aria-label="取消">×</button></span>`).join('');
+      bar.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+        ASSIST_STATE.selectedChoices.splice(Number(b.dataset.i),1); assistRenderSelectedChoices();
+        document.querySelectorAll('.assist-choice').forEach(btn=>btn.classList.toggle('selected',ASSIST_STATE.selectedChoices.some(x=>x.value===btn.dataset.value)));
+      }));
+    }
+    function assistRenderChoices(patch) {
+      const turn=_ensureTurn(); const el=document.createElement('div'); el.className='assist-choice-card';
+      el.innerHTML=`<div class="assist-choice-question">${escapeHtml(patch.question||'请选择')}</div><div class="assist-choice-options">${(patch.options||[]).map(o=>`<button type="button" class="assist-choice" data-label="${escapeHtml(o.label)}" data-value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</button>`).join('')}</div><div class="assist-choice-hint">选择后可继续补充文字，再一起发送；也可以直接输入。</div>`;
+      el.querySelectorAll('.assist-choice').forEach(btn=>btn.addEventListener('click',()=>{
+        const value=btn.dataset.value,label=btn.dataset.label;
+        if(patch.mode==='single'){
+          ASSIST_STATE.selectedChoices=[];
+          el.querySelectorAll('.assist-choice').forEach(x=>x.classList.remove('selected'));
+        }
+        const at=ASSIST_STATE.selectedChoices.findIndex(x=>x.value===value);
+        if(at>=0){ASSIST_STATE.selectedChoices.splice(at,1);btn.classList.remove('selected');}
+        else {ASSIST_STATE.selectedChoices.push({label,value});btn.classList.add('selected');}
+        assistRenderSelectedChoices(); document.getElementById('assistInput')?.focus();
+      }));
+      turn.appendChild(el); assistScroll();
     }
 
     function assistAddTool(name, args) {
@@ -6127,9 +6165,12 @@
     async function assistSubmit() {
       if (ASSIST_STATE.streaming) return;
       const input = document.getElementById('assistInput');
-      const text = (input.value || '').trim();
+      const typed = (input.value || '').trim();
+      const picked = ASSIST_STATE.selectedChoices.map(x=>x.value).join('；');
+      const text = [picked,typed].filter(Boolean).join('；补充：');
       if (!text) return;
       input.value = '';
+      ASSIST_STATE.selectedChoices=[]; assistRenderSelectedChoices();
       input.style.height = 'auto';
 
       assistAddUser(text);
@@ -6215,7 +6256,8 @@
           });
           break;
         case 'state_patch':
-          assistApplyPatch(ev.patch);
+          if(ev.patch?.type==='choices') assistRenderChoices(ev.patch);
+          else assistApplyPatch(ev.patch);
           break;
         case 'error':
           const err = document.createElement('div');
