@@ -2308,6 +2308,25 @@ def _sse(event: dict) -> str:
     return "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
 
 
+_FALSE_MISSING_LOCATION_MARKERS = (
+    "你的位置还没设", "你的位置还没填", "你的位置没有设置", "你的位置还未设置",
+    "你的位置还不知道", "不知道你的位置", "告诉我你在哪", "告诉我你在哪里",
+    "点地图上的“定位到我”", "点地图上的「定位到我」", "请再定位", "需要你的当前位置",
+)
+
+
+def _guard_assistant_location_claim(text: str, me_has_location: bool) -> str:
+    """快照已有本人坐标时，不允许模型向用户陈述相反事实。"""
+    if not me_has_location or not text or not any(x in text for x in _FALSE_MISSING_LOCATION_MARKERS):
+        return text
+    sentences = re.split(r"(?<=[。！？!?])\s*|\n+", text)
+    kept = [s for s in sentences if s and not any(x in s for x in _FALSE_MISSING_LOCATION_MARKERS)]
+    clean = "".join(kept).strip()
+    if clean:
+        return clean + "\n\n你的位置已经设置好了，我会直接使用左侧当前地点继续规划。"
+    return "你的位置已经设置好了，我会直接使用左侧当前地点继续规划。"
+
+
 ASSISTANT_TOOLS = [
     {
         "type": "function",
@@ -3643,6 +3662,7 @@ def api_v2_assistant_stream():
 
                 # 无工具调用 → 结束
                 if not tc_buf:
+                    content_buf = _guard_assistant_location_claim(content_buf, me_has_location)
                     _assistant_append_history(sid, {"role": "assistant", "content": content_buf})
                     # 只有确定本轮没有工具调用时才把正文交给前端。
                     # 带工具调用轮次中的文字通常是模型的执行计划/函数说明，折叠步骤区已展示，正文不应重复。
