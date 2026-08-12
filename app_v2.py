@@ -2607,6 +2607,13 @@ def _poi_reason(poi: dict) -> str:
 
 def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
     st = _assistant_get_state(sid)
+    task = dict((session_get(sid) or {}).get("agent_task") or {})
+    if task.get("status") == "waiting_location_choice":
+        return {
+            "ok": False,
+            "error": f"请先确认{(task.get('location_target') or {}).get('name','参与者')}的具体位置，再搜索正式会面地点",
+            "blocked_by": "location_choice",
+        }, None
     keyword = (args.get("keyword") or "").strip()
     if not keyword:
         return {"ok": False, "error": "缺少 keyword"}, None
@@ -2689,6 +2696,30 @@ def _extract_city(name: str) -> str | None:
         if n.startswith(c) or n.startswith(c + "市"):
             return c
     return None
+
+
+_ADMIN_ONLY_RE = re.compile(r"^(?:[^省]+省)?[^市]+市(?:[^区县]+[区县])?$")
+_NEARBY_STORE_RE = re.compile(
+    r"^(?P<near>.+?)(?:旁边|附近|周边|边上|一带)(?:的)?(?P<poi>[^路街道号]+)$"
+)
+
+
+def _ambiguous_place_parts(place_name: str, formatted_address: str) -> tuple[str, str] | None:
+    """识别“区域附近的门店”被地理编码降级成行政区的情况。"""
+    raw = (place_name or "").strip()
+    address = re.sub(r"\s+", "", formatted_address or "")
+    match = _NEARBY_STORE_RE.match(raw)
+    if not match:
+        return None
+    near = match.group("near").strip(" ，,的")
+    poi = match.group("poi").strip(" ，,")
+    if not near or not poi:
+        return None
+    # 带“旁边/附近”的门店表达本身就是范围描述；若编码结果没有门店名，
+    # 或仅落到行政区，都必须让用户选具体 POI。
+    administrative = bool(_ADMIN_ONLY_RE.match(address)) or address.endswith(("市", "区", "县"))
+    missing_poi = poi not in address
+    return (near, poi) if administrative or missing_poi else None
 
 
 def _tool_shift_center(sid: str, args: dict) -> tuple[dict, dict | None]:
@@ -2796,6 +2827,21 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
                 geo = amap_geocode(place_name, city=target_city)
             if not geo.get("success"):
                 return {"ok": False, "error": geo.get("error", f"『{place_name}』无法定位")}, None
+            # 门店式模糊描述若只被解析到区/市级行政区，禁止当成精确出发地落盘。
+            # 即使 Agent 误用了普通位置工具，也在工具层自动转入结构化地点消歧。
+            vague = _ambiguous_place_parts(place_name, geo.get("formatted_address") or "")
+            if vague:
+                near_hint, poi_keyword = vague
+                clarify_args = {
+                    "index": parts.index(target) + 1,
+                    "keyword": poi_keyword,
+                    "near_hint": near_hint,
+                    "radius_m": 8000,
+                }
+                result, patch = _tool_clarify_participant_location(sid, clarify_args)
+                if result.get("ok"):
+                    result["summary"] = f"“{place_name}”无法精确到具体门店，已请用户确认"
+                return result, patch
             lng = geo["lng"]; lat = geo["lat"]
             address = geo.get("formatted_address") or place_name
         else:
