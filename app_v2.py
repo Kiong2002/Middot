@@ -3596,6 +3596,7 @@ def api_v2_assistant_stream():
         stream_gate_decided = False
         stream_allow = True
         stream_gate_err = ""
+        routes_recomputed_after_prefer = False
 
         history = list(_assistant_history(sid))
         # 系统消息 + 历史 + 本次
@@ -3693,6 +3694,7 @@ def api_v2_assistant_stream():
                 _assistant_append_history(sid, assistant_msg)
 
                 # 逐个执行工具
+                prefer_changed_this_batch = False
                 for tc in tool_calls_serialized:
                     name = tc["function"]["name"]
                     try:
@@ -3726,6 +3728,10 @@ def api_v2_assistant_stream():
                                 state_patch = None
                             if tool_result.get("ok"):
                                 _ai_write_touch(caller_did, name)
+                                if name == "set_participant_prefer" or (
+                                    name == "set_participant_location" and args.get("prefer")
+                                ):
+                                    prefer_changed_this_batch = True
 
                     yield _sse({
                         "type": "tool_result",
@@ -3745,6 +3751,25 @@ def api_v2_assistant_stream():
                     }
                     messages.append(tool_msg)
                     _assistant_append_history(sid, tool_msg)
+
+                # 交通方式变化会使现有路线全部失效。若 Agent 忘记显式重算，
+                # 服务端在同一轮原子补做一次，并把新 legs 推给前端。
+                called_names = {tc["function"]["name"] for tc in tool_calls_serialized}
+                if prefer_changed_this_batch and "recompute_routes" not in called_names and not routes_recomputed_after_prefer:
+                    cur = _assistant_get_state(sid)
+                    if cur.get("pois"):
+                        auto_id = f"auto_recompute_{it}"
+                        yield _sse({"type":"tool_call","id":auto_id,"name":"recompute_routes","args":{}})
+                        auto_result, auto_patch = _tool_recompute_routes(sid, {})
+                        yield _sse({
+                            "type":"tool_result","id":auto_id,"name":"recompute_routes",
+                            "ok":bool(auto_result.get("ok")),
+                            "summary":auto_result.get("summary") or auto_result.get("error") or "",
+                            "data":auto_result,
+                        })
+                        if auto_patch:
+                            yield _sse({"type":"state_patch","patch":auto_patch})
+                        routes_recomputed_after_prefer = bool(auto_result.get("ok"))
 
                 # 工具轮次后模型容易只关注刚执行的工具而遗忘初始设备定位，
                 # 因此在生成最终总结前重新注入不可被工具结果覆盖的位置事实。
