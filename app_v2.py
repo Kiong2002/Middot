@@ -204,6 +204,25 @@ def init_middot_db():
           UNIQUE(device_id, category, memory_key)
         );
         CREATE INDEX IF NOT EXISTS idx_memory_device ON agent_memories(device_id, category, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS memory_people (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL,
+          name TEXT NOT NULL, relation TEXT, usual_place TEXT, city TEXT,
+          expires_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          UNIQUE(device_id, name)
+        );
+        CREATE TABLE IF NOT EXISTS memory_episodes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL,
+          happened_at INTEGER NOT NULL, keyword TEXT, people_json TEXT,
+          chosen_poi_json TEXT, summary TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_episode_device ON memory_episodes(device_id, happened_at DESC);
+        CREATE TABLE IF NOT EXISTS memory_feedback (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL,
+          poi_id TEXT, poi_name TEXT NOT NULL, signal TEXT NOT NULL,
+          reason TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          UNIQUE(device_id, poi_name, signal)
+        );
+        CREATE INDEX IF NOT EXISTS idx_feedback_device ON memory_feedback(device_id, updated_at DESC);
         """)
         # updated_by / last_ai_actions_json / locked_until 列：老库需要 in-place 迁移
         try:
@@ -1054,6 +1073,20 @@ def _persist_run_history(anchor, participants, keyword, city, enriched):
             "DELETE FROM run_history WHERE device_id=? AND id NOT IN "
             "(SELECT id FROM run_history WHERE device_id=? ORDER BY ran_at DESC LIMIT 100)",
             (did, did),
+        )
+        people_names = [p.get("name") for p in participants if p.get("name") and p.get("name") != "我"]
+        top = (enriched or [{}])[0] if enriched else {}
+        summary = f"和{'、'.join(people_names) or '朋友'}找了{keyword or '会面地点'}"
+        if top.get("name"): summary += f"，首选推荐是{top['name']}"
+        conn.execute(
+            "INSERT INTO memory_episodes(device_id,happened_at,keyword,people_json,chosen_poi_json,summary) VALUES(?,?,?,?,?,?)",
+            (did,_now(),keyword or None,json.dumps(people_names,ensure_ascii=False),
+             json.dumps(_compact_poi(top),ensure_ascii=False) if top else None,summary),
+        )
+        conn.execute(
+            "DELETE FROM memory_episodes WHERE device_id=? AND id NOT IN "
+            "(SELECT id FROM memory_episodes WHERE device_id=? ORDER BY happened_at DESC LIMIT 100)",
+            (did,did),
         )
         conn.commit()
     except Exception as e:
@@ -2318,6 +2351,30 @@ ASSISTANT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "remember_person",
+            "description": "在用户明确要求记住时保存人物关系及常用出发地。必须是用户主动提供；不得推断。地点默认90天过期。",
+            "parameters": {"type":"object","properties":{
+                "name":{"type":"string"}, "relation":{"type":"string"},
+                "usual_place":{"type":"string"}, "city":{"type":"string"},
+                "days":{"type":"integer","description":"有效天数，默认90，最大365"}
+            },"required":["name"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember_feedback",
+            "description": "保存用户对某家店的明确反馈：喜欢、去过、不喜欢。只有用户明确表达时调用。",
+            "parameters": {"type":"object","properties":{
+                "poi_name":{"type":"string"},
+                "signal":{"type":"string","enum":["liked","visited","disliked"]},
+                "reason":{"type":"string"}
+            },"required":["poi_name","signal"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_pois",
             "description": "在指定坐标周围搜索 POI（餐厅/咖啡/景点等）。会替换掉当前的推荐结果列表并把新结果传回前端展示。",
             "parameters": {
@@ -2501,6 +2558,7 @@ def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
                 st.get("city", "北京"), None,
                 sort_weights=None,
             )
+            enriched = _apply_feedback_ranking(_memory_device_id(sid), enriched)
         except Exception as e:
             print(f"[assistant search_pois] calculate_routes 失败：{e}")
     # 更新 session
@@ -2908,14 +2966,71 @@ def _memory_rows(device_id: str) -> list[dict]:
         conn.close()
 
 
+def _people_rows(device_id: str) -> list[dict]:
+    now = _now(); conn = _db_connect()
+    try:
+        rows = conn.execute(
+            "SELECT name,relation,usual_place,city,expires_at,updated_at FROM memory_people "
+            "WHERE device_id=? AND (expires_at IS NULL OR expires_at>?) ORDER BY updated_at DESC LIMIT 20",
+            (device_id, now),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally: conn.close()
+
+
+def _episode_rows(device_id: str, limit: int = 8) -> list[dict]:
+    conn = _db_connect()
+    try:
+        rows = conn.execute(
+            "SELECT id,happened_at,keyword,people_json,chosen_poi_json,summary FROM memory_episodes "
+            "WHERE device_id=? ORDER BY happened_at DESC LIMIT ?", (device_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally: conn.close()
+
+
+def _feedback_rows(device_id: str) -> list[dict]:
+    conn = _db_connect()
+    try:
+        rows = conn.execute(
+            "SELECT poi_id,poi_name,signal,reason,updated_at FROM memory_feedback "
+            "WHERE device_id=? ORDER BY updated_at DESC LIMIT 100", (device_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally: conn.close()
+
+
+def _apply_feedback_ranking(device_id: str, pois: list[dict]) -> list[dict]:
+    """明确不喜欢的店下沉；喜欢/收藏过的轻量加分，保留原始分便于解释。"""
+    signals: dict[str, set[str]] = {}
+    for row in _feedback_rows(device_id):
+        signals.setdefault(row["poi_name"], set()).add(row["signal"])
+    out = []
+    for poi in pois:
+        p = dict(poi); sig = signals.get(p.get("name") or "", set())
+        base = float(p.get("_score") or 0)
+        boost = (0.03 if "liked" in sig else 0) - (1.0 if "disliked" in sig else 0)
+        p["_score"] = round(base + boost, 4)
+        if sig: p["memory_signals"] = sorted(sig)
+        out.append(p)
+    out.sort(key=lambda p: p.get("_score", 0), reverse=True)
+    return out
+
+
 def _memory_context(device_id: str) -> str:
     rows = _memory_rows(device_id)
-    if not rows:
-        return "[已确认长期记忆] 无。不得凭空假设用户有车、交通方式、饮食或预算偏好。"
-    items = [f"{r['category']}.{r['memory_key']}={r['memory_value']}" for r in rows]
+    people = _people_rows(device_id)
+    episodes = _episode_rows(device_id, 5)
+    feedback = _feedback_rows(device_id)
+    items = [f"偏好:{r['category']}.{r['memory_key']}={r['memory_value']}" for r in rows]
+    items += [f"人物:{p['name']}({p.get('relation') or '未注明关系'})，常用地={p.get('usual_place') or '未保存'}" for p in people]
+    items += [f"经历:{e['summary']}" for e in episodes]
+    items += [f"反馈:{f['poi_name']}={f['signal']}" for f in feedback[:20]]
+    if not items:
+        return "[长期记忆] 无。不得凭空假设用户有车、人物关系、交通、饮食或预算偏好。"
     return (
         "[已确认长期记忆] " + "; ".join(items) +
-        "。这些记忆只属于当前用户，不得套给朋友。若本轮明确表达冲突，以本轮为准；"
+        "。人物记忆仅在用户提到同名人物时使用。这些记忆只属于当前用户，不得泄露给房间其他成员。若本轮明确表达冲突，以本轮为准；"
         "使用记忆影响规划时，在最终回复中用自然语言简短说明。"
     )
 
@@ -2971,8 +3086,9 @@ def _tool_remember_preference(sid: str, args: dict) -> tuple[dict, dict | None]:
 
 
 def _tool_list_memories(sid: str, _args: dict) -> tuple[dict, dict | None]:
-    rows = _memory_rows(_memory_device_id(sid))
-    return {"ok": True, "summary": f"已保存 {len(rows)} 条长期偏好", "memories": rows}, None
+    did = _memory_device_id(sid); rows = _memory_rows(did); people = _people_rows(did); episodes = _episode_rows(did); feedback = _feedback_rows(did)
+    total = len(rows)+len(people)+len(episodes)+len(feedback)
+    return {"ok": True, "summary": f"共 {total} 条记忆", "preferences": rows, "people": people, "episodes": episodes, "feedback": feedback}, None
 
 
 def _tool_forget_memory(sid: str, args: dict) -> tuple[dict, dict | None]:
@@ -2985,6 +3101,9 @@ def _tool_forget_memory(sid: str, args: dict) -> tuple[dict, dict | None]:
     try:
         if category == "all":
             cur = conn.execute("DELETE FROM agent_memories WHERE device_id=?", (device_id,))
+            deleted = cur.rowcount
+            for table in ("memory_people", "memory_episodes", "memory_feedback"):
+                deleted += conn.execute(f"DELETE FROM {table} WHERE device_id=?", (device_id,)).rowcount
         elif key:
             cur = conn.execute(
                 "DELETE FROM agent_memories WHERE device_id=? AND category=? AND memory_key=?",
@@ -2998,13 +3117,84 @@ def _tool_forget_memory(sid: str, args: dict) -> tuple[dict, dict | None]:
         conn.commit()
     finally:
         conn.close()
-    return {"ok": True, "summary": f"已忘记 {cur.rowcount} 条记忆"}, None
+    return {"ok": True, "summary": f"已忘记 {deleted if category == 'all' else cur.rowcount} 条记忆"}, None
+
+
+@app.route("/api/v2/memories")
+def api_v2_memories():
+    did=g.device_id
+    return jsonify({"preferences":_memory_rows(did),"people":_people_rows(did),"episodes":_episode_rows(did,50),"feedback":_feedback_rows(did)})
+
+
+@app.route("/api/v2/memories", methods=["DELETE"])
+def api_v2_memories_clear():
+    conn=_db(); total=0
+    for table in ("agent_memories","memory_people","memory_episodes","memory_feedback"):
+        total += conn.execute(f"DELETE FROM {table} WHERE device_id=?",(g.device_id,)).rowcount
+    conn.commit(); return jsonify({"ok":True,"deleted":total})
+
+
+@app.route("/api/v2/memories/item", methods=["DELETE"])
+def api_v2_memory_delete_item():
+    data=request.json or {}; kind=(data.get("kind") or "").strip(); conn=_db()
+    if kind=="preference":
+        cur=conn.execute("DELETE FROM agent_memories WHERE device_id=? AND category=? AND memory_key=?",(g.device_id,data.get("category"),data.get("key")))
+    elif kind=="person":
+        cur=conn.execute("DELETE FROM memory_people WHERE device_id=? AND name=?",(g.device_id,data.get("name")))
+    elif kind=="episode":
+        cur=conn.execute("DELETE FROM memory_episodes WHERE device_id=? AND id=?",(g.device_id,data.get("id")))
+    elif kind=="feedback":
+        cur=conn.execute("DELETE FROM memory_feedback WHERE device_id=? AND poi_name=? AND signal=?",(g.device_id,data.get("name"),data.get("signal")))
+    else: return jsonify({"error":"invalid kind"}),400
+    conn.commit(); return jsonify({"ok":True,"deleted":cur.rowcount})
+
+
+def _tool_remember_person(sid: str, args: dict) -> tuple[dict, dict | None]:
+    did = _memory_device_id(sid)
+    name = (args.get("name") or "").strip()[:60]
+    if not name or name in ("我", "自己"):
+        return {"ok": False, "error": "人物名字无效"}, None
+    relation = (args.get("relation") or "").strip()[:60] or None
+    place = (args.get("usual_place") or "").strip()[:160] or None
+    city = (args.get("city") or "").strip()[:40] or None
+    days = max(1, min(365, int(args.get("days") or 90)))
+    now = _now(); expires = now + days * 86400 if place else None
+    conn = _db_connect()
+    try:
+        conn.execute(
+            "INSERT INTO memory_people(device_id,name,relation,usual_place,city,expires_at,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(device_id,name) DO UPDATE SET "
+            "relation=COALESCE(excluded.relation,memory_people.relation),usual_place=COALESCE(excluded.usual_place,memory_people.usual_place),"
+            "city=COALESCE(excluded.city,memory_people.city),expires_at=excluded.expires_at,updated_at=excluded.updated_at",
+            (did,name,relation,place,city,expires,now,now),
+        ); conn.commit()
+    finally: conn.close()
+    detail = f"，常从{place}出发（{days}天有效）" if place else ""
+    return {"ok": True, "summary": f"已记住{name}是{relation or '你认识的人'}{detail}"}, None
+
+
+def _tool_remember_feedback(sid: str, args: dict) -> tuple[dict, dict | None]:
+    did = _memory_device_id(sid); name = (args.get("poi_name") or "").strip()[:120]
+    signal = (args.get("signal") or "").strip(); reason = (args.get("reason") or "").strip()[:240] or None
+    if not name or signal not in ("liked","visited","disliked"):
+        return {"ok": False, "error": "店铺反馈无效"}, None
+    now=_now(); conn=_db_connect()
+    try:
+        conn.execute(
+            "INSERT INTO memory_feedback(device_id,poi_id,poi_name,signal,reason,created_at,updated_at) VALUES(?,NULL,?,?,?,?,?) "
+            "ON CONFLICT(device_id,poi_name,signal) DO UPDATE SET reason=excluded.reason,updated_at=excluded.updated_at",
+            (did,name,signal,reason,now,now),
+        ); conn.commit()
+    finally: conn.close()
+    return {"ok": True, "summary": f"已记录你对{name}的反馈"}, None
 
 
 TOOL_HANDLERS = {
     "remember_preference":      _tool_remember_preference,
     "list_memories":           _tool_list_memories,
     "forget_memory":           _tool_forget_memory,
+    "remember_person":         _tool_remember_person,
+    "remember_feedback":       _tool_remember_feedback,
     "search_pois":              _tool_search_pois,
     "shift_center":             _tool_shift_center,
     "set_participant_location": _tool_set_participant_location,
@@ -3037,7 +3227,8 @@ _ASSISTANT_SYSTEM = """你是「中点 Middot 会面助手」，一个**只**服
 > 你可以试试：**"找家咖啡厅"**、**"锚点挪到国贸"**、**"加个从望京出发的人"**
 
 ## 关键约定
-- **【长期记忆】**：用户明确说“记住/以后默认/以后别推荐”时，才可调用记忆工具保存交通、饮食或预算偏好；“今天/这次”只用于本轮，禁止长期保存。用户问“你记得我什么”时读取记忆；说“忘掉/删除记忆”时删除。当前位置、地址、朋友资料和推断出的敏感属性禁止长期保存。
+- **【长期记忆】**：用户明确说“记住/以后默认/以后别推荐”时，才可保存。交通、饮食和预算进入个人记忆；用户明确要求记住某个人及其常用出发地时进入关系记忆（地点默认90天有效）；明确说去过、喜欢或不喜欢某店时进入反馈记忆。“今天/这次”只用于本轮，禁止长期保存。浏览器当前位置、实时轨迹和推断出的敏感属性禁止长期保存。
+- 用户问“你记得我什么”时，综合列出个人偏好、人物、近期经历和店铺反馈；说“忘掉/删除”时执行删除。人物地点只有在用户明确说“记住”时才允许保存，不能从一次规划中偷记。
 - 已确认记忆只属于“我”，不得复制给朋友。本轮明确表达永远优先于旧记忆。使用长期偏好影响规划时，要在最终回复中自然说明，例如“已按你平时的公交方式规划”，但不要暴露内部字段。
 - **『我 / 我自己 / 咱』= [当前会话快照] 里 `me_index` 那一位**（每轮系统会告诉你 me_index 是几）。用户说"我在北大" → `set_participant_location(index=me_index, place_name="北大")`。**永远别硬编码 index=1**——房间模式下你可能是 index=2 或更后。
 - **【硬规则 · 地点先绑定语法主体】**：`X 的朋友/同事/家人` 中，地点 X 属于后面的那个人，不能因为整句话由“我想/我要/我和”开头就绑定给“我”。例如“我想和文三路的朋友吃火锅”表示**朋友在文三路、我的位置没有说**：必须把 `文三路` 用 `set_participant_location` 填到非 `me_index` 的朋友/空位，**绝不允许**写入 `me_index`。前端可能会另行征得定位许可补齐“我”，但这不改变朋友地点的归属。
@@ -3160,7 +3351,6 @@ def api_v2_apply_drafts():
 
     for d in drafts:
         if not isinstance(d, dict):
-            "my_did":       g.device_id,
             continue
         kind = d.get("kind")
         body = d.get("data") or {}

@@ -2232,6 +2232,9 @@
         <button class="icon-btn" id="roomBtn" title="房间：和朋友一起看" aria-label="房间">
           <i data-lucide="users-round"></i>
         </button>
+        <button class="icon-btn" id="memoryBtn" title="小 Mid 记得的事" aria-label="记忆">
+          <i data-lucide="brain"></i>
+        </button>
         <button class="icon-btn" id="themeToggleBtn" title="切换主题" aria-label="切换主题">
           <i data-lucide="moon"></i>
         </button>
@@ -2295,6 +2298,20 @@
           </button>
           <div style="height: 10px;"></div>
           <button class="room-danger" style="width:100%;" id="roomLeaveBtn"><i data-lucide="log-out" style="width:14px;height:14px;margin-right:4px;"></i>退出房间</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay bottom-sheet" id="memoryModal" hidden>
+      <div class="modal-panel" onclick="event.stopPropagation()">
+        <div class="modal-head">
+          <div class="modal-title"><i data-lucide="brain"></i><span>小 Mid 记得的事</span></div>
+          <button class="modal-close" id="memoryModalClose" aria-label="关闭"><i data-lucide="x"></i></button>
+        </div>
+        <div class="modal-body" style="max-height:65vh;overflow-y:auto;">
+          <div class="modal-hint">这里只展示跨会话记忆。你可以逐条删除，或让小 Mid 在对话中修改。</div>
+          <div id="memoryList" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;"></div>
+          <button class="room-danger" id="memoryClearBtn" style="width:100%;margin-top:8px;">清除全部记忆</button>
         </div>
       </div>
     </div>
@@ -6257,9 +6274,50 @@
       });
     }
 
+    function memoryLabel(kind, item) {
+      if (kind === 'preference') return `${item.category} · ${item.memory_value}`;
+      if (kind === 'person') return `${item.name}${item.relation ? ` · ${item.relation}` : ''}${item.usual_place ? ` · ${item.usual_place}` : ''}`;
+      if (kind === 'episode') return item.summary;
+      return `${item.poi_name} · ${{liked:'喜欢',visited:'去过',disliked:'不喜欢'}[item.signal] || item.signal}`;
+    }
+    async function memoryLoad() {
+      const list = document.getElementById('memoryList');
+      list.innerHTML = '<div class="hist-empty">正在读取…</div>';
+      try {
+        const r = await fetch('/api/v2/memories').then(x => x.json());
+        const items = [
+          ...(r.preferences || []).map(x => ['preference', x]),
+          ...(r.people || []).map(x => ['person', x]),
+          ...(r.episodes || []).map(x => ['episode', x]),
+          ...(r.feedback || []).map(x => ['feedback', x]),
+        ];
+        if (!items.length) { list.innerHTML = '<div class="hist-empty">还没有长期记忆。你可以直接对小 Mid 说“记住我一般坐公交”。</div>'; return; }
+        list.innerHTML = items.map(([kind,x],i) => `<div class="hist-item" data-i="${i}"><div class="hist-main"><div class="hist-title">${escapeHtml(memoryLabel(kind,x))}</div><div class="hist-meta">${{preference:'个人偏好',person:'人物关系',episode:'会面经历',feedback:'店铺反馈'}[kind]}</div></div><button class="hist-del" title="删除"><i data-lucide="trash-2"></i></button></div>`).join('');
+        list.querySelectorAll('.hist-del').forEach((btn,i) => btn.addEventListener('click', async () => {
+          const [kind,x]=items[i]; const body={kind};
+          if(kind==='preference'){body.category=x.category;body.key=x.memory_key;}
+          else if(kind==='person') body.name=x.name;
+          else if(kind==='episode') body.id=x.id;
+          else {body.name=x.poi_name;body.signal=x.signal;}
+          await fetch('/api/v2/memories/item',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); memoryLoad();
+        })); refreshIcons();
+      } catch (_) { list.innerHTML='<div class="hist-empty">读取失败，请稍后重试。</div>'; }
+    }
+    function wireMemory() {
+      const modal=document.getElementById('memoryModal');
+      document.getElementById('memoryBtn')?.addEventListener('click',()=>{modal.hidden=false;memoryLoad();});
+      document.getElementById('memoryModalClose')?.addEventListener('click',()=>{modal.hidden=true;});
+      modal?.addEventListener('click',()=>{modal.hidden=true;});
+      document.getElementById('memoryClearBtn')?.addEventListener('click',async()=>{
+        if(!confirm('清除小 Mid 保存的全部长期记忆？')) return;
+        await fetch('/api/v2/memories',{method:'DELETE'}); memoryLoad();
+      });
+    }
+
     async function init() {
       refreshIcons();
       wireStatic();
+      wireMemory();
       wireAnchor();
       wireAssistant();
       wireResultToolbar();
