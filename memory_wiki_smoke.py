@@ -102,4 +102,44 @@ conn = module._db_connect()
 assert not conn.execute("SELECT 1 FROM memory_wiki_facts WHERE device_id=? AND subject_key='阿杰'", (did,)).fetchone()
 assert not conn.execute("SELECT 1 FROM memory_wiki_fact_sources").fetchone()
 conn.close()
+
+# 通用实体层：存量实体有稳定 ID，模型只能在类型一致且高置信时把新别名链接过去。
+conn = module._db_connect(); conn.execute("BEGIN IMMEDIATE")
+starbucks_id, _ = module._memory_entity_ensure(conn, did, "brand", "星巴克", source="test_seed")
+starbucks = module._memory_normalize_candidate_in_tx(conn, did, {
+    "subject_type": "brand", "subject_mention": "星爸爸", "canonical_subject": "星巴克",
+    "subject_entity_id": starbucks_id, "predicate": "located_in", "value": "北京",
+    "canonical_value": "北京市", "value_type": "city", "resolution_confidence": .97,
+    "confidence": .95, "persistence_score": .8,
+})
+assert starbucks["subject_entity_id"] == starbucks_id, starbucks
+assert starbucks["entity_key"] == "星巴克", starbucks
+catalog = module._memory_entity_catalog(conn, did)
+brand = next(x for x in catalog if x["id"] == starbucks_id)
+assert "星爸爸" in brand["aliases"], brand
+conn.commit(); conn.close()
+
+# 第一人称主体和字段由同一套类型系统校验：person:user + education=南京(city)
+# 被规范为 user:me + study_city，而不是添加某个“南京”特例。
+conn = module._db_connect(); conn.execute("BEGIN IMMEDIATE")
+self_fact = module._memory_normalize_candidate_in_tx(conn, did, {
+    "subject_type": "person", "subject_mention": "user", "canonical_subject": "user",
+    "predicate": "education", "value": "南京", "canonical_value": "南京",
+    "value_type": "city", "resolution_confidence": .96,
+    "confidence": .90, "persistence_score": .80,
+    "evidence_summary": "用户明确表示在南京上学。", "status": "candidate",
+})
+assert self_fact["kind"] == "user" and self_fact["entity_key"] == "我", self_fact
+assert self_fact["field_name"] == "study_city" and self_fact["resolution_status"] == "resolved", self_fact
+module._memory_candidate_add_evidence(conn, did, self_fact, conversation, 5, 5, now + 1)
+result = module._memory_reconcile_candidates(conn, did)
+assert result["promoted"] == 1, result
+remembered = conn.execute(
+    "SELECT subject_type,subject_key,predicate,value,subject_entity_id,value_type,promotion_reason "
+    "FROM memory_wiki_facts WHERE device_id=? AND predicate='study_city'", (did,),
+).fetchone()
+assert dict(remembered)["subject_type"] == "user" and dict(remembered)["subject_key"] == "我", dict(remembered)
+assert dict(remembered)["value"] == "南京" and dict(remembered)["value_type"] == "city", dict(remembered)
+assert dict(remembered)["promotion_reason"] == "auto_high_confidence", dict(remembered)
+conn.commit(); conn.close()
 print("MEMORY_WIKI_SMOKE_OK")

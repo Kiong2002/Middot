@@ -20,6 +20,7 @@ import sqlite3
 import secrets
 import hmac
 import hashlib
+import unicodedata
 import requests
 from functools import wraps
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -449,6 +450,51 @@ def init_middot_db():
           PRIMARY KEY(fact_id,candidate_id),
           FOREIGN KEY(fact_id) REFERENCES memory_wiki_facts(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS memory_entities (
+          id                 TEXT PRIMARY KEY,
+          device_id          TEXT NOT NULL,
+          entity_type        TEXT NOT NULL,
+          canonical_name     TEXT NOT NULL,
+          canonical_norm     TEXT NOT NULL,
+          external_key       TEXT,
+          status             TEXT NOT NULL DEFAULT 'active',
+          merged_into        TEXT,
+          resolution_source  TEXT NOT NULL DEFAULT 'memory_compiler',
+          created_at         INTEGER NOT NULL,
+          updated_at         INTEGER NOT NULL,
+          FOREIGN KEY(merged_into) REFERENCES memory_entities(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_entity_lookup
+          ON memory_entities(device_id,entity_type,canonical_norm,status);
+        CREATE TABLE IF NOT EXISTS memory_entity_aliases (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id      TEXT NOT NULL,
+          entity_id      TEXT NOT NULL,
+          alias          TEXT NOT NULL,
+          alias_norm     TEXT NOT NULL,
+          source         TEXT NOT NULL,
+          confidence     REAL NOT NULL DEFAULT 1,
+          status         TEXT NOT NULL DEFAULT 'confirmed',
+          created_at     INTEGER NOT NULL,
+          updated_at     INTEGER NOT NULL,
+          UNIQUE(device_id,entity_id,alias_norm),
+          FOREIGN KEY(entity_id) REFERENCES memory_entities(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_alias_lookup
+          ON memory_entity_aliases(device_id,alias_norm,status);
+        CREATE TABLE IF NOT EXISTS memory_entity_merge_events (
+          id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id          TEXT NOT NULL,
+          source_entity_id   TEXT,
+          target_entity_id   TEXT,
+          action             TEXT NOT NULL,
+          reason             TEXT NOT NULL,
+          evidence_json      TEXT,
+          reversible         INTEGER NOT NULL DEFAULT 1,
+          created_at         INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_entity_merge_device
+          ON memory_entity_merge_events(device_id,created_at DESC);
         CREATE TABLE IF NOT EXISTS memory_worker_state (
           worker_id       TEXT PRIMARY KEY,
           pid             INTEGER,
@@ -478,6 +524,11 @@ def init_middot_db():
             ("evidence_count", "INTEGER NOT NULL DEFAULT 1"),
             ("independent_count", "INTEGER NOT NULL DEFAULT 1"),
             ("decision_reason", "TEXT"),
+            ("subject_entity_id", "TEXT"),
+            ("value_entity_id", "TEXT"),
+            ("value_type", "TEXT"),
+            ("resolution_confidence", "REAL NOT NULL DEFAULT 0.5"),
+            ("resolution_status", "TEXT NOT NULL DEFAULT 'unresolved'"),
         ):
             if name not in candidate_cols:
                 conn.execute(f"ALTER TABLE memory_candidates ADD COLUMN {name} {definition}")
@@ -485,6 +536,9 @@ def init_middot_db():
         for name, definition in (
             ("authority", "REAL NOT NULL DEFAULT 0.7"),
             ("promotion_reason", "TEXT"),
+            ("subject_entity_id", "TEXT"),
+            ("value_entity_id", "TEXT"),
+            ("value_type", "TEXT"),
         ):
             if name not in fact_cols:
                 conn.execute(f"ALTER TABLE memory_wiki_facts ADD COLUMN {name} {definition}")
@@ -4650,6 +4704,7 @@ def _candidate_rows(device_id: str) -> list[dict]:
         rows = conn.execute(
             "SELECT id,kind,entity_key,field_name,candidate_value,confidence,persistence_score,"
             "evidence_count,independent_count,decision_reason,evidence_summary,status,"
+            "subject_entity_id,value_entity_id,value_type,resolution_confidence,resolution_status,"
             "source_conversation_id,source_from_seq,source_to_seq,created_at,updated_at "
             "FROM memory_candidates WHERE device_id=? "
             "AND status IN ('candidate','conflict') ORDER BY updated_at DESC LIMIT 100",
@@ -4669,12 +4724,356 @@ _CANDIDATE_FIELD_ALIASES = {
 }
 _CANDIDATE_PREDICATE_LABELS = {
     "usual_place": "常用出发地", "hometown": "家乡", "education": "就读学校",
-    "workplace": "工作地点", "place_detail": "地点", "preference": "偏好",
+    "study_city": "上学城市", "work_city": "工作城市",
+    "workplace": "工作地点", "place_detail": "地点", "located_in": "位于",
+    "preference": "偏好",
     "relation": "关系", "feedback": "店铺反馈",
 }
 _CANDIDATE_KIND_LABELS = {
-    "person": "人物", "place": "地点", "preference": "偏好", "poi": "店铺",
+    "user": "我", "person": "人物", "place": "地点", "preference": "偏好",
+    "poi": "店铺", "brand": "品牌", "organization": "机构",
 }
+
+# 这是字段类型系统，不是地点/品牌的特例表。编译结果只有满足主体类型和值类型
+# 才能晋升；类型不吻合时，要么按明确语义重分类，要么留待确认。
+_MEMORY_PREDICATE_SCHEMA = {
+    "relation": {"subjects": {"user", "person"}, "values": {"person", "relation", "text"}},
+    "usual_place": {"subjects": {"user", "person"}, "values": {"place", "poi", "school", "organization"}},
+    "hometown": {"subjects": {"user", "person"}, "values": {"city", "region"}},
+    "education": {"subjects": {"user", "person"}, "values": {"school", "organization"}},
+    "study_city": {"subjects": {"user", "person"}, "values": {"city"}},
+    "workplace": {"subjects": {"user", "person"}, "values": {"place", "poi", "organization"}},
+    "work_city": {"subjects": {"user", "person"}, "values": {"city"}},
+    "place_detail": {"subjects": {"place", "poi", "organization"}, "values": {"place", "address"}},
+    "located_in": {"subjects": {"place", "poi", "brand", "organization", "school"}, "values": {"city", "region", "place"}},
+    "preference": {"subjects": {"user", "person", "preference"}, "values": {"text", "activity", "food", "brand", "poi"}},
+    "feedback": {"subjects": {"poi", "brand"}, "values": {"text", "signal"}},
+}
+_SELF_MENTION_NORMS = {"我", "本人", "我自己", "用户", "当前用户", "user", "currentuser", "me"}
+
+
+def _entity_normalize_name(value: str | None) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
+    return re.sub(r"[\s\-—_·•,，。.!！?？()（）\[\]【】'\"]+", "", text)
+
+
+def _memory_entity_catalog(conn: sqlite3.Connection, device_id: str, limit: int = 120) -> list[dict]:
+    rows = conn.execute(
+        "SELECT e.id,e.entity_type,e.canonical_name,e.external_key,"
+        "GROUP_CONCAT(a.alias,'｜') AS aliases FROM memory_entities e "
+        "LEFT JOIN memory_entity_aliases a ON a.entity_id=e.id AND a.status='confirmed' "
+        "WHERE e.device_id=? AND e.status='active' GROUP BY e.id ORDER BY e.updated_at DESC LIMIT ?",
+        (device_id, limit),
+    ).fetchall()
+    return [{"id": row["id"], "type": row["entity_type"], "name": row["canonical_name"],
+             "external_key": row["external_key"],
+             "aliases": [x for x in str(row["aliases"] or "").split("｜") if x]} for row in rows]
+
+
+def _memory_entity_ensure(
+    conn: sqlite3.Connection, device_id: str, entity_type: str, canonical_name: str,
+    *, alias: str | None = None, existing_id: str | None = None,
+    confidence: float = 1.0, source: str = "memory_compiler",
+) -> tuple[str, str]:
+    entity_type = str(entity_type or "entity").strip().lower()
+    canonical_name = _memory_clean_text(canonical_name, 100) or "未命名实体"
+    canonical_norm = _entity_normalize_name(canonical_name)
+    alias_norm = _entity_normalize_name(alias or canonical_name)
+    if entity_type == "user":
+        canonical_name, canonical_norm, alias_norm = "我", "我", alias_norm or "我"
+    row = None
+    if existing_id:
+        row = conn.execute(
+            "SELECT id,canonical_name,entity_type FROM memory_entities WHERE id=? AND device_id=? AND status='active'",
+            (existing_id, device_id),
+        ).fetchone()
+        if row and entity_type != row["entity_type"]:
+            row = None
+    if not row and alias_norm:
+        matches = conn.execute(
+            "SELECT e.id,e.canonical_name,e.entity_type FROM memory_entity_aliases a "
+            "JOIN memory_entities e ON e.id=a.entity_id "
+            "WHERE a.device_id=? AND a.alias_norm=? AND a.status='confirmed' AND e.status='active'",
+            (device_id, alias_norm),
+        ).fetchall()
+        typed = [x for x in matches if x["entity_type"] == entity_type]
+        if len(typed) == 1:
+            row = typed[0]
+    if not row and canonical_norm:
+        matches = conn.execute(
+            "SELECT id,canonical_name,entity_type FROM memory_entities "
+            "WHERE device_id=? AND entity_type=? AND canonical_norm=? AND status='active'",
+            (device_id, entity_type, canonical_norm),
+        ).fetchall()
+        if len(matches) == 1:
+            row = matches[0]
+    now = _now()
+    if row:
+        entity_id, resolved_name = str(row["id"]), str(row["canonical_name"])
+    else:
+        entity_id, resolved_name = uuid.uuid4().hex, canonical_name
+        entity_status = "active" if confidence >= .88 or source in {"canonical", "speaker_grounding", "compiled_projection", "wiki_fact", "person_profile", "poi_feedback", "test_seed"} else "provisional"
+        conn.execute(
+            "INSERT INTO memory_entities(id,device_id,entity_type,canonical_name,canonical_norm,status,"
+            "resolution_source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (entity_id, device_id, entity_type, resolved_name, canonical_norm, entity_status, source, now, now),
+        )
+    for raw_alias, alias_source in ((resolved_name, "canonical"), (alias, source)):
+        norm = _entity_normalize_name(raw_alias)
+        if not raw_alias or not norm:
+            continue
+        alias_status = "confirmed" if alias_source == "canonical" or confidence >= .88 else "candidate"
+        conn.execute(
+            "INSERT INTO memory_entity_aliases(device_id,entity_id,alias,alias_norm,source,confidence,status,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(device_id,entity_id,alias_norm) DO UPDATE SET "
+            "confidence=MAX(confidence,excluded.confidence),updated_at=excluded.updated_at",
+            (device_id, entity_id, _memory_clean_text(raw_alias, 100), norm, alias_source, confidence, alias_status, now, now),
+        )
+    return entity_id, resolved_name
+
+
+def _memory_entity_bootstrap_in_tx(conn: sqlite3.Connection, device_id: str) -> int:
+    """从现有正式档案建立实体目录；只建索引，不擅自合并名字相近的对象。"""
+    seeds: list[tuple[str, str, str]] = [("user", "我", "compiled_projection")]
+    seeds.extend((str(r["subject_type"]), str(r["subject_key"]), "wiki_fact") for r in conn.execute(
+        "SELECT DISTINCT subject_type,subject_key FROM memory_wiki_facts WHERE device_id=?", (device_id,)
+    ).fetchall() if r["subject_key"])
+    seeds.extend(("person", str(r["name"]), "person_profile") for r in conn.execute(
+        "SELECT name FROM memory_people WHERE device_id=?", (device_id,)
+    ).fetchall() if r["name"])
+    seeds.extend(("poi", str(r["poi_name"]), "poi_feedback") for r in conn.execute(
+        "SELECT DISTINCT poi_name FROM memory_feedback WHERE device_id=?", (device_id,)
+    ).fetchall() if r["poi_name"])
+    before = conn.execute("SELECT COUNT(*) FROM memory_entities WHERE device_id=?", (device_id,)).fetchone()[0]
+    for entity_type, name, source in seeds:
+        normalized_type = "user" if _entity_normalize_name(name) in _SELF_MENTION_NORMS else entity_type
+        normalized_name = "我" if normalized_type == "user" else name
+        _memory_entity_ensure(conn, device_id, normalized_type, normalized_name, alias=name, source=source)
+    after = conn.execute("SELECT COUNT(*) FROM memory_entities WHERE device_id=?", (device_id,)).fetchone()[0]
+    return int(after) - int(before)
+
+
+def _memory_normalize_candidate_in_tx(conn: sqlite3.Connection, device_id: str, item: dict) -> dict | None:
+    """把模型提取物编译成有实体身份和类型约束的候选；不让模型直接改库关系。"""
+    out = dict(item)
+    kind = str(out.get("subject_type") or out.get("kind") or "").strip().lower()
+    mention = _memory_clean_text(out.get("subject_mention") or out.get("entity_key"), 100)
+    canonical = _memory_clean_text(out.get("canonical_subject") or mention, 100)
+    if not kind or not mention:
+        return None
+    if kind == "user" or _entity_normalize_name(mention) in _SELF_MENTION_NORMS:
+        kind, canonical = "user", "我"
+    predicate = _candidate_normalize_predicate({"kind": kind, "field_name": out.get("predicate") or out.get("field_name")})
+    value = _memory_clean_text(out.get("candidate_value") or out.get("value"), 160)
+    value_type = str(out.get("value_type") or "text").strip().lower()
+    if not value:
+        return None
+    # 类型级纠正：学校关系的值若是城市，就应表达为上学城市；工作地点同理。
+    semantic_rewrites = {
+        ("education", "city"): "study_city",
+        ("workplace", "city"): "work_city",
+        ("place_detail", "city"): "located_in",
+    }
+    rewritten = semantic_rewrites.get((predicate, value_type))
+    if rewritten:
+        predicate = rewritten
+    schema = _MEMORY_PREDICATE_SCHEMA.get(predicate)
+    resolution_status = "resolved"
+    decision_reason = out.get("decision_reason")
+    if not schema or kind not in schema["subjects"] or value_type not in schema["values"]:
+        resolution_status = "needs_review"
+        decision_reason = f"类型待确认：{kind} · {predicate} · {value_type}"
+    try:
+        resolution_confidence = min(1.0, max(0.0, float(out.get("resolution_confidence", out.get("confidence", .5)))))
+    except (TypeError, ValueError):
+        resolution_confidence = .5
+    subject_id, canonical = _memory_entity_ensure(
+        conn, device_id, kind, canonical, alias=mention,
+        existing_id=(str(out.get("subject_entity_id") or "") or None) if resolution_confidence >= .88 else None,
+        confidence=resolution_confidence,
+        source="speaker_grounding" if kind == "user" else "compiler_resolution",
+    )
+    value_entity_id = None
+    if value_type not in {"text", "signal", "relation", "activity", "food"}:
+        value_entity_id, value = _memory_entity_ensure(
+            conn, device_id, value_type, _memory_clean_text(out.get("canonical_value") or value, 160),
+            alias=value, existing_id=(str(out.get("value_entity_id") or "") or None) if resolution_confidence >= .88 else None,
+            confidence=resolution_confidence, source="compiler_resolution",
+        )
+    out.update({
+        "kind": kind, "entity_key": canonical, "field_name": predicate,
+        "candidate_value": value, "subject_entity_id": subject_id,
+        "value_entity_id": value_entity_id, "value_type": value_type,
+        "resolution_confidence": resolution_confidence,
+        "resolution_status": resolution_status, "decision_reason": decision_reason,
+    })
+    return out
+
+
+def memory_audit_unresolved_candidates(device_id: str, apply: bool = False) -> dict:
+    """批量审计存量候选。默认只给报告；apply 时也只执行通过类型校验的确定性修正。"""
+    conn = _db_connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _memory_entity_bootstrap_in_tx(conn, device_id)
+        conn.commit()
+        rows = [dict(row) for row in conn.execute(
+            "SELECT * FROM memory_candidates WHERE device_id=? AND status IN ('candidate','conflict') "
+            "AND (resolution_status IS NULL OR resolution_status!='resolved') ORDER BY id",
+            (device_id,),
+        ).fetchall()]
+        catalog = _memory_entity_catalog(conn, device_id)
+    finally:
+        conn.close()
+    if not rows:
+        return {"device_id": device_id, "reviewed": 0, "applied": 0, "items": []}
+    prompt = """你是记忆实体审计器。根据证据摘要修正旧候选的主体类型、实体和谓词，不得补充证据中没有的事实。
+优先从 entity_catalog 召回同一实体，但名称相似不等于同一实体；品牌、门店、学校、校区必须区分。
+当前用户的第一人称或旧模型写出的 person:user/用户/本人应解析为 user/我。
+必须先独立判断 value 实际是什么类型，再选择谓词；不能为了迁就旧谓词而伪造值类型。value_type 只能是一个枚举值，
+禁止输出 school/organization 这类组合。城市名就是 city，学校名才是 school：在某城市上学但没说学校，应输出 study_city，
+不能输出 education；在某学校上学才输出 education。类似地，在某城市工作是 work_city，在具体机构工作是 workplace。
+谓词和值类型必须遵守：education->school/organization；study_city->city；hometown->city/region；
+usual_place->place/poi/school/organization；workplace->place/poi/organization；work_city->city；located_in->city/region/place。
+若无法确定，resolution_status=needs_review，不能猜。只输出 JSON：{"items":[...]}; 每项包含 id、subject_type、
+subject_mention、canonical_subject、subject_entity_id(可空)、predicate、value、canonical_value、value_type、
+value_entity_id(可空)、resolution_confidence、resolution_status、reason。"""
+    payload = {"entity_catalog": catalog, "candidates": [{
+        "id": row["id"], "kind": row["kind"], "entity_key": row["entity_key"],
+        "field_name": row["field_name"], "value": row["candidate_value"],
+        "evidence_summary": row.get("evidence_summary"), "confidence": row["confidence"],
+    } for row in rows]}
+    completion = llm_client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "system", "content": prompt},
+                  {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+        temperature=0, stream=False, response_format={"type": "json_object"},
+    )
+    parsed = _extract_json((completion.choices[0].message.content or "").strip())
+    proposals = parsed.get("items", []) if isinstance(parsed, dict) else []
+    row_by_id = {int(row["id"]): row for row in rows}
+    report, applied = [], 0
+    conn = _db_connect()
+    try:
+        if apply:
+            conn.execute("BEGIN IMMEDIATE")
+        for proposal in proposals:
+            try:
+                candidate_id = int(proposal.get("id"))
+            except (TypeError, ValueError):
+                continue
+            old = row_by_id.get(candidate_id)
+            if not old:
+                continue
+            normalized = _memory_normalize_candidate_in_tx(conn, device_id, {
+                **proposal,
+                "confidence": old["confidence"], "persistence_score": old["persistence_score"],
+                "candidate_value": proposal.get("value") or old["candidate_value"],
+                "evidence_summary": old.get("evidence_summary"), "status": old["status"],
+            })
+            if not normalized:
+                continue
+            can_apply = normalized["resolution_status"] == "resolved" and normalized["resolution_confidence"] >= .88
+            report.append({"id": candidate_id, "before": {
+                "kind": old["kind"], "entity": old["entity_key"], "predicate": old["field_name"],
+                "value": old["candidate_value"],
+            }, "after": {
+                "kind": normalized["kind"], "entity": normalized["entity_key"],
+                "predicate": normalized["field_name"], "value": normalized["candidate_value"],
+                "value_type": normalized["value_type"], "subject_entity_id": normalized["subject_entity_id"],
+            }, "can_apply": can_apply, "reason": proposal.get("reason") or normalized.get("decision_reason")})
+            if not apply or not can_apply:
+                continue
+            duplicate = conn.execute(
+                "SELECT id FROM memory_candidates WHERE device_id=? AND kind=? AND entity_key=? AND field_name=? "
+                "AND candidate_value=? AND id!=?",
+                (device_id, normalized["kind"], normalized["entity_key"], normalized["field_name"],
+                 normalized["candidate_value"], candidate_id),
+            ).fetchone()
+            if duplicate:
+                target_id = int(duplicate["id"])
+                conn.execute(
+                    "INSERT OR IGNORE INTO memory_candidate_evidence(candidate_id,conversation_id,from_seq,to_seq,"
+                    "confidence,persistence_score,evidence_summary,created_at) "
+                    "SELECT ?,conversation_id,from_seq,to_seq,confidence,persistence_score,evidence_summary,created_at "
+                    "FROM memory_candidate_evidence WHERE candidate_id=?", (target_id, candidate_id),
+                )
+                conn.execute("UPDATE memory_candidates SET status='dismissed',decision_reason='已合并到规范实体',updated_at=? WHERE id=?", (_now(), candidate_id))
+            else:
+                conn.execute(
+                    "UPDATE memory_candidates SET kind=?,entity_key=?,field_name=?,candidate_value=?,"
+                    "subject_entity_id=?,value_entity_id=?,value_type=?,resolution_confidence=?,"
+                    "resolution_status='resolved',decision_reason=?,updated_at=? WHERE id=?",
+                    (normalized["kind"], normalized["entity_key"], normalized["field_name"],
+                     normalized["candidate_value"], normalized["subject_entity_id"], normalized["value_entity_id"],
+                     normalized["value_type"], normalized["resolution_confidence"],
+                     proposal.get("reason") or "存量实体与字段审计通过", _now(), candidate_id),
+                )
+            conn.execute(
+                "INSERT INTO memory_entity_merge_events(device_id,source_entity_id,target_entity_id,action,reason,"
+                "evidence_json,reversible,created_at) VALUES(?,?,?,?,?,?,1,?)",
+                (device_id, old.get("subject_entity_id"), normalized["subject_entity_id"], "legacy_candidate_normalized",
+                 proposal.get("reason") or "存量候选通过实体与字段审计",
+                 json.dumps({"candidate_id": candidate_id, "before": report[-1]["before"], "after": report[-1]["after"]}, ensure_ascii=False), _now()),
+            )
+            applied += 1
+        if apply:
+            _memory_reconcile_candidates(conn, device_id)
+            conn.commit()
+    except Exception:
+        if apply:
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"device_id": device_id, "reviewed": len(report), "applied": applied, "items": report}
+
+
+def memory_audit_entity_duplicates(device_id: str) -> dict:
+    """从存量实体目录召回疑似重复项；这里只提建议，不自动合并。"""
+    conn = _db_connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _memory_entity_bootstrap_in_tx(conn, device_id)
+        conn.commit()
+        catalog = _memory_entity_catalog(conn, device_id, 200)
+    finally:
+        conn.close()
+    by_type: dict[str, list[dict]] = {}
+    for entity in catalog:
+        by_type.setdefault(entity["type"], []).append(entity)
+    review_pool = [group for group in by_type.values() if len(group) > 1]
+    if not review_pool:
+        return {"device_id": device_id, "entities": len(catalog), "suggestions": []}
+    prompt = """你是实体去重审计器。只在同一类型的存量实体中寻找可能指向同一现实对象的记录。
+名称相似不是充分条件；品牌与门店、学校与校区、同名人物必须保持分开。已有相同外部ID时可以高置信合并。
+别名、简称、语言变体和上下文明确等价时可提出建议。不得创建新实体，不得修改数据。
+输出 JSON：{"suggestions":[{"source_ids":[],"target_id":"","confidence":0到1,"reason":""}]}。
+没有可靠重复项就返回空数组。"""
+    completion = llm_client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "system", "content": prompt},
+                  {"role": "user", "content": json.dumps({"groups_by_type": review_pool}, ensure_ascii=False)}],
+        temperature=0, stream=False, response_format={"type": "json_object"},
+    )
+    parsed = _extract_json((completion.choices[0].message.content or "").strip())
+    valid_ids = {item["id"] for item in catalog}
+    suggestions = []
+    for raw in parsed.get("suggestions", []) if isinstance(parsed, dict) else []:
+        sources = [str(x) for x in raw.get("source_ids", []) if str(x) in valid_ids]
+        target = str(raw.get("target_id") or "")
+        try:
+            confidence = min(1.0, max(0.0, float(raw.get("confidence", 0))))
+        except (TypeError, ValueError):
+            confidence = 0
+        if target not in valid_ids or target in sources or not sources or confidence < .65:
+            continue
+        target_type = next(x["type"] for x in catalog if x["id"] == target)
+        if any(next(x["type"] for x in catalog if x["id"] == source) != target_type for source in sources):
+            continue
+        suggestions.append({"source_ids": sources, "target_id": target, "confidence": confidence,
+                            "reason": _memory_clean_text(raw.get("reason"), 200)})
+    return {"device_id": device_id, "entities": len(catalog), "suggestions": suggestions}
 
 MEMORY_AUTO_CONFIDENCE = 0.88
 MEMORY_AUTO_PERSISTENCE = 0.78
@@ -4730,11 +5129,13 @@ def _candidate_groups_from_rows(rows: list[dict]) -> list[dict]:
     for raw in rows:
         row = dict(raw)
         predicate = _candidate_normalize_predicate(row)
-        key = (str(row.get("kind") or ""), str(row.get("entity_key") or "").strip(), predicate)
+        entity_group_key = str(row.get("subject_entity_id") or row.get("entity_key") or "").strip()
+        key = (str(row.get("kind") or ""), entity_group_key, predicate)
         grouped.setdefault(key, []).append(row)
     out = []
-    for (kind, entity, predicate), members in grouped.items():
+    for (kind, _entity_group_key, predicate), members in grouped.items():
         members.sort(key=lambda x: int(x.get("updated_at") or 0), reverse=True)
+        entity = str(members[0].get("entity_key") or "").strip()
         value = _candidate_canonical_value(predicate, [str(x.get("candidate_value") or "") for x in members])
         status = "conflict" if any(x.get("status") == "conflict" for x in members) else "candidate"
         evidence = []
@@ -4752,6 +5153,11 @@ def _candidate_groups_from_rows(rows: list[dict]) -> list[dict]:
             "persistence_score": max(float(x.get("persistence_score") or 0.5) for x in members),
             "evidence_count": sum(max(1, int(x.get("evidence_count") or 1)) for x in members),
             "independent_count": max(int(x.get("independent_count") or 1) for x in members),
+            "subject_entity_id": next((x.get("subject_entity_id") for x in members if x.get("subject_entity_id")), None),
+            "value_entity_id": next((x.get("value_entity_id") for x in members if x.get("value_entity_id")), None),
+            "value_type": next((x.get("value_type") for x in members if x.get("value_type")), None),
+            "resolution_confidence": min(float(x.get("resolution_confidence") or .5) for x in members),
+            "resolution_status": "needs_review" if any(x.get("resolution_status") != "resolved" for x in members) else "resolved",
             "sensitive": _candidate_is_sensitive(kind, predicate),
             "decision_reason": next((x.get("decision_reason") for x in members if x.get("decision_reason")), None),
             "candidate_ids": [int(x["id"]) for x in members],
@@ -4846,7 +5252,7 @@ def _memory_wiki_projection(device_id: str, candidate_groups: list[dict] | None 
             "origin": fact.get("origin"), "action_id": fact.get("action_id"),
         })
         value_node = f"value:{fact['predicate']}:{fact['value']}"
-        value_type = "place" if fact["predicate"] in ("usual_place", "workplace", "place_detail") else "fact"
+        value_type = "place" if fact["predicate"] in ("usual_place", "workplace", "place_detail", "study_city", "work_city", "located_in") else "fact"
         nodes.setdefault(value_node, {"id": value_node, "type": value_type, "label": fact["value"], "status": fact["status"]})
         edges.append({"id": f"fact:{fact['id']}", "source": page["id"], "target": value_node,
                       "label": _CANDIDATE_PREDICATE_LABELS.get(fact["predicate"], fact["predicate"]), "status": fact["status"],
@@ -4888,6 +5294,22 @@ def _memory_wiki_projection(device_id: str, candidate_groups: list[dict] | None 
 
 
 def _memory_snapshot(device_id: str) -> dict:
+    entity_conn = _db_connect()
+    try:
+        entity_conn.execute("BEGIN IMMEDIATE")
+        _memory_entity_bootstrap_in_tx(entity_conn, device_id)
+        entity_conn.commit()
+        entity_catalog = _memory_entity_catalog(entity_conn, device_id)
+        entity_audit = [dict(row) for row in entity_conn.execute(
+            "SELECT id,source_entity_id,target_entity_id,action,reason,reversible,created_at "
+            "FROM memory_entity_merge_events WHERE device_id=? ORDER BY created_at DESC LIMIT 30",
+            (device_id,),
+        ).fetchall()]
+    except Exception:
+        entity_conn.rollback()
+        raise
+    finally:
+        entity_conn.close()
     preferences = _memory_rows(device_id)
     people = _people_rows(device_id)
     episodes = _episode_rows(device_id, 50)
@@ -4919,6 +5341,8 @@ def _memory_snapshot(device_id: str) -> dict:
         # raw candidates stay server-side/admin-facing; user UI receives semantic groups.
         "candidates": candidates,
         "candidate_groups": candidate_groups,
+        "entities": entity_catalog,
+        "entity_audit": entity_audit,
         "wiki_pages": wiki["pages"],
         "graph": wiki["graph"],
         "stats": {
@@ -4926,6 +5350,7 @@ def _memory_snapshot(device_id: str) -> dict:
             "expired": sum(1 for p in people if p.get("place_status") == "expired"),
             "planning_records": len(episodes),
             "candidates": len(candidate_groups),
+            "entities": len(entity_catalog),
         },
         "policy": {
             "model": "source_to_compiled_profile",
@@ -5125,16 +5550,22 @@ def _memory_compile_extract(
     prompt = """你是 Middot 的记忆编译器。只从 compile_range 中提取未来会面规划可能有用的事实。
 context_only 只能用于消解“他/那里/这家”等指代，禁止从中再次提取事实。
 只能依据用户说的话和用户亲自提交的可见选择；助手文字只能帮助理解，不能作为事实证据。
+role=user 里“我/本人/我自己”指当前设备用户，必须输出 subject_type=user、canonical_subject=我；不得输出 person:user。
 搜索结果、推荐结果、模型猜测、临时路线、‘今天/这次/先按’的信息不得成为长期候选。
 明确‘请记住’且已经走过确认卡的内容由即时链路处理，这里不要重复创建。
 若新内容与 current_profile 冲突，不要覆盖，只输出 status=conflict 的候选。
-字段必须使用规范语义名：人物只用 relation、usual_place、hometown、education；地点只用 place_detail 或 workplace；
-偏好用 preference。简称要规范化，同一人物的学校与校区应合成最具体值，例如“浙大+紫金港”输出
-field_name=usual_place,value=浙江大学紫金港校区，同一实体同一字段每轮最多一项。
+先从 entity_catalog 召回同一实体。只有确实同一且 resolution_confidence>=0.9 时填写已有 subject_entity_id/value_entity_id；
+否则 ID 留空并给 canonical_subject/canonical_value，绝不能因名字相似强行合并。品牌与具体门店、学校与校区是不同实体。
+字段必须使用规范语义名：relation、usual_place、hometown、education、study_city、workplace、work_city、
+place_detail、located_in、preference、feedback。值必须标注 value_type：person|place|poi|brand|organization|school|
+city|region|address|activity|food|signal|relation|text。比如“我在南京上学”是 user/我 + study_city + 南京(city)，
+绝不能写成 education=南京；“我在清华上学”才是 education=清华大学(school)。同一实体同一字段每轮最多一项。
 除事实置信度 confidence 外，给 persistence_score(0到1)：它表示这件事适合长期保存的程度。
 带“今天/这次/现在/可能/先按”的临时信息 persistence_score 必须低于0.35；“平时/通常/长期/以后都”可高于0.8。
 输出严格 JSON：{"candidates":[...]}; 每项字段为：
-kind(person|preference|place|poi), entity_key, field_name, value, confidence(0到1), persistence_score(0到1), evidence_summary, status(candidate|conflict)。
+subject_type(user|person|preference|place|poi|brand|organization), subject_mention, canonical_subject,
+subject_entity_id(可空), predicate, value, canonical_value, value_type, value_entity_id(可空),
+resolution_confidence(0到1), confidence(0到1), persistence_score(0到1), evidence_summary, status(candidate|conflict)。
 evidence_summary 是不超过60字的事实摘要，不要复制整段对话。没有可靠内容则返回 {"candidates":[]}。"""
     payload = {
         "context_only": context_events,
@@ -5157,11 +5588,11 @@ evidence_summary 是不超过60字的事实摘要，不要复制整段对话。�
     for item in raw_items[:20]:
         if not isinstance(item, dict):
             continue
-        kind = str(item.get("kind") or "").strip()
-        entity = _memory_clean_text(item.get("entity_key"), 80)
-        field = _memory_clean_text(item.get("field_name"), 80)
+        kind = str(item.get("subject_type") or item.get("kind") or "").strip()
+        entity = _memory_clean_text(item.get("subject_mention") or item.get("entity_key"), 80)
+        field = _memory_clean_text(item.get("predicate") or item.get("field_name"), 80)
         value = _memory_clean_text(item.get("value"), 160)
-        if kind not in ("person", "preference", "place", "poi") or not entity or not field or not value:
+        if kind not in ("user", "person", "preference", "place", "poi", "brand", "organization") or not entity or not field or not value:
             continue
         try:
             confidence = min(1.0, max(0.0, float(item.get("confidence", 0.5))))
@@ -5174,9 +5605,10 @@ evidence_summary 是不超过60字的事实摘要，不要复制整段对话。�
         except (TypeError, ValueError):
             persistence_score = 0.5
         out.append({
-            "kind": kind,
-            "entity_key": entity,
-            "field_name": field,
+            **item,
+            "kind": kind, "subject_type": kind,
+            "entity_key": entity, "subject_mention": entity,
+            "field_name": field, "predicate": field,
             "candidate_value": value,
             "confidence": confidence,
             "persistence_score": persistence_score,
@@ -5195,16 +5627,23 @@ def _memory_candidate_add_evidence(
     conn.execute(
         "INSERT INTO memory_candidates(device_id,kind,entity_key,field_name,candidate_value,confidence,"
         "persistence_score,evidence_count,independent_count,evidence_summary,source_conversation_id,"
-        "source_from_seq,source_to_seq,status,created_at,updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "source_from_seq,source_to_seq,status,created_at,updated_at,subject_entity_id,value_entity_id,"
+        "value_type,resolution_confidence,resolution_status,decision_reason) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(device_id,kind,entity_key,field_name,candidate_value) DO UPDATE SET "
         "evidence_summary=excluded.evidence_summary,source_conversation_id=excluded.source_conversation_id,"
         "source_from_seq=excluded.source_from_seq,source_to_seq=excluded.source_to_seq,"
+        "subject_entity_id=COALESCE(excluded.subject_entity_id,memory_candidates.subject_entity_id),"
+        "value_entity_id=COALESCE(excluded.value_entity_id,memory_candidates.value_entity_id),"
+        "value_type=excluded.value_type,resolution_confidence=excluded.resolution_confidence,"
+        "resolution_status=excluded.resolution_status,decision_reason=excluded.decision_reason,"
         "status=CASE WHEN memory_candidates.status='dismissed' THEN memory_candidates.status ELSE excluded.status END,"
         "updated_at=excluded.updated_at",
         (device_id,item["kind"],item["entity_key"],item["field_name"],item["candidate_value"],
          confidence,persistence_score,1,1,item["evidence_summary"],conversation_id,
-         from_seq,target_seq,item["status"],now,now),
+         from_seq,target_seq,item["status"],now,now,item.get("subject_entity_id"),item.get("value_entity_id"),
+         item.get("value_type"),float(item.get("resolution_confidence",.5)),
+         item.get("resolution_status","unresolved"),item.get("decision_reason")),
     )
     row=conn.execute(
         "SELECT id,confidence,persistence_score FROM memory_candidates WHERE device_id=? AND kind=? "
@@ -5239,7 +5678,8 @@ def _memory_candidate_rows_in_tx(conn: sqlite3.Connection, device_id: str) -> li
     return [dict(row) for row in conn.execute(
         "SELECT id,kind,entity_key,field_name,candidate_value,confidence,persistence_score,evidence_count,"
         "independent_count,decision_reason,evidence_summary,status,source_conversation_id,source_from_seq,"
-        "source_to_seq,created_at,updated_at FROM memory_candidates WHERE device_id=? "
+        "source_to_seq,created_at,updated_at,subject_entity_id,value_entity_id,value_type,"
+        "resolution_confidence,resolution_status FROM memory_candidates WHERE device_id=? "
         "AND status IN ('candidate','conflict') ORDER BY updated_at DESC",(device_id,),
     ).fetchall()]
 
@@ -5256,7 +5696,12 @@ def _memory_reconcile_candidates(conn: sqlite3.Connection, device_id: str) -> di
             (device_id,group["kind"],group["entity_key"],group["predicate"]),
         ).fetchone()
         same=bool(current and _memory_clean_text(current["value"],160)==_memory_clean_text(group["value"],160))
-        eligible=(confidence>=MEMORY_AUTO_CONFIDENCE and persistence>=MEMORY_AUTO_PERSISTENCE and independent>=2 and not sensitive)
+        resolved = group.get("resolution_status") == "resolved" and float(group.get("resolution_confidence") or 0) >= .88
+        # 当前用户对自己作出的明确、稳定、已通过类型校验的陈述，可由一条第一手证据晋升；
+        # 第三方资料仍要求至少两段独立对话，敏感事实始终不走自动晋升。
+        firsthand_self = group["kind"] == "user" and confidence >= .90 and resolved
+        enough_sources = independent >= 2 or firsthand_self
+        eligible=(confidence>=MEMORY_AUTO_CONFIDENCE and persistence>=MEMORY_AUTO_PERSISTENCE and enough_sources and not sensitive and resolved)
         if same:
             _confirm_candidate_group(conn,device_id,group,rows,group["value"],authority=.75,promotion_reason="evidence_reinforced")
             result["promoted"]+=1
@@ -5286,7 +5731,8 @@ def _memory_reconcile_candidates(conn: sqlite3.Connection, device_id: str) -> di
             _confirm_candidate_group(conn,device_id,group,rows,group["value"],authority=.7,promotion_reason="auto_high_confidence")
             result["promoted"]+=1
         else:
-            reason=("敏感事实需要本人确认" if sensitive else
+            reason=("实体或字段仍需消歧" if not resolved else
+                    "敏感事实需要本人确认" if sensitive else
                     "仍需独立对话证据" if independent<2 else
                     "长期稳定性不足" if persistence<MEMORY_AUTO_PERSISTENCE else "事实置信度不足")
             conn.execute(
@@ -5416,6 +5862,17 @@ def _memory_process_compile_job(job: dict, worker_id: str) -> dict:
         conn.close()
 
     profile = _memory_snapshot(device_id)
+    catalog_conn = _db_connect()
+    try:
+        catalog_conn.execute("BEGIN IMMEDIATE")
+        _memory_entity_bootstrap_in_tx(catalog_conn, device_id)
+        catalog_conn.commit()
+        profile["entity_catalog"] = _memory_entity_catalog(catalog_conn, device_id)
+    except Exception:
+        catalog_conn.rollback()
+        raise
+    finally:
+        catalog_conn.close()
     candidates = _memory_compile_extract(events, context_events, {
         "preferences": profile.get("preferences", []),
         "people": profile.get("people", []),
@@ -5438,8 +5895,14 @@ def _memory_process_compile_job(job: dict, worker_id: str) -> dict:
             conn.rollback()
             _memory_finish_job(int(job["id"]), worker_id, "done")
             return {"status": "superseded"}
+        normalized_candidates = []
         for item in candidates:
-            _memory_candidate_add_evidence(conn,device_id,item,conversation_id,from_seq,target_seq,now)
+            normalized = _memory_normalize_candidate_in_tx(conn, device_id, item)
+            if not normalized:
+                continue
+            normalized_candidates.append(normalized)
+            _memory_candidate_add_evidence(conn,device_id,normalized,conversation_id,from_seq,target_seq,now)
+        candidates = normalized_candidates
         reconciliation=_memory_reconcile_candidates(conn,device_id) if candidates else {"promoted":0,"challenged":0,"waiting":0}
         conn.execute(
             "INSERT OR IGNORE INTO memory_compile_runs(conversation_id,from_seq,target_seq,reason,status,"
@@ -5735,13 +6198,16 @@ def _confirm_candidate_group(
     fact_confidence=1.0 if authority>=1 else max(float(group["confidence"]),float(current["confidence"]) if current and not changed else 0)
     conn.execute(
         "INSERT INTO memory_wiki_facts(device_id,subject_type,subject_key,predicate,value,confidence,status,"
-        "valid_from,expires_at,created_at,updated_at,authority,promotion_reason) VALUES(?,?,?,?,?,?, 'confirmed',?,?,?,?,?,?) "
+        "valid_from,expires_at,created_at,updated_at,authority,promotion_reason,subject_entity_id,value_entity_id,value_type) "
+        "VALUES(?,?,?,?,?,?, 'confirmed',?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(device_id,subject_type,subject_key,predicate) DO UPDATE SET "
         "value=excluded.value,confidence=excluded.confidence,status='confirmed',valid_from=excluded.valid_from,"
         "expires_at=excluded.expires_at,updated_at=excluded.updated_at,authority=excluded.authority,"
-        "promotion_reason=excluded.promotion_reason",
+        "promotion_reason=excluded.promotion_reason,subject_entity_id=excluded.subject_entity_id,"
+        "value_entity_id=excluded.value_entity_id,value_type=excluded.value_type",
         (device_id,subject_type,subject_key,predicate,value,fact_confidence,
-         now,expires_at,now,now,authority,promotion_reason),
+         now,expires_at,now,now,authority,promotion_reason,group.get("subject_entity_id"),
+         group.get("value_entity_id"),group.get("value_type")),
     )
     fact = conn.execute(
         "SELECT id FROM memory_wiki_facts WHERE device_id=? AND subject_type=? AND subject_key=? AND predicate=?",
