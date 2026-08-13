@@ -1951,7 +1951,11 @@ def api_admin_memory_job_action(job_id: int, action: str):
     if action not in ("run", "retry", "cancel"):
         return jsonify({"error": "unsupported action"}), 400
     conn = _db()
-    row = conn.execute("SELECT status FROM memory_jobs WHERE id=?", (job_id,)).fetchone()
+    row = conn.execute(
+        "SELECT j.status,j.job_type,j.target_seq,c.last_seq,c.status AS conversation_status "
+        "FROM memory_jobs j LEFT JOIN conversations c ON c.id=j.conversation_id WHERE j.id=?",
+        (job_id,),
+    ).fetchone()
     if not row:
         return jsonify({"error": "任务不存在"}), 404
     if action == "cancel":
@@ -1964,10 +1968,19 @@ def api_admin_memory_job_action(job_id: int, action: str):
     else:
         if row["status"] == "running":
             return jsonify({"error": "任务正在执行"}), 409
+        if row["conversation_status"] not in ("active", "deleting"):
+            return jsonify({"error": "对应对话已不存在或不可整理"}), 409
+        # “立即执行”是管理员明确覆盖闲置等待，不能继续保留 idle_compile，
+        # 否则 worker 会因未满30分钟将它标成 cancelled。
+        next_type = row["job_type"]
+        if action == "run" and next_type == "idle_compile":
+            next_type = "manual_compile"
+        target_seq = max(int(row["target_seq"] or 0), int(row["last_seq"] or 0))
         conn.execute(
-            "UPDATE memory_jobs SET status='pending',run_after=?,priority=MAX(priority,90),"
-            "lease_until=NULL,worker_id=NULL,last_error=NULL,finished_at=NULL WHERE id=?",
-            (_now(), job_id),
+            "UPDATE memory_jobs SET job_type=?,target_seq=?,status='pending',run_after=?,"
+            "priority=MAX(priority,90),lease_until=NULL,worker_id=NULL,last_error=NULL,"
+            "started_at=NULL,finished_at=NULL WHERE id=?",
+            (next_type, target_seq, _now(), job_id),
         )
     conn.commit()
     return jsonify({"ok": True})

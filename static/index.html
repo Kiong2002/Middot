@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>中点 Middot · 每次约都刚好在中间</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='b' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%234CA5FF'/><stop offset='1' stop-color='%230057D9'/></linearGradient><radialGradient id='h' cx='28%25' cy='22%25' r='70%25'><stop offset='0' stop-color='%23FFFFFF' stop-opacity='0.22'/><stop offset='1' stop-color='%23FFFFFF' stop-opacity='0'/></radialGradient><linearGradient id='l' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23FFB067'/><stop offset='1' stop-color='%23F76B15'/></linearGradient><radialGradient id='d' cx='40%25' cy='35%25' r='70%25'><stop offset='0' stop-color='%23FFF6E0'/><stop offset='1' stop-color='%23FFCB70'/></radialGradient></defs><rect width='32' height='32' rx='10' fill='url(%23b)'/><rect width='32' height='32' rx='10' fill='url(%23h)'/><path d='M6 8 C 6 20, 26 12, 26 24' stroke='url(%23l)' stroke-width='2.6' fill='none' stroke-linecap='round'/><circle cx='16' cy='16' r='3.8' fill='url(%23d)'/></svg>"/>
+  <link rel="icon" type="image/svg+xml" href="/static/middot-mark.svg"/>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -155,9 +155,9 @@
       overflow: hidden;
       display: flex; align-items: center; justify-content: center;
       flex-shrink: 0;
-      box-shadow: 0 1px 2px rgba(0,68,153,.18), 0 5px 14px rgba(0,112,243,.16);
+      box-shadow: 0 1px 2px rgba(4,15,28,.22), 0 7px 18px rgba(11,23,38,.16);
     }
-    .brand-icon svg { width: 34px; height: 34px; display: block; }
+    .brand-icon img { width: 34px; height: 34px; display: block; }
     .brand-name { font-weight: 680; font-size: 16px; letter-spacing: -0.025em; }
     .brand-sub  { font-size: 13px; color: var(--text-3); margin-left: 8px; }
 
@@ -2797,48 +2797,7 @@
         <button class="icon-btn mobile-only" id="mobileMenuBtn" title="打开侧栏" aria-label="打开侧栏">
           <i data-lucide="menu"></i>
         </button>
-        <div class="brand-icon" title="中点 · 一条路线穿过会面点">
-          <svg viewBox="0 0 34 34" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="中点 logo">
-            <defs>
-              <linearGradient id="midBgGrad" x1="4" y1="2" x2="30" y2="33" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#66B8FF"/>
-                <stop offset="0.48" stop-color="#1688F8"/>
-                <stop offset="1" stop-color="#0062D6"/>
-              </linearGradient>
-              <radialGradient id="midBgHi" cx="0" cy="0" r="1" gradientTransform="translate(10 7) rotate(51) scale(30)">
-                <stop stop-color="#FFFFFF" stop-opacity="0.34"/>
-                <stop offset="0.62" stop-color="#FFFFFF" stop-opacity="0"/>
-              </radialGradient>
-              <linearGradient id="midRope" x1="5" y1="0" x2="29" y2="0" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#87E7D0"/>
-                <stop offset="0.5" stop-color="#EAF8FF"/>
-                <stop offset="1" stop-color="#FFAD83"/>
-              </linearGradient>
-              <linearGradient id="midPick" x1="12" y1="9" x2="22" y2="27" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#FFFFFF"/>
-                <stop offset="0.58" stop-color="#EAF5FF"/>
-                <stop offset="1" stop-color="#C8E4FF"/>
-              </linearGradient>
-              <filter id="midPickShadow" x="6" y="5" width="23" height="25" filterUnits="userSpaceOnUse">
-                <feDropShadow dx="0" dy="1.5" stdDeviation="1.2" flood-color="#004FAD" flood-opacity="0.38"/>
-              </filter>
-            </defs>
-            <rect x="0.5" y="0.5" width="33" height="33" rx="10.5" fill="url(#midBgGrad)"/>
-            <rect x="0.5" y="0.5" width="33" height="33" rx="10.5" fill="url(#midBgHi)"/>
-            <rect x="1" y="1" width="32" height="32" rx="10" fill="none" stroke="#FFFFFF" stroke-opacity="0.24"/>
-            <!-- 绳索后段先从拨片背后经过 -->
-            <path d="M5 15.2C10 11.5 12.5 20.4 17 17C21.2 13.8 24 18.5 29 15.5" fill="none" stroke="#0059BC" stroke-opacity="0.34" stroke-width="3.6" stroke-linecap="round"/>
-            <path d="M5 14.4C10 10.8 12.5 19.7 17 16.3C21.2 13.1 24 17.8 29 14.8" fill="none" stroke="url(#midRope)" stroke-width="2.45" stroke-linecap="round"/>
-            <!-- 圆润拨片兼具地图定位针轮廓 -->
-            <path d="M17 7.7C22.8 7.7 25.8 11.2 23.9 16.8C22.2 21.6 17 27 17 27S11.8 21.6 10.1 16.8C8.2 11.2 11.2 7.7 17 7.7Z" fill="url(#midPick)" filter="url(#midPickShadow)"/>
-            <path d="M17 8.6C21.9 8.6 24.4 11.5 22.8 16.2" fill="none" stroke="#FFFFFF" stroke-opacity="0.78" stroke-width="1.1" stroke-linecap="round"/>
-            <!-- 绳索穿过拨片中央的短通道，制造前后层次 -->
-            <path d="M13.1 16.5C14.4 18 15.7 17.3 17 16.3C18.3 15.3 19.5 15.2 20.9 16" fill="none" stroke="#91BDE8" stroke-width="3.5" stroke-linecap="round"/>
-            <path d="M13.1 15.8C14.4 17.3 15.7 16.6 17 15.6C18.3 14.6 19.5 14.5 20.9 15.3" fill="none" stroke="url(#midRope)" stroke-width="2.25" stroke-linecap="round"/>
-            <circle cx="5" cy="14.4" r="1.8" fill="#87E7D0"/>
-            <circle cx="29" cy="14.8" r="1.8" fill="#FFAD83"/>
-          </svg>
-        </div>
+        <div class="brand-icon" title="中点 · 一条路线穿过会面点"><img src="/static/middot-mark.svg" alt="中点 logo"></div>
         <div>
           <span class="brand-name">中点</span>
           <span class="brand-sub">Middot · 约在正中间</span>
