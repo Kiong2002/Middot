@@ -61,8 +61,10 @@ assert client.post(
     f"/api/admin/memory/jobs/{job['id']}/run", headers=admin_headers
 ).status_code == 200
 conn = module._db_connect()
-queued = conn.execute("SELECT status,run_after FROM memory_jobs WHERE id=?", (job["id"],)).fetchone()
+queued = conn.execute("SELECT job_type,status,run_after,target_seq FROM memory_jobs WHERE id=?", (job["id"],)).fetchone()
+assert queued["job_type"] == "manual_compile"
 assert queued["status"] == "pending" and queued["run_after"] <= module._now()
+assert queued["target_seq"] == 1
 conn.close()
 
 # Worker 心跳会出现在总览；候选记忆可从管理台忽略。
