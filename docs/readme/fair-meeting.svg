@@ -1,0 +1,37 @@
+<svg width="1200" height="520" viewBox="0 0 1200 520" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">从国贸和清华出发，Middot 比较真实路线后找到公平会面点</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="520"><stop stop-color="#F2F8FE"/><stop offset=".52" stop-color="#F7FAFD"/><stop offset="1" stop-color="#F7F3FF"/></linearGradient>
+    <linearGradient id="routeA" x1="120" y1="390" x2="630" y2="244"><stop stop-color="#55D6BA"/><stop offset="1" stop-color="#188CF8"/></linearGradient>
+    <linearGradient id="routeB" x1="350" y1="72" x2="630" y2="244"><stop stop-color="#9B74F4"/><stop offset="1" stop-color="#188CF8"/></linearGradient>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.2" fill="#AFC5D9" fill-opacity=".45"/></pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dy="10" stdDeviation="15" flood-color="#183B5A" flood-opacity=".12"/></filter>
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%"><feDropShadow dy="4" stdDeviation="10" flood-color="#188CF8" flood-opacity=".35"/></filter>
+  </defs>
+  <rect width="1200" height="520" rx="34" fill="url(#bg)"/>
+  <rect x="25" y="25" width="820" height="470" rx="26" fill="white" fill-opacity=".72" stroke="#D6E4F0"/>
+  <rect x="25" y="25" width="820" height="470" rx="26" fill="url(#dots)"/>
+  <g stroke="#DCE8F2" stroke-width="13" stroke-linecap="round" opacity=".82">
+    <path d="M73 142C180 125 230 171 318 153C410 134 471 76 584 94C692 111 725 167 805 181"/>
+    <path d="M57 324C171 306 244 334 333 318C428 300 509 279 597 305C676 328 742 389 820 380"/>
+    <path d="M238 49C230 131 253 208 229 278C211 333 167 397 179 477"/>
+    <path d="M666 42C620 112 650 168 625 228C599 292 541 371 562 482"/>
+  </g>
+  <path d="M131 390C235 382 264 310 355 314C456 318 487 245 624 247" stroke="url(#routeA)" stroke-width="7" stroke-linecap="round" stroke-dasharray="4 13"/>
+  <path d="M352 91C404 128 403 194 469 210C527 225 551 244 624 247" stroke="url(#routeB)" stroke-width="7" stroke-linecap="round" stroke-dasharray="4 13"/>
+  <g font-family="Inter,-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif" filter="url(#shadow)">
+    <g transform="translate(74 354)"><rect width="172" height="74" rx="22" fill="white" stroke="#CCE8E2"/><circle cx="29" cy="27" r="9" fill="#55D6BA"/><text x="47" y="32" fill="#17354F" font-size="16" font-weight="720">我 · 国贸</text><text x="22" y="58" fill="#6E8397" font-size="13">公交 32 分钟</text></g>
+    <g transform="translate(286 48)"><rect width="176" height="74" rx="22" fill="white" stroke="#DDD4F7"/><circle cx="29" cy="27" r="9" fill="#9B74F4"/><text x="47" y="32" fill="#17354F" font-size="16" font-weight="720">朋友 · 清华</text><text x="22" y="58" fill="#6E8397" font-size="13">公交 35 分钟</text></g>
+  </g>
+  <g filter="url(#glow)"><circle cx="624" cy="247" r="30" fill="white"/><circle cx="624" cy="247" r="20" fill="#188CF8"/><circle cx="624" cy="247" r="6" fill="white"/></g>
+  <g transform="translate(520 286)" font-family="Inter,-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif" filter="url(#shadow)"><rect width="240" height="92" rx="22" fill="white" stroke="#CFE3F5"/><text x="22" y="31" fill="#178CF8" font-size="12" font-weight="760">公平会面点</text><text x="22" y="58" fill="#122D45" font-size="18" font-weight="760">三里屯·太古里</text><text x="22" y="79" fill="#74899C" font-size="12">两人时间差 3 分钟</text></g>
+  <g font-family="Inter,-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif">
+    <text x="891" y="75" fill="#188CF8" font-size="13" font-weight="760">真实路线 · 实时比较</text>
+    <text x="891" y="118" fill="#102B43" font-size="29" font-weight="780">不是地图的中点，</text>
+    <text x="891" y="157" fill="#102B43" font-size="29" font-weight="780">是大家的中间。</text>
+    <text x="891" y="199" fill="#6A8094" font-size="15">结合交通方式、通勤时间与偏好，</text>
+    <text x="891" y="225" fill="#6A8094" font-size="15">让每个人都不用走得太远。</text>
+    <g transform="translate(891 267)"><rect width="256" height="63" rx="18" fill="white" stroke="#D8E5F0"/><circle cx="29" cy="31" r="12" fill="#E8FBF6"/><path d="M24 31L28 35L35 27" stroke="#25B998" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><text x="52" y="27" fill="#18344D" font-size="14" font-weight="700">逐人比较路线</text><text x="52" y="47" fill="#7B8FA1" font-size="12">不用猜谁更远</text></g>
+    <g transform="translate(891 345)"><rect width="256" height="63" rx="18" fill="white" stroke="#D8E5F0"/><circle cx="29" cy="31" r="12" fill="#EAF5FF"/><path d="M23 32C28 23 31 39 37 28" stroke="#188CF8" stroke-width="2.5" stroke-linecap="round"/><text x="52" y="27" fill="#18344D" font-size="14" font-weight="700">路线变了就重算</text><text x="52" y="47" fill="#7B8FA1" font-size="12">会面点始终公平</text></g>
+  </g>
+</svg>
