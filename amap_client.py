@@ -8,7 +8,9 @@
 import math
 import datetime
 import os
+import time
 import requests
+from requests import exceptions as request_exceptions
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 
@@ -29,7 +31,18 @@ def amap_geocode(address: str, city: str | None = None) -> dict:
     params = {"key": AMAP_KEY, "address": address, "output": "json"}
     if city:
         params["city"] = city
-    resp = requests.get(url, params=params, timeout=10)
+    # 公网服务器到高德偶尔会在连接或读取阶段瞬时超时。地理编码是幂等请求，
+    # 因此仅对网络超时做短退避重试；业务错误仍立即返回，避免掩盖真实问题。
+    resp = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, params=params, timeout=(6, 12))
+            break
+        except (request_exceptions.ConnectTimeout, request_exceptions.ReadTimeout):
+            if attempt == 2:
+                return {"success": False, "error": "定位服务暂时不可用，请稍后重试"}
+            time.sleep(0.35 * (attempt + 1))
+    assert resp is not None
     data = resp.json()
     if data.get("status") == "1" and data.get("geocodes"):
         geocode = data["geocodes"][0]
@@ -247,6 +260,97 @@ def haversine_distance(lng1: float, lat1: float, lng2: float, lat2: float) -> fl
     return R * 2 * math.asin(math.sqrt(a))
 
 
+# ─────────────────────────────────────────────
+# 时长模拟（零高德调用，用于候选中心粗筛）
+# ─────────────────────────────────────────────
+
+# 直线距离 × 城市路网系数 ≈ 实际路程
+_ROUTE_DETOUR_FACTOR = 1.3
+# 各 mode 市区经验平均速度（km/h）
+_MODE_SPEED_KMH = {
+    "walking": 5.0,
+    "cycling": 14.0,
+    "driving": 25.0,
+    "transit": 22.0,
+    "auto":    25.0,
+}
+# 固定加成（分钟）：找车/停车/进站/等车
+_MODE_FIXED_MIN = {
+    "walking": 0.0,
+    "cycling": 0.5,
+    "driving": 2.0,
+    "transit": 5.0,
+    "auto":    2.0,
+}
+
+
+def simulate_route_minutes(
+    from_lng: float, from_lat: float,
+    to_lng: float, to_lat: float,
+    mode: str = "auto",
+) -> float:
+    """
+    用 haversine × 系数 ÷ 速度 + 固定加成，估算时长（分钟）。
+    零外部调用，纯本地几何。给候选中心粗筛用，不做最终展示。
+    比 amap_get_best_route 差 ±30% 左右，但足以在 25 个候选点里挑 top 3。
+    """
+    dist_km = haversine_distance(from_lng, from_lat, to_lng, to_lat)
+    routed_km = dist_km * _ROUTE_DETOUR_FACTOR
+    m = (mode or "auto").lower()
+    speed = _MODE_SPEED_KMH.get(m, _MODE_SPEED_KMH["auto"])
+    fixed = _MODE_FIXED_MIN.get(m, _MODE_FIXED_MIN["auto"])
+    return routed_km / speed * 60.0 + fixed
+
+
+def find_min_max_center(
+    participants: list[dict],
+    seed_center: dict,
+    seed_radius_m: int,
+    grid_n: int = 5,
+    top_k: int = 3,
+) -> list[dict]:
+    """
+    在 seed_center 周围 seed_radius_m 的方框内撒 grid_n × grid_n 网格候选点，
+    用 simulate_route_minutes 估算每候选点的 max(参与者时长)，
+    返回 max 升序的 top_k 候选。
+
+    每候选: {"lng","lat","sim_max_min","sim_times":[per-person]}
+    """
+    valid = [p for p in (participants or [])
+             if p.get("lng") is not None and p.get("lat") is not None]
+    if not valid or grid_n < 1:
+        return []
+
+    lat0 = float(seed_center.get("lat", 0.0))
+    lng0 = float(seed_center.get("lng", 0.0))
+    # 网格边长 = 直径 = 2 × 半径
+    step_km = (seed_radius_m / 1000.0) * 2.0 / max(1, grid_n - 1)
+    d_lat = step_km / 111.0
+    cos_lat = math.cos(math.radians(lat0)) or 1e-6
+    d_lng = step_km / (111.0 * cos_lat)
+
+    candidates: list[dict] = []
+    half = (grid_n - 1) / 2.0
+    for gi in range(grid_n):
+        for gj in range(grid_n):
+            lng = lng0 + (gj - half) * d_lng
+            lat = lat0 + (gi - half) * d_lat
+            times = [
+                simulate_route_minutes(
+                    p["lng"], p["lat"], lng, lat, p.get("prefer") or "auto",
+                )
+                for p in valid
+            ]
+            candidates.append({
+                "lng": lng,
+                "lat": lat,
+                "sim_max_min": max(times),
+                "sim_times": times,
+            })
+    candidates.sort(key=lambda c: c["sim_max_min"])
+    return candidates[:top_k]
+
+
 def amap_get_best_route(
     origin_lng: float, origin_lat: float,
     dest_lng: float, dest_lat: float,
@@ -260,20 +364,26 @@ def amap_get_best_route(
     """
     dist_km = haversine_distance(origin_lng, origin_lat, dest_lng, dest_lat)
 
+    # 用户显式选择：只跑一种，不比较（避免"选骑行结果给了步行"）
     if prefer == "driving":
         return amap_driving_route(origin_lng, origin_lat, dest_lng, dest_lat)
+    if prefer == "walking":
+        return amap_walking_route(origin_lng, origin_lat, dest_lng, dest_lat)
+    if prefer == "cycling":
+        return amap_cycling_route(origin_lng, origin_lat, dest_lng, dest_lat)
+    if prefer == "transit":
+        return amap_transit_route(origin_lng, origin_lat, dest_lng, dest_lat, city, departure_time)
 
+    # auto：并发跑多方式，取最快
     tasks: dict[str, callable] = {}
     if dist_km < 2.5:
         tasks["walking"] = lambda: amap_walking_route(origin_lng, origin_lat, dest_lng, dest_lat)
-    if prefer in ("auto", "cycling") and dist_km < 8:
+    if dist_km < 8:
         tasks["cycling"] = lambda: amap_cycling_route(origin_lng, origin_lat, dest_lng, dest_lat)
-    if prefer in ("auto", "transit"):
-        tasks["transit"] = lambda: amap_transit_route(
-            origin_lng, origin_lat, dest_lng, dest_lat, city, departure_time)
-    if prefer == "auto":
-        tasks["driving"] = lambda: amap_driving_route(
-            origin_lng, origin_lat, dest_lng, dest_lat)
+    tasks["transit"] = lambda: amap_transit_route(
+        origin_lng, origin_lat, dest_lng, dest_lat, city, departure_time)
+    tasks["driving"] = lambda: amap_driving_route(
+        origin_lng, origin_lat, dest_lng, dest_lat)
 
     results: dict[str, dict] = {}
     if not tasks:
