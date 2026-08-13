@@ -1,0 +1,18 @@
+[Unit]
+Description=Middot conversation memory compiler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/Middot
+ExecStart=/root/Middot/venv/bin/python3 /root/Middot/memory_worker.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=MIDDOT_MEMORY_TIMEZONE=Asia/Shanghai
+Environment=MIDDOT_MEMORY_NIGHTLY_HOUR=3
+Environment=MIDDOT_MEMORY_WORKER_POLL_S=2
+
+[Install]
+WantedBy=multi-user.target
