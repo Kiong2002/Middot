@@ -33,15 +33,12 @@
   <circle cx="586" cy="526" r="180" fill="#36B8FF" fill-opacity="0.11" filter="url(#soft)"/>
   <rect x="1" y="1" width="1198" height="558" rx="35" stroke="#CFE3F6" stroke-width="2"/>
 
-  <g transform="translate(82 72)">
-    <rect width="88" height="88" rx="28" fill="url(#blue)"/>
-    <rect x="2" y="2" width="84" height="84" rx="26" stroke="white" stroke-opacity="0.28" stroke-width="2"/>
-    <path d="M14 39C27 29 34 53 45 43C56 33 65 48 75 38" stroke="#0052AF" stroke-opacity="0.35" stroke-width="9" stroke-linecap="round"/>
-    <path d="M14 36C27 26 34 50 45 40C56 30 65 45 75 35" stroke="url(#route)" stroke-width="6" stroke-linecap="round"/>
-    <path d="M44 17C59 17 67 26 62 41C58 54 44 69 44 69C44 69 30 54 26 41C21 26 29 17 44 17Z" fill="white"/>
-    <path d="M33 40C38 46 42 43 45 40C49 36 53 36 57 39" stroke="#188CF8" stroke-width="5.5" stroke-linecap="round"/>
-    <circle cx="14" cy="36" r="4" fill="#63DEC3"/>
-    <circle cx="75" cy="35" r="4" fill="#FF9D72"/>
+  <g transform="translate(82 72) scale(1.375)">
+    <rect x="1" y="1" width="62" height="62" rx="18" fill="#0B1726"/>
+    <rect x="1" y="1" width="62" height="62" rx="18" stroke="#29405A" stroke-width="2"/>
+    <path d="M13 17C24.5 17 22.5 32 32 32C41.5 32 39.5 47 51 47" stroke="#F4F8FC" stroke-width="5.5" stroke-linecap="round"/>
+    <circle cx="13" cy="17" r="3" fill="#F4F8FC"/><circle cx="51" cy="47" r="3" fill="#F4F8FC"/>
+    <circle cx="32" cy="32" r="8.5" fill="#0B1726"/><circle cx="32" cy="32" r="5.5" fill="#4A9FFF"/>
   </g>
 
   <text x="82" y="218" fill="#0C1E33" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="72" font-weight="760" letter-spacing="-2">Middot</text>
