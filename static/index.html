@@ -6460,11 +6460,20 @@
       ASSIST_STATE.waitingLabel = '';
     }
 
+    function normalizeAssistantMarkdown(text) {
+      const code=[];
+      const protectedText=String(text||'').replace(/```[\s\S]*?```|`[^`\n]+`/g,match=>{
+        const token=`@@MIDDOT_CODE_${code.length}@@`;code.push(match);return token;
+      });
+      // CommonMark 会拒绝部分紧邻中文或引号的 **粗体**；转成等价 HTML 后再统一净化。
+      const normalized=protectedText.replace(/\*\*([^*\n]+?)\*\*/g,'<strong>$1</strong>');
+      return normalized.replace(/@@MIDDOT_CODE_(\d+)@@/g,(_,index)=>code[Number(index)]||'');
+    }
     function renderMarkdown(text) {
       if (!window.marked || !window.DOMPurify) return escapeHtml(text).replace(/\n/g, '<br>');
       try {
         marked.setOptions({ breaks: true, gfm: true });
-        return DOMPurify.sanitize(marked.parse(text || ''));
+        return DOMPurify.sanitize(marked.parse(normalizeAssistantMarkdown(text)));
       } catch (_) {
         return escapeHtml(text).replace(/\n/g, '<br>');
       }
@@ -7841,7 +7850,9 @@
             const el = document.createElement('div');
             el.className = `assist-msg ${event.role === 'user' ? 'user' : 'bot'}`;
             el.innerHTML = `<div class="bubble"></div>`;
-            el.querySelector('.bubble').textContent = event.visible_content || '';
+            const bubble=el.querySelector('.bubble');
+            if(event.role==='user')bubble.textContent=event.visible_content||'';
+            else bubble.innerHTML=renderMarkdown(event.visible_content||'');
             ASSIST_STATE.msgsEl.appendChild(el);
           });
         }
