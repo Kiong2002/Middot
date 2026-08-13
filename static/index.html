@@ -1402,9 +1402,13 @@
     .hist-empty { color: var(--text-3); font-size: 13px; text-align: center; padding: 20px 12px; }
 
     /* ── 我的会面档案：来源 → 编译档案 ─────────────── */
-    .memory-modal-panel { max-width: 560px; overflow: hidden; transform-origin: center center; }
+    .memory-modal-panel {
+      display: flex; flex-direction: column;
+      max-width: 560px; max-height: calc(100dvh - 32px);
+      overflow: hidden; transform-origin: center center;
+    }
     .memory-modal-panel.is-graph-view { max-width: min(940px, calc(100vw - 28px)); }
-    .memory-modal-panel.is-graph-view .memory-body { max-height: min(80vh, 760px); }
+    .memory-modal-panel.is-graph-view .memory-body { max-height: none; }
     .memory-modal-panel.is-graph-view .memory-intro,
     .memory-modal-panel.is-graph-view .memory-stats { display: none; }
     .memory-modal-panel.is-view-transitioning { pointer-events: none; }
@@ -1413,7 +1417,7 @@
     }
     .memory-modal-panel .modal-head { margin-bottom: 10px; }
     .memory-body {
-      max-height: min(72vh, 720px); overflow-y: auto;
+      flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto;
       padding-right: 3px; overscroll-behavior: contain;
     }
     .memory-intro {
@@ -1588,7 +1592,11 @@
       border-radius: 14px; color: var(--text-3); font-size: 12px; line-height: 1.6;
     }
     .memory-empty [data-lucide] { display: block; width: 24px; height: 24px; margin: 0 auto 7px; color: var(--brand); }
-    .memory-footer { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .memory-footer {
+      flex: 0 0 auto; display: grid; grid-template-columns: 1fr auto; gap: 8px;
+      padding-top: 12px; margin-top: 10px; border-top: 1px solid var(--line);
+      background: var(--panel);
+    }
     .memory-chat-btn {
       display: inline-flex; align-items: center; justify-content: center; gap: 6px;
       min-height: 38px; padding: 8px 12px; border-radius: 10px;
@@ -2710,7 +2718,7 @@
 
     @media (max-width: 820px) {
       .modal-overlay.bottom-sheet .memory-modal-panel { max-height: 88dvh; }
-      .memory-body { max-height: calc(88dvh - 82px); }
+      .memory-body { max-height: none; }
       .memory-editor-grid { grid-template-columns: 1fr; }
       .memory-footer { grid-template-columns: 1fr; }
       .memory-item-btn { width: 40px; height: 40px; }
@@ -2918,10 +2926,10 @@
           <div class="memory-stats" id="memoryStats" hidden></div>
           <div id="memoryList" style="display:flex;flex-direction:column;gap:12px;"></div>
           <form class="memory-editor" id="memoryEditor" hidden></form>
-          <div class="memory-footer" id="memoryFooter">
-            <button class="memory-chat-btn" id="memoryTellMidBtn" type="button"><i data-lucide="message-circle"></i>告诉小 Mid 要记住什么</button>
-            <button class="room-danger" id="memoryClearBtn" type="button">清空会面档案</button>
-          </div>
+        </div>
+        <div class="memory-footer" id="memoryFooter">
+          <button class="memory-chat-btn" id="memoryTellMidBtn" type="button"><i data-lucide="message-circle"></i>告诉小 Mid 要记住什么</button>
+          <button class="room-danger" id="memoryClearBtn" type="button">清空会面档案</button>
         </div>
       </div>
     </div>
@@ -8460,10 +8468,10 @@
       MEMORY_UI.view = ['profile','candidates','graph'].includes(view) ? view : 'profile';
       document.querySelectorAll('[data-memory-view]').forEach(btn => btn.classList.toggle('is-active', btn.dataset.memoryView === MEMORY_UI.view));
       panel?.classList.toggle('is-graph-view', MEMORY_UI.view === 'graph');
-      memoryRender();
+      memoryRender(MEMORY_UI.view === 'graph');
       memoryAnimateViewChange(panel,before);
     }
-    function memoryRender() {
+    function memoryRender(fitGraph = false) {
       const data = MEMORY_UI.data || {};
       const list = document.getElementById('memoryList');
       const stats = document.getElementById('memoryStats');
@@ -8493,7 +8501,7 @@
         list.innerHTML = sections || `<div class="memory-empty"><i data-lucide="brain"></i>还没有已确认的会面档案。<br>历史线索可以在“待确认”中处理。</div>`;
       }
       refreshIcons();
-      if (MEMORY_UI.view === 'graph') requestAnimationFrame(() => memoryInitGraph());
+      if (MEMORY_UI.view === 'graph') requestAnimationFrame(() => memoryInitGraph(fitGraph));
     }
     async function memoryFetchJson(url, options = {}) {
       const response = await fetch(url, options);
