@@ -1,0 +1,33 @@
+<svg width="1200" height="300" viewBox="0 0 1200 300" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Middot 三步完成一次会面决策</title>
+  <defs>
+    <linearGradient id="line" x1="208" y1="0" x2="995" y2="0" gradientUnits="userSpaceOnUse"><stop stop-color="#52D4B7"/><stop offset="0.5" stop-color="#178CF8"/><stop offset="1" stop-color="#9B74F4"/></linearGradient>
+    <filter id="shadow" x="-30" y="-30" width="1260" height="360"><feDropShadow dy="8" stdDeviation="13" flood-color="#174B7A" flood-opacity="0.08"/></filter>
+  </defs>
+  <rect width="1200" height="300" rx="30" fill="#F7FAFD"/>
+  <path d="M210 109H990" stroke="#D7E6F4" stroke-width="4" stroke-linecap="round"/>
+  <path d="M210 109H990" stroke="url(#line)" stroke-width="4" stroke-linecap="round" stroke-dasharray="8 12"/>
+  <g filter="url(#shadow)" font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif">
+    <g transform="translate(55 46)">
+      <rect width="330" height="208" rx="24" fill="white" stroke="#DCE8F3"/>
+      <circle cx="52" cy="55" r="28" fill="#E8FBF6"/><circle cx="45" cy="53" r="8" fill="#45C9AA"/><circle cx="61" cy="58" r="8" fill="#84DDC9"/>
+      <text x="26" y="111" fill="#112A42" font-size="20" font-weight="720">01 · 说出大家在哪</text>
+      <text x="26" y="145" fill="#6B8196" font-size="15">填地点，或直接告诉小 Mid：</text>
+      <text x="26" y="173" fill="#2F526F" font-size="15" font-weight="620">“我在国贸，阿杰在浙大”</text>
+    </g>
+    <g transform="translate(435 46)">
+      <rect width="330" height="208" rx="24" fill="white" stroke="#DCE8F3"/>
+      <circle cx="52" cy="55" r="28" fill="#EAF5FF"/><path d="M36 59C45 42 56 68 68 48" stroke="#188CF8" stroke-width="5" stroke-linecap="round"/><circle cx="52" cy="55" r="6" fill="white" stroke="#188CF8" stroke-width="4"/>
+      <text x="26" y="111" fill="#112A42" font-size="20" font-weight="720">02 · 找到公平会面点</text>
+      <text x="26" y="145" fill="#6B8196" font-size="15">综合每个人的路线与偏好，</text>
+      <text x="26" y="173" fill="#2F526F" font-size="15" font-weight="620">不是简单取一个直线中点。</text>
+    </g>
+    <g transform="translate(815 46)">
+      <rect width="330" height="208" rx="24" fill="white" stroke="#DCE8F3"/>
+      <circle cx="52" cy="55" r="28" fill="#F2EDFF"/><path d="M40 51H64M40 59H57" stroke="#8D68EF" stroke-width="4" stroke-linecap="round"/><circle cx="66" cy="65" r="5" fill="#8D68EF"/>
+      <text x="26" y="111" fill="#112A42" font-size="20" font-weight="720">03 · 继续自然地调整</text>
+      <text x="26" y="145" fill="#6B8196" font-size="15">“安静一点”“换成火锅”——</text>
+      <text x="26" y="173" fill="#2F526F" font-size="15" font-weight="620">像聊天一样把方案调到刚好。</text>
+    </g>
+  </g>
+</svg>
