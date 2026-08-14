@@ -12,6 +12,11 @@
       <stop offset="0.5" stop-color="#1688F8"/>
       <stop offset="1" stop-color="#005DCB"/>
     </linearGradient>
+    <linearGradient id="ami" x1="16" y1="14" x2="52" y2="52" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#83BEFF"/>
+      <stop offset="0.48" stop-color="#3188F5"/>
+      <stop offset="1" stop-color="#6357D9"/>
+    </linearGradient>
     <linearGradient id="route" x1="707" y1="130" x2="1050" y2="432" gradientUnits="userSpaceOnUse">
       <stop stop-color="#57D8BC"/>
       <stop offset="0.48" stop-color="#188CF8"/>
@@ -78,8 +83,11 @@
 
     <g transform="translate(680 327)" font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif">
       <rect width="296" height="103" rx="20" fill="white" stroke="#CFE1F1"/>
-      <circle cx="34" cy="33" r="18" fill="#E3F2FF"/>
-      <circle cx="34" cy="33" r="9" fill="#188CF8"/>
+      <circle cx="34" cy="33" r="18" fill="url(#ami)"/>
+      <circle cx="34" cy="33" r="14" stroke="white" stroke-opacity=".3"/>
+      <path d="M21 37C24 28 29 27 33.8 33" stroke="white" stroke-width="3" stroke-linecap="round"/>
+      <path d="M34.2 33C39 39 44 36 47 23" stroke="white" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="34" cy="33" r="3.4" fill="#B9F4E6" stroke="white" stroke-width=".8"/>
       <text x="62" y="30" fill="#122A41" font-size="14" font-weight="720">阿觅找到了更公平的会面点</text>
       <text x="62" y="52" fill="#6A8197" font-size="12">两个人的预计路程只差 4 分钟</text>
       <rect x="22" y="68" width="118" height="23" rx="11.5" fill="#EAF5FF"/>
