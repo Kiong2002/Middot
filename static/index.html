@@ -1540,6 +1540,7 @@
       max-width: 560px; max-height: calc(100dvh - 32px);
       overflow: hidden; transform-origin: center center;
     }
+    .memory-modal-panel.is-profile-view { max-width: min(760px, calc(100vw - 28px)); }
     .memory-modal-panel.is-graph-view { max-width: min(940px, calc(100vw - 28px)); }
     .memory-modal-panel.is-graph-view .memory-body { max-height: none; }
     .memory-modal-panel.is-graph-view .memory-intro,
@@ -1571,13 +1572,54 @@
     }
     .memory-stat strong { display: block; color: var(--text-1); font-size: 16px; line-height: 1.2; }
     .memory-stat span { display: block; color: var(--text-3); font-size: 10.5px; margin-top: 2px; }
+    .memory-stats.is-profile-summary {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 2px 2px 0;
+    }
+    .memory-profile-summary-copy { color: var(--text-2); font-size: 12px; }
+    .memory-profile-summary-copy strong { display: inline; margin-right: 4px; color: var(--text-1); font-size: 17px; }
+    .memory-profile-pending {
+      min-height: 30px; padding: 5px 10px; border-radius: 999px;
+      color: var(--brand); background: var(--brand-tint);
+      border: 1px solid color-mix(in oklch, var(--brand) 24%, var(--line));
+      font-size: 11px; font-weight: 650;
+    }
+    .memory-profile-pending:hover { border-color: var(--brand); }
+    .memory-list { display: flex; flex-direction: column; gap: 12px; }
+    .memory-list.memory-profile-grid {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px; align-items: start;
+    }
     .memory-section { display: flex; flex-direction: column; gap: 7px; }
     .memory-section-head {
       display: flex; align-items: center; justify-content: space-between;
       color: var(--text-2); font-size: 12px; font-weight: 650;
       padding: 2px 2px 0;
     }
-    .memory-section-head span:last-child { color: var(--text-3); font-weight: 500; }
+    .memory-section-head > span:last-child { color: var(--text-3); font-weight: 500; }
+    .memory-profile-card {
+      min-width: 0; min-height: 150px; padding: 14px;
+      border: 1px solid var(--line); border-radius: 16px;
+      background: var(--panel-2);
+    }
+    .memory-profile-card .memory-section-head { padding: 0 1px 5px; }
+    .memory-profile-card-title {
+      display: inline-flex; align-items: center; gap: 8px;
+      color: var(--text-1); font-size: 14px; font-weight: 700;
+    }
+    .memory-profile-card-icon {
+      width: 32px; height: 32px; flex: 0 0 32px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 10px; color: var(--brand);
+      background: color-mix(in oklch, var(--brand) 10%, var(--panel));
+    }
+    .memory-profile-card-icon [data-lucide] {
+      width: 20px; height: 20px; stroke-width: 1.8;
+    }
+    .memory-profile-card .memory-item {
+      padding: 10px; border-radius: 11px; background: var(--panel);
+    }
+    .memory-profile-card .memory-empty-compact { background: var(--panel); }
     .memory-subsection-title {
       display: flex; align-items: center; justify-content: space-between;
       margin: 3px 2px 0; color: var(--text-3); font-size: 10.5px; font-weight: 650;
@@ -2878,6 +2920,7 @@
     @media (max-width: 820px) {
       .modal-overlay.bottom-sheet .memory-modal-panel { max-height: 88dvh; }
       .memory-body { max-height: none; }
+      .memory-list.memory-profile-grid { grid-template-columns: 1fr; }
       .memory-editor-grid { grid-template-columns: 1fr; }
       .memory-footer { grid-template-columns: 1fr; }
       .memory-item-btn { width: 40px; height: 40px; }
@@ -3067,7 +3110,7 @@
     </div>
 
     <div class="modal-overlay bottom-sheet" id="memoryModal" role="dialog" aria-modal="true" aria-labelledby="memoryModalTitle" hidden>
-      <div class="modal-panel memory-modal-panel">
+      <div class="modal-panel memory-modal-panel is-profile-view">
         <div class="modal-head">
           <div class="modal-title"><i data-lucide="brain"></i><span id="memoryModalTitle">我的会面档案</span></div>
           <button class="modal-close" id="memoryModalClose" aria-label="关闭"><i data-lucide="x"></i></button>
@@ -3083,7 +3126,7 @@
             <button class="memory-tab" type="button" data-memory-view="graph">图谱</button>
           </div>
           <div class="memory-stats" id="memoryStats" hidden></div>
-          <div id="memoryList" style="display:flex;flex-direction:column;gap:12px;"></div>
+          <div class="memory-list" id="memoryList"></div>
           <form class="memory-editor" id="memoryEditor" hidden></form>
         </div>
         <div class="memory-footer" id="memoryFooter">
@@ -8389,8 +8432,8 @@
     function memoryWikiCards(pages) {
       return (pages || []).map(page => `<article class="memory-item memory-wiki-card" data-wiki-page="${escapeHtml(page.id)}"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(page.title)}</div><div class="memory-item-detail">${escapeHtml(page.summary)}</div><div class="memory-source"><i data-lucide="network"></i><span>${page.facts.length} 条关联事实</span></div></div><i data-lucide="chevron-right"></i></article>`).join('');
     }
-    function memoryProfileSection(label, count, body, emptyText) {
-      return `<section class="memory-section"><div class="memory-section-head"><span>${escapeHtml(label)}</span><span>${count} 项</span></div>${body || `<div class="memory-empty-compact">${escapeHtml(emptyText)}</div>`}</section>`;
+    function memoryProfileSection(icon, label, count, unit, body, emptyText) {
+      return `<section class="memory-section memory-profile-card"><div class="memory-section-head"><span class="memory-profile-card-title"><span class="memory-profile-card-icon" aria-hidden="true"><i data-lucide="${escapeHtml(icon)}"></i></span>${escapeHtml(label)}</span><span>${count} ${escapeHtml(unit)}</span></div>${body || `<div class="memory-empty-compact">${escapeHtml(emptyText)}</div>`}</section>`;
     }
     function memoryGraphLayout(nodes, edges) {
       const signature = nodes.map(n => n.id).sort().join('|');
@@ -8681,6 +8724,7 @@
       const panel=document.querySelector('.memory-modal-panel'),before=panel?.getBoundingClientRect();
       MEMORY_UI.view = ['profile','candidates','graph'].includes(view) ? view : 'profile';
       document.querySelectorAll('[data-memory-view]').forEach(btn => btn.classList.toggle('is-active', btn.dataset.memoryView === MEMORY_UI.view));
+      panel?.classList.toggle('is-profile-view', MEMORY_UI.view === 'profile');
       panel?.classList.toggle('is-graph-view', MEMORY_UI.view === 'graph');
       memoryRender(MEMORY_UI.view === 'graph');
       memoryAnimateViewChange(panel,before);
@@ -8697,9 +8741,15 @@
       list.hidden = false; footer.hidden = false;
       const s = data.stats || {};
       stats.hidden = false;
-      stats.innerHTML = `<div class="memory-stat"><strong>${Number(s.active || 0)}</strong><span>当前会用于规划</span></div>
-        <div class="memory-stat"><strong>${Number(s.expired || 0)}</strong><span>已过期待确认</span></div>
-        <div class="memory-stat"><strong>${Number(s.candidates || 0)}</strong><span>待确认记忆</span></div>`;
+      stats.classList.toggle('is-profile-summary', MEMORY_UI.view === 'profile');
+      if (MEMORY_UI.view === 'profile') {
+        stats.innerHTML = `<div class="memory-profile-summary-copy"><strong>${Number(s.active || 0)}</strong>条记忆正在帮助规划</div><button class="memory-profile-pending" type="button" data-memory-summary-candidates>${Number(s.candidates || 0)} 条待确认</button>`;
+      } else {
+        stats.innerHTML = `<div class="memory-stat"><strong>${Number(s.active || 0)}</strong><span>当前会用于规划</span></div>
+          <div class="memory-stat"><strong>${Number(s.expired || 0)}</strong><span>已过期待确认</span></div>
+          <div class="memory-stat"><strong>${Number(s.candidates || 0)}</strong><span>待确认记忆</span></div>`;
+      }
+      list.classList.toggle('memory-profile-grid', MEMORY_UI.view === 'profile');
       if (MEMORY_UI.view === 'candidates') {
         list.innerHTML = memoryCandidateSection(data.candidate_groups || []) || `<div class="memory-empty"><i data-lucide="circle-check"></i>目前没有待确认记忆。</div>`;
       } else if (MEMORY_UI.view === 'graph') {
@@ -8709,16 +8759,16 @@
         const aboutPages=memoryGeneralWikiPages(pages,['user','preference']);
         const personPages=memoryGeneralWikiPages(pages,['person']);
         const placePages=memoryGeneralWikiPages(pages,['place','poi','brand','organization','school']);
-        const aboutBody=`<div class="memory-subsection-title"><span>个人偏好</span><span>${preferences.length}</span></div>${preferences.length?preferences.map(x=>memoryItemHtml('preference',x)).join(''):'<div class="memory-empty-compact">暂时还不了解你的长期出行、饮食或预算偏好。</div>'}${aboutPages.length?`<div class="memory-subsection-title"><span>其他资料</span><span>${aboutPages.length}</span></div>${memoryWikiCards(aboutPages)}`:''}`;
+        const aboutBody=`<div class="memory-subsection-title"><span>个人偏好</span><span>${preferences.length}</span></div>${preferences.length?preferences.map(x=>memoryItemHtml('preference',x)).join(''):'<div class="memory-empty-compact">暂时还不了解你的长期出行、饮食或预算偏好。</div>'}${aboutPages.length?`<div class="memory-subsection-title"><span>个人资料</span><span>${aboutPages.length}</span></div>${memoryWikiCards(aboutPages)}`:''}`;
         const representedPeople=new Set(people.map(x=>x.name));
         const peopleCount=new Set([...people.map(x=>x.name),...personPages.map(page=>page.title)]).size;
         const peopleBody=`${people.map(x=>memoryItemHtml('person',x,(personPages.find(page=>page.title===x.name)||{}).facts||[])).join('')}${memoryWikiCards(personPages.filter(page=>!representedPeople.has(page.title)))}`;
         const placeBody=`${feedback.map(x=>memoryItemHtml('feedback',x)).join('')}${memoryWikiCards(placePages)}`;
         list.innerHTML = [
-          memoryProfileSection('关于我',preferences.length+aboutPages.length,aboutBody,'暂时还不了解你的长期资料。'),
-          memoryProfileSection('常约的人',peopleCount,peopleBody,'还没有常约的人或人物资料。'),
-          memoryProfileSection('地点与店铺',feedback.length+placePages.length,placeBody,'还没有确认过的地点资料或店铺反馈。'),
-          memoryProfileSection('规划记录',episodes.length,episodes.map(x=>memoryItemHtml('episode',x)).join(''),'还没有规划记录；搜索和推荐不会被当成已经去过。'),
+          memoryProfileSection('user-round','关于我',preferences.length+aboutPages.length,'条',aboutBody,'暂时还不了解你的长期资料。'),
+          memoryProfileSection('users-round','常约的人',peopleCount,'人',peopleBody,'还没有常约的人或人物资料。'),
+          memoryProfileSection('map-pin','地点与店铺',feedback.length+placePages.length,'个',placeBody,'还没有确认过的地点资料或店铺反馈。'),
+          memoryProfileSection('calendar-check','规划记录',episodes.length,'条',episodes.map(x=>memoryItemHtml('episode',x)).join(''),'还没有规划记录；搜索和推荐不会被当成已经去过。'),
         ].join('');
       }
       refreshIcons();
@@ -9022,6 +9072,9 @@
       document.getElementById('memoryModalClose')?.addEventListener('click', memoryClose);
       document.getElementById('memoryTabs')?.addEventListener('click', e => {
         const tab = e.target.closest('[data-memory-view]'); if (tab) memorySetView(tab.dataset.memoryView);
+      });
+      document.getElementById('memoryStats')?.addEventListener('click', e => {
+        if (e.target.closest('[data-memory-summary-candidates]')) memorySetView('candidates');
       });
       modal?.addEventListener('click', e => { if (e.target === modal) memoryClose(); });
       document.addEventListener('keydown', e => {
