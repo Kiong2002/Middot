@@ -283,7 +283,7 @@
       display: flex; flex-direction: column; gap: 4px;
     }
 
-    /* ─── 搜索时的品牌 hero 动效：呼应 logo "S 形曲线 · 会面于中点" ─── */
+    /* ─── 搜索时的品牌 hero 动效：中点主标的立体动态版本 ─── */
     .progress-hero {
       display: flex; flex-direction: column; align-items: center;
       gap: 6px; padding: 6px 0 10px;
@@ -317,9 +317,89 @@
       60%           { opacity: 0.55; }
       75%           { opacity: 0; }
     }
+    #resultsCard { position: relative; overflow: hidden; }
+    #resultsCard > :not(.recalc-state) {
+      transition: opacity .24s var(--ease-standard),
+                  filter .24s var(--ease-standard),
+                  transform .24s var(--ease-standard);
+    }
+    #resultsCard.is-recalculating > :not(.recalc-state) {
+      opacity: .22;
+      filter: blur(1.5px) saturate(.7);
+      transform: scale(.994);
+      pointer-events: none;
+    }
+    .recalc-state {
+      position: absolute;
+      inset: 0;
+      z-index: 8;
+      min-height: 270px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 24px;
+      background: color-mix(in oklch, var(--panel) 82%, transparent);
+      backdrop-filter: blur(5px);
+      -webkit-backdrop-filter: blur(5px);
+      animation: recalcStateIn .22s var(--ease-emphasized);
+    }
+    .recalc-state[hidden] { display: none; }
+    .recalc-mark {
+      position: relative;
+      width: 48px;
+      height: 48px;
+      flex: 0 0 48px;
+    }
+    .recalc-mark::before {
+      content: '';
+      position: absolute;
+      inset: -7px;
+      border: 2px solid transparent;
+      border-top-color: #4A9FFF;
+      border-right-color: rgba(74,159,255,.2);
+      border-radius: 50%;
+      animation: recalcOrbit 1.05s linear infinite;
+    }
+    .recalc-mark::after {
+      content: '';
+      position: absolute;
+      inset: 8px;
+      border-radius: 14px;
+      background: rgba(74,159,255,.18);
+      filter: blur(8px);
+      animation: recalcGlow 1.6s ease-in-out infinite;
+    }
+    .recalc-mark img {
+      position: relative;
+      z-index: 1;
+      display: block;
+      width: 48px;
+      height: 48px;
+      filter: drop-shadow(0 7px 12px rgba(8,25,45,.22));
+      animation: recalcMarkBreathe 1.6s ease-in-out infinite;
+    }
+    .recalc-copy { display: flex; flex-direction: column; gap: 3px; }
+    .recalc-copy strong { font-size: 14px; color: var(--text-1); }
+    .recalc-copy span { font-size: 12px; color: var(--text-3); }
+    #recalcBtn.is-recalculating {
+      color: var(--brand);
+      background: var(--brand-tint);
+      box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--brand) 24%, transparent);
+    }
+    #recalcBtn.is-recalculating [data-lucide] { animation: recalcOrbit .85s linear infinite; }
+    @keyframes recalcStateIn { from { opacity: 0; transform: scale(.985); } }
+    @keyframes recalcOrbit { to { transform: rotate(360deg); } }
+    @keyframes recalcGlow { 50% { transform: scale(1.28); opacity: .48; } }
+    @keyframes recalcMarkBreathe { 50% { transform: scale(1.045); } }
     @media (prefers-reduced-motion: reduce) {
       .progress-hero-svg * { animation-duration: 0.001s !important; }
       .progress-hero-label { animation: none; color: var(--text-2); }
+      .recalc-state,
+      .recalc-mark::before,
+      .recalc-mark::after,
+      .recalc-mark img,
+      #recalcBtn.is-recalculating [data-lucide] { animation: none !important; }
     }
     .progress-step {
       display: flex; align-items: flex-start; gap: 10px;
@@ -558,9 +638,56 @@
     .btn-primary { background: var(--brand); color: #fff; }
     .btn-primary:hover { background: var(--brand-2); }
     .btn-primary:disabled { background: var(--line-2); color: var(--text-3); cursor: not-allowed; }
+    #searchBtn .search-route-icon { width: 22px; height: 22px; overflow: visible; }
+    #searchBtn .search-route-base,
+    #searchBtn .search-route-flow {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+    }
+    #searchBtn .search-route-base { opacity: .42; }
+    #searchBtn .search-route-flow { stroke-dasharray: 4 22; opacity: .96; }
+    #searchBtn .search-route-end { fill: currentColor; opacity: .94; }
+    #searchBtn .search-route-mid { fill: #B9E1FF; transform-origin: 12px 12px; }
+    #searchBtn:not(.is-searching):hover .search-route-mid { animation: searchMidHello .7s var(--ease-spring); }
+    #searchBtn.is-searching:disabled {
+      color: #fff;
+      background: linear-gradient(105deg, var(--brand-2), var(--brand), #2A8EF0);
+      background-size: 180% 100%;
+      cursor: wait;
+      animation: searchButtonLight 2.2s ease-in-out infinite;
+    }
+    #searchBtn.is-searching .search-route-flow { animation: searchRouteFlow 1.25s linear infinite; }
+    #searchBtn.is-searching .search-route-end-a { animation: searchEndpointA 1.25s var(--ease-emphasized) infinite; }
+    #searchBtn.is-searching .search-route-end-b { animation: searchEndpointB 1.25s var(--ease-emphasized) infinite; }
+    #searchBtn.is-searching .search-route-mid { animation: searchMidMeet 1.25s ease-in-out infinite; }
+    @keyframes searchRouteFlow { to { stroke-dashoffset: -26; } }
+    @keyframes searchEndpointA {
+      0%, 12% { transform: translate(0,0); opacity: .9; }
+      55%, 72% { transform: translate(7.1px,5.7px); opacity: .25; }
+      100% { transform: translate(0,0); opacity: .9; }
+    }
+    @keyframes searchEndpointB {
+      0%, 12% { transform: translate(0,0); opacity: .9; }
+      55%, 72% { transform: translate(-7.1px,-5.7px); opacity: .25; }
+      100% { transform: translate(0,0); opacity: .9; }
+    }
+    @keyframes searchMidMeet {
+      0%, 35%, 100% { transform: scale(.82); opacity: .65; }
+      58%, 72% { transform: scale(1.38); opacity: 1; filter: drop-shadow(0 0 3px rgba(255,255,255,.8)); }
+    }
+    @keyframes searchMidHello { 50% { transform: scale(1.5); } }
+    @keyframes searchButtonLight { 50% { background-position: 100% 0; } }
     .btn-ghost { background: var(--panel-2); color: var(--text-1); }
     .btn-ghost:hover { background: rgba(0,0,0,.06); }
     .btn-sm { height: 30px; padding: 0 10px; font-size: 13px; border-radius: 8px; }
+    @media (prefers-reduced-motion: reduce) {
+      #searchBtn,
+      #searchBtn .search-route-flow,
+      #searchBtn .search-route-end,
+      #searchBtn .search-route-mid { animation: none !important; }
+    }
 
     .icon-btn {
       width: 30px; height: 30px;
@@ -3052,7 +3179,13 @@
             </div>
           </div>
           <button class="btn btn-primary" id="searchBtn">
-            <i data-lucide="search"></i>
+            <svg class="search-route-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path class="search-route-base" d="M4.9 6.4C9.2 6.4 8.4 12 12 12C15.6 12 14.8 17.6 19.1 17.6"/>
+              <path class="search-route-flow" d="M4.9 6.4C9.2 6.4 8.4 12 12 12C15.6 12 14.8 17.6 19.1 17.6"/>
+              <circle class="search-route-end search-route-end-a" cx="4.9" cy="6.4" r="1.45"/>
+              <circle class="search-route-end search-route-end-b" cx="19.1" cy="17.6" r="1.45"/>
+              <circle class="search-route-mid" cx="12" cy="12" r="2.15"/>
+            </svg>
             <span>开始搜索</span>
           </button>
         </section>
@@ -3082,29 +3215,32 @@
           <div class="progress-hero" aria-hidden="true">
             <svg class="progress-hero-svg" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="搜索中动效">
               <defs>
-                <linearGradient id="pha-bg" x1="0" y1="0" x2="1" y2="1">
-                  <stop offset="0%"   stop-color="#4CA5FF"/>
-                  <stop offset="100%" stop-color="#0057D9"/>
+                <linearGradient id="pha-bg" x1="3" y1="2" x2="29" y2="31" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%"   stop-color="#1A314A"/>
+                  <stop offset="52%"  stop-color="#0B1726"/>
+                  <stop offset="100%" stop-color="#050C15"/>
                 </linearGradient>
                 <radialGradient id="pha-bg-hi" cx="28%" cy="22%" r="70%">
                   <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.22"/>
                   <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
                 </radialGradient>
-                <linearGradient id="pha-line" x1="0" y1="0" x2="1" y2="1">
-                  <stop offset="0%"   stop-color="#FFB067"/>
-                  <stop offset="100%" stop-color="#F76B15"/>
+                <linearGradient id="pha-line" x1="6" y1="8" x2="26" y2="24" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%"   stop-color="#FFFFFF"/>
+                  <stop offset="100%" stop-color="#DCE8F4"/>
                 </linearGradient>
                 <radialGradient id="pha-dot" cx="40%" cy="35%" r="70%">
-                  <stop offset="0%"   stop-color="#FFF6E0"/>
-                  <stop offset="100%" stop-color="#FFCB70"/>
+                  <stop offset="0%"   stop-color="#E8F5FF"/>
+                  <stop offset="42%"  stop-color="#72B7FF"/>
+                  <stop offset="100%" stop-color="#2586EF"/>
                 </radialGradient>
               </defs>
-              <!-- 蓝底 + 高光（与 logo 同款） -->
+              <!-- 深海军蓝底 + 玻璃高光：与中点主标一致，保留立体质感 -->
               <rect width="32" height="32" rx="10" fill="url(#pha-bg)"/>
               <rect width="32" height="32" rx="10" fill="url(#pha-bg-hi)"/>
+              <rect x=".4" y=".4" width="31.2" height="31.2" rx="9.6" fill="none" stroke="#29405A" stroke-width=".8"/>
 
               <!-- S 曲线：先画出来，然后循环 -->
-              <path d="M 6 8 C 6 20, 26 12, 26 24"
+              <path d="M 6.5 8.5 C 12.25 8.5, 11.25 16, 16 16 C 20.75 16, 19.75 23.5, 25.5 23.5"
                     stroke="url(#pha-line)" stroke-width="2.6"
                     stroke-linecap="round" fill="none"
                     pathLength="100"
@@ -3116,15 +3252,15 @@
               </path>
 
               <!-- 曲线柔光（呼应汇合的瞬间） -->
-              <path class="s-curve-glow" d="M 6 8 C 6 20, 26 12, 26 24"
-                    stroke="#FFCB70" stroke-width="4.5"
+              <path class="s-curve-glow" d="M 6.5 8.5 C 12.25 8.5, 11.25 16, 16 16 C 20.75 16, 19.75 23.5, 25.5 23.5"
+                    stroke="#8CC6FF" stroke-width="4.5"
                     stroke-linecap="round" fill="none"
                     opacity="0"/>
 
-              <!-- 蓝色小圆（正向）：从 6,8 出发，中点相遇 -->
-              <circle r="1.7" fill="#7CC0FF" opacity="0">
+              <!-- 两端白点向蓝色中点汇合 -->
+              <circle r="1.55" fill="#FFFFFF" opacity="0">
                 <animateMotion dur="1.8s" repeatCount="indefinite"
-                  path="M 6 8 C 6 20, 26 12, 26 24"
+                  path="M 6.5 8.5 C 12.25 8.5, 11.25 16, 16 16 C 20.75 16, 19.75 23.5, 25.5 23.5"
                   keyPoints="0;0.5;0.5"
                   keyTimes="0;0.55;1"
                   calcMode="spline"
@@ -3139,10 +3275,9 @@
                   dur="1.8s" repeatCount="indefinite"/>
               </circle>
 
-              <!-- 橙色小圆（反向）：从 26,24 出发，中点相遇 -->
-              <circle r="1.7" fill="#FFB067" opacity="0">
+              <circle r="1.55" fill="#F4F8FC" opacity="0">
                 <animateMotion dur="1.8s" repeatCount="indefinite"
-                  path="M 26 24 C 26 12, 6 20, 6 8"
+                  path="M 25.5 23.5 C 19.75 23.5, 20.75 16, 16 16 C 11.25 16, 12.25 8.5, 6.5 8.5"
                   keyPoints="0;0.5;0.5"
                   keyTimes="0;0.55;1"
                   calcMode="spline"
@@ -3159,7 +3294,7 @@
 
               <!-- 汇合脉冲环（两小圆相遇后向外扩散） -->
               <circle cx="16" cy="16" r="3.8" fill="none"
-                stroke="#FFCB70" stroke-width="1.4" opacity="0">
+                stroke="#4A9FFF" stroke-width="1.4" opacity="0">
                 <animate attributeName="r"
                   values="3.8;3.8;12" keyTimes="0;0.55;1"
                   dur="1.8s" repeatCount="indefinite" calcMode="spline"
@@ -3172,7 +3307,7 @@
                   dur="1.8s" repeatCount="indefinite"/>
               </circle>
 
-              <!-- 中心暖点：初始隐藏，汇合时脉冲放大 -->
+              <!-- 中点主标的蓝色核心，汇合时保留立体脉冲 -->
               <circle cx="16" cy="16" r="3.8" fill="url(#pha-dot)" opacity="0">
                 <animate attributeName="opacity"
                   values="0;0;1;1;0.7"
@@ -3219,6 +3354,10 @@
         </section>
 
         <section class="card" id="resultsCard" hidden style="padding:16px;">
+          <div class="recalc-state" id="recalcState" hidden role="status" aria-live="polite">
+            <span class="recalc-mark" aria-hidden="true"><img src="/static/middot-mark.svg?v=2" alt=""></span>
+            <span class="recalc-copy"><strong>正在重算路线</strong><span>保留候选，只更新每个人的真实耗时</span></span>
+          </div>
           <div class="summary" id="resultSummary" hidden></div>
           <div class="result-toolbar" id="resultToolbar" hidden>
             <div class="rt-seg" role="tablist" aria-label="排序方式">
@@ -5383,9 +5522,8 @@
       const searchBtn = $('#searchBtn');
       searchBtn.disabled = true;
       const btnLabelOrig = searchBtn.innerHTML;
-      searchBtn.innerHTML = '<i data-lucide="loader-2"></i><span>搜索中…</span>';
-      refreshIcons();
-      searchBtn.querySelector('[data-lucide]')?.parentElement?.classList?.add('spin');
+      searchBtn.classList.add('is-searching');
+      searchBtn.querySelector('span').textContent = '正在找中点…';
 
       const payload = {
         query,
@@ -5466,6 +5604,7 @@
         toast(e.message || '搜索失败', true);
       } finally {
         searchBtn.disabled = false;
+        searchBtn.classList.remove('is-searching');
         searchBtn.innerHTML = btnLabelOrig;
         refreshIcons();
       }
@@ -5542,10 +5681,16 @@
     async function doRecalculate() {
       if (!state.sessionId) return;
       const btn = $('#recalcBtn');
+      const resultsCard = $('#resultsCard');
+      const recalcState = $('#recalcState');
+      const startedAt = performance.now();
       const btnHtml = btn.innerHTML;
       btn.disabled = true;
       btn.innerHTML = '<i data-lucide="loader-2"></i><span>重算中…</span>';
-      btn.classList.add('spin');
+      btn.classList.add('is-recalculating');
+      btn.setAttribute('aria-busy', 'true');
+      resultsCard?.classList.add('is-recalculating');
+      if (recalcState) recalcState.hidden = false;
       refreshIcons();
       try {
         const validPs = state.participants.filter(p => p.lng !== null);
@@ -5573,9 +5718,14 @@
       } catch (e) {
         toast(e.message, true);
       } finally {
+        const remaining = 520 - (performance.now() - startedAt);
+        if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
         btn.disabled = false;
         btn.innerHTML = btnHtml;
-        btn.classList.remove('spin');
+        btn.classList.remove('is-recalculating');
+        btn.removeAttribute('aria-busy');
+        resultsCard?.classList.remove('is-recalculating');
+        if (recalcState) recalcState.hidden = true;
         refreshIcons();
       }
     }
