@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>中点 Middot · 每次约都刚好在中间</title>
-  <link rel="icon" type="image/svg+xml" href="/static/middot-mark.svg?v=4"/>
+  <link rel="icon" type="image/svg+xml" href="/static/middot-mark.svg?v=5"/>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -211,6 +211,12 @@
     .results-panel {
       padding: 0 16px 16px;
       overflow-y: auto;
+      overflow-x: hidden;
+      min-height: 0;
+      max-height: 100%;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
       background: var(--bg);
       border-right: 1px solid var(--line);
       display: none;
@@ -317,7 +323,7 @@
       60%           { opacity: 0.55; }
       75%           { opacity: 0; }
     }
-    #resultsCard { position: relative; overflow: hidden; }
+    #resultsCard { position: relative; overflow: visible; }
     #resultsCard > :not(.recalc-state) {
       transition: opacity .24s var(--ease-standard),
                   filter .24s var(--ease-standard),
@@ -2949,7 +2955,7 @@
         <button class="icon-btn mobile-only" id="mobileMenuBtn" title="打开侧栏" aria-label="打开侧栏">
           <i data-lucide="menu"></i>
         </button>
-        <div class="brand-icon" title="中点 · 两端汇合于蓝色中点"><img src="/static/middot-mark.svg?v=4" alt="中点 logo"></div>
+        <div class="brand-icon" title="中点 · 约在正中间"><img src="/static/middot-mark.svg?v=5" alt="中点 logo"></div>
         <div>
           <span class="brand-name">中点</span>
           <span class="brand-sub">Middot · 约在正中间</span>
@@ -3363,7 +3369,7 @@
 
         <section class="card" id="resultsCard" hidden style="padding:16px;">
           <div class="recalc-state" id="recalcState" hidden role="status" aria-live="polite">
-            <span class="recalc-mark" aria-hidden="true"><img src="/static/middot-mark.svg?v=4" alt=""></span>
+            <span class="recalc-mark" aria-hidden="true"><img src="/static/middot-mark.svg?v=5" alt=""></span>
             <span class="recalc-copy"><strong>正在重算路线</strong><span>保留候选，只更新每个人的真实耗时</span></span>
           </div>
           <div class="summary" id="resultSummary" hidden></div>

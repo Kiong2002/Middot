@@ -1,6 +1,6 @@
 <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">中点 Middot</title>
-  <desc id="desc">雾青与灰紫的两端沿白色路线汇合，在中央成为蓝色中点。</desc>
+  <desc id="desc">一条白色路线穿过蓝色中点。</desc>
   <defs>
     <linearGradient id="mid-bg" x1="7" y1="4" x2="57" y2="61" gradientUnits="userSpaceOnUse">
       <stop stop-color="#203A55"/>
@@ -42,9 +42,7 @@
   </g>
   <path d="M13 17C24.5 17 22.5 32 32 32C41.5 32 39.5 47 51 47" stroke="#8FC8FF" stroke-width="9.5" stroke-linecap="round" opacity=".16"/>
   <path d="M13 17C24.5 17 22.5 32 32 32C41.5 32 39.5 47 51 47" stroke="url(#mid-route)" stroke-width="5.5" stroke-linecap="round" filter="url(#mid-route-shadow)"/>
-  <circle cx="13" cy="17" r="3.2" fill="#A9C7C3" stroke="#E4F0EE" stroke-width=".9"/>
-  <circle cx="51" cy="47" r="3.2" fill="#B6AFC4" stroke="#ECE8F1" stroke-width=".9"/>
   <circle cx="32" cy="32" r="8.6" fill="#081423" fill-opacity=".92"/>
   <circle cx="32" cy="32" r="5.7" fill="url(#mid-core)" filter="url(#mid-core-glow)"/>
-  <circle cx="30.2" cy="29.9" r="1.35" fill="white" fill-opacity=".55"/>
+  <circle cx="30.5" cy="30.2" r=".72" fill="white" fill-opacity=".28"/>
 </svg>
