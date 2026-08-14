@@ -8186,6 +8186,7 @@ def api_v2_assistant_stream():
         stream_allow = True
         stream_gate_err = ""
         routes_recomputed_after_prefer = False
+        successful_tool_signatures: set[tuple[str, str]] = set()
 
         history = _sanitize_history_for_model(list(_assistant_history(sid)))
         history_summary = str((session_get(sid) or {}).get("chat_summary") or "").strip()
@@ -8341,6 +8342,53 @@ def api_v2_assistant_stream():
                 waiting_for_location_choice = False
                 waiting_for_offer_choice = False
                 location_targets_seen: set[int | str] = set()
+
+                # 写保护是跨请求的冷却，不是需要模型反复修复的工具错误。
+                # 一旦本批包含写工具且保护未放行，给所有 tool_call 补齐协议消息后
+                # 直接友好结束本轮；否则模型会在同一 stream 内连续重试到 MAX_ITERS。
+                batch_write_names = [
+                    tc["function"]["name"] for tc in tool_calls_serialized
+                    if tc["function"]["name"] in _AI_WRITE_TOOLS
+                ]
+                if batch_write_names:
+                    if not stream_gate_decided:
+                        stream_allow, stream_gate_err = _ai_write_gate(
+                            caller_did, batch_write_names[0]
+                        )
+                        stream_gate_decided = True
+                    if not stream_allow:
+                        for tc in tool_calls_serialized:
+                            name = tc["function"]["name"]
+                            cancelled = {
+                                "ok": False,
+                                "error": stream_gate_err,
+                                "retryable": True,
+                                "cancelled_batch": True,
+                            }
+                            tool_msg = {
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "name": name,
+                                "content": json.dumps(cancelled, ensure_ascii=False),
+                            }
+                            messages.append(tool_msg)
+                            _assistant_append_history(sid, tool_msg)
+                            _agent_task_record(sid, name, cancelled)
+                        friendly = (
+                            "刚刚才更新过方案，我先不重复执行，避免把前一次修改覆盖掉。"
+                            + stream_gate_err
+                        )
+                        _assistant_append_history(sid, {
+                            "role": "assistant", "content": friendly,
+                        })
+                        _conversation_append_event(
+                            conversation_id, caller_did, "assistant", friendly, "message"
+                        )
+                        _agent_task_finish(sid)
+                        yield _sse({"type": "token", "delta": friendly})
+                        yield _sse({"type": "done"})
+                        return
+
                 for tc in tool_calls_serialized:
                     name = tc["function"]["name"]
                     called_names_this_batch.add(name)
@@ -8348,6 +8396,23 @@ def api_v2_assistant_stream():
                         args = json.loads(tc["function"]["arguments"] or "{}")
                     except json.JSONDecodeError:
                         args = {}
+                    signature = (
+                        name,
+                        json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    )
+                    if signature in successful_tool_signatures:
+                        duplicate = {
+                            "ok": True,
+                            "summary": "相同动作本轮已经完成，无需重复执行",
+                            "duplicate": True,
+                        }
+                        tool_msg = {
+                            "role": "tool", "tool_call_id": tc["id"], "name": name,
+                            "content": json.dumps(duplicate, ensure_ascii=False),
+                        }
+                        messages.append(tool_msg)
+                        _assistant_append_history(sid, tool_msg)
+                        continue
                     if name == "set_participant_location":
                         target_key: int | str = args.get("index") or str(args.get("participant_name") or "")
                         if target_key in location_targets_seen:
@@ -8398,6 +8463,7 @@ def api_v2_assistant_stream():
                                 tool_result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
                                 state_patch = None
                             if tool_result.get("ok"):
+                                successful_tool_signatures.add(signature)
                                 _ai_write_touch(caller_did, name)
                                 if name == "set_participant_prefer" or (
                                     name == "set_participant_location" and args.get("prefer")
