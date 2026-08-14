@@ -2093,17 +2093,46 @@
     }
     .assist-fab:active { transform: scale(.96); }
     .assist-fab.hidden { display: none; }
+    .assist-fab::before {
+      content: '';
+      position: absolute;
+      inset: 5px;
+      border-radius: 50%;
+      background: conic-gradient(from 20deg,
+        rgba(20,140,255,.04), rgba(118,103,255,.32),
+        rgba(116,227,195,.2), rgba(20,140,255,.04));
+      filter: blur(5px);
+      opacity: .42;
+      animation: amiHaloDrift 8s linear infinite;
+      pointer-events: none;
+    }
     .ami-mark {
+      position: relative;
+      z-index: 1;
       display: block;
       width: 38px; height: 38px;
-      border-radius: 50%;
-      filter: drop-shadow(0 5px 9px rgba(37,105,202,.2));
-      animation: amiBreathe 4.8s ease-in-out infinite;
+      filter: drop-shadow(0 5px 9px rgba(37,74,160,.16));
+      animation: amiFloat 5.8s cubic-bezier(.45,0,.2,1) infinite;
     }
-    .assist-avatar .ami-mark { width: 28px; height: 28px; animation: none; filter: none; }
-    @keyframes amiBreathe {
-      0%, 100% { transform: scale(1); filter: drop-shadow(0 5px 9px rgba(37,105,202,.2)); }
-      50% { transform: scale(1.025); filter: drop-shadow(0 7px 12px rgba(78,91,211,.26)); }
+    .assist-avatar .ami-mark { width: 28px; height: 28px; filter: none; }
+    @keyframes amiFloat {
+      0%, 100% { transform: translateY(0) rotate(-.6deg) scale(.99); }
+      50% { transform: translateY(-1px) rotate(.8deg) scale(1.018); }
+    }
+    @keyframes amiHaloDrift { to { transform: rotate(360deg); } }
+    @keyframes amiListening {
+      0%, 100% { transform: scale(.98) rotate(-2deg); filter: drop-shadow(0 4px 8px rgba(20,140,255,.18)); }
+      35% { transform: scale(1.06) rotate(2deg); filter: drop-shadow(0 6px 13px rgba(118,103,255,.3)); }
+      68% { transform: scale(1.015) rotate(-1deg); filter: drop-shadow(0 5px 11px rgba(116,227,195,.28)); }
+    }
+    .assist-fab.is-thinking::before,
+    .assist-panel.is-thinking .assist-avatar::before {
+      opacity: .9;
+      animation-duration: 2.2s;
+    }
+    .assist-fab.is-thinking .ami-mark,
+    .assist-panel.is-thinking .assist-avatar .ami-mark {
+      animation: amiListening 1.9s cubic-bezier(.45,0,.2,1) infinite;
     }
     .assist-fab .fab-badge {
       position: absolute;
@@ -2145,6 +2174,7 @@
     }
     .assist-title { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; overflow: hidden; }
     .assist-avatar {
+      position: relative;
       width: 34px; height: 34px; border-radius: 50%;
       background: color-mix(in oklch, var(--brand) 10%, var(--panel));
       border: 1px solid color-mix(in oklch, var(--brand) 25%, var(--line));
@@ -2152,7 +2182,27 @@
       flex-shrink: 0;
       font-size: 18px; line-height: 1;
     }
+    .assist-avatar::before {
+      content: '';
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      background: conic-gradient(from 40deg,
+        rgba(20,140,255,.08), rgba(118,103,255,.3),
+        rgba(116,227,195,.22), rgba(20,140,255,.08));
+      filter: blur(4px);
+      opacity: .28;
+      animation: amiHaloDrift 9s linear infinite;
+      pointer-events: none;
+    }
     .assist-avatar [data-lucide] { width: 16px; height: 16px; }
+    @media (prefers-reduced-motion: reduce) {
+      .ami-mark,
+      .assist-fab::before,
+      .assist-avatar::before,
+      .assist-fab.is-thinking .ami-mark,
+      .assist-panel.is-thinking .assist-avatar .ami-mark { animation: none !important; }
+    }
     .assist-name { font-weight: 600; font-size: 14px; color: var(--text-1); line-height: 1.1; }
     .assist-sub  { font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
 
@@ -3221,13 +3271,13 @@
 
         <!-- ── AI 助手：右下浮球 + 折叠面板 ────────────────────── -->
         <button class="assist-fab" id="assistFab" title="阿觅 · 中点里的 AI 助手" aria-label="阿觅，中点 AI 助手">
-          <img class="ami-mark" src="/static/ami-mark.svg" alt="" aria-hidden="true">
+          <img class="ami-mark" src="/static/ami-mark.svg?v=3" alt="" aria-hidden="true">
           <span class="fab-badge">AI</span>
         </button>
         <aside class="assist-panel" id="assistPanel" hidden>
           <header class="assist-head">
             <div class="assist-title">
-              <span class="assist-avatar" aria-hidden="true"><img class="ami-mark" src="/static/ami-mark.svg" alt=""></span>
+              <span class="assist-avatar" aria-hidden="true"><img class="ami-mark" src="/static/ami-mark.svg?v=3" alt=""></span>
               <div>
                 <div class="assist-name">阿觅</div>
                 <div class="assist-sub" id="assistSub">你的会面小雷达 · 换关键词 · 移锚点 · 重算路线</div>
@@ -6195,6 +6245,14 @@
       refreshIcons();
     }
 
+    function assistSetThinking(active) {
+      const busy = !!active;
+      document.getElementById('assistFab')?.classList.toggle('is-thinking', busy);
+      const panel = document.getElementById('assistPanel');
+      panel?.classList.toggle('is-thinking', busy);
+      if (panel) panel.setAttribute('aria-busy', busy ? 'true' : 'false');
+    }
+
     function assistRenderSuggestions() {
       const wrap = document.getElementById('assistSuggestions');
       if (!wrap) return;
@@ -7550,6 +7608,7 @@
 
       const pendingUser = assistAddUser(displayText);
       ASSIST_STATE.streaming = true;
+      assistSetThinking(true);
       document.getElementById('assistSend').disabled = true;
       input.disabled = true;
       await assistMaybeAttachMyLocation(displayText);
@@ -7627,6 +7686,7 @@
         (ASSIST_STATE.currentTurnEl || ASSIST_STATE.msgsEl).appendChild(err);
       } finally {
         ASSIST_STATE.streaming = false;
+        assistSetThinking(false);
         document.getElementById('assistSend').disabled = false;
         input.disabled = false;
         assistTurnEnd();
