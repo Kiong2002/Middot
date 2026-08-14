@@ -1839,7 +1839,7 @@
       }
       .mctx-divider { margin: 6px 0; }
 
-      /* 移动端仍放在小 Mid 上方，保留短文字避免图标含义不清。 */
+      /* 移动端仍放在阿觅上方，保留短文字避免图标含义不清。 */
       .map-here-fab {
         top: auto; left: auto; right: 12px; bottom: 78px;
         padding: 7px 10px;
@@ -1909,7 +1909,7 @@
     .search-input-wrap .input-here-btn [data-lucide] { width: 14px; height: 14px; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* 地图右下角常驻定位按钮，位于小 Mid 上方；选点模式下复用为填点。 */
+    /* 地图右下角常驻定位按钮，位于阿觅上方；选点模式下复用为填点。 */
     .map-here-fab {
       position: absolute; z-index: 12;
       top: auto; left: auto; right: 20px; bottom: 86px;
@@ -2442,7 +2442,7 @@
     .ats-item .lbl { color: var(--text-1); font-weight: 500; word-break: break-word; }
     .ats-item .sub { color: var(--text-3); font-size: 11px; margin-top: 2px; word-break: break-word; }
 
-    /* ── 草稿卡：小 Mid 想帮你这样填 ─────────────────────────── */
+    /* ── 草稿卡：阿觅想帮你这样填 ─────────────────────────── */
     .assist-draft-card {
       align-self: stretch;
       border: 1px solid var(--brand);
@@ -2916,7 +2916,7 @@
         <div class="modal-body memory-body">
           <div class="memory-intro">
             <i data-lucide="git-merge"></i>
-            <span>小 Mid 会累积独立对话证据；高可信、适合长期且非敏感的事实可自动入档。冲突与敏感线索仍由你确认。搜索和推荐不等于你选了或去过。</span>
+            <span>阿觅会累积独立对话证据；高可信、适合长期且非敏感的事实可自动入档。冲突与敏感线索仍由你确认。搜索和推荐不等于你选了或去过。</span>
           </div>
           <div class="memory-tabs" id="memoryTabs" role="tablist">
             <button class="memory-tab is-active" type="button" data-memory-view="profile">档案</button>
@@ -2928,7 +2928,7 @@
           <form class="memory-editor" id="memoryEditor" hidden></form>
         </div>
         <div class="memory-footer" id="memoryFooter">
-          <button class="memory-chat-btn" id="memoryTellMidBtn" type="button"><i data-lucide="message-circle"></i>告诉小 Mid 要记住什么</button>
+          <button class="memory-chat-btn" id="memoryTellMidBtn" type="button"><i data-lucide="message-circle"></i>告诉阿觅要记住什么</button>
           <button class="room-danger" id="memoryClearBtn" type="button">清空会面档案</button>
         </div>
       </div>
@@ -3253,7 +3253,7 @@
         </button>
 
         <!-- ── AI 助手：右下浮球 + 折叠面板 ────────────────────── -->
-        <button class="assist-fab" id="assistFab" title="小 Mid · 中点里的 AI 助手" aria-label="小 Mid 中点 AI 助手">
+        <button class="assist-fab" id="assistFab" title="阿觅 · 中点里的 AI 助手" aria-label="阿觅，中点 AI 助手">
           <span class="mid-orb" aria-hidden="true"><span class="mid-orb-ring"></span><span class="mid-orb-dot"></span></span>
           <span class="fab-badge">AI</span>
         </button>
@@ -3262,12 +3262,12 @@
             <div class="assist-title">
               <span class="assist-avatar" aria-hidden="true"><span class="mid-orb"><span class="mid-orb-ring"></span><span class="mid-orb-dot"></span></span></span>
               <div>
-                <div class="assist-name">小 Mid</div>
+                <div class="assist-name">阿觅</div>
                 <div class="assist-sub" id="assistSub">你的会面小雷达 · 换关键词 · 移锚点 · 重算路线</div>
               </div>
             </div>
             <div class="assist-head-actions">
-              <button class="assist-profile-btn" id="assistHistoryBtn" type="button" title="小 Mid 对话历史">
+              <button class="assist-profile-btn" id="assistHistoryBtn" type="button" title="阿觅对话历史">
                 <i data-lucide="history"></i><span>对话</span>
               </button>
               <button class="assist-profile-btn" id="assistMemoryBtn" data-memory-open type="button" aria-controls="memoryModal" aria-haspopup="dialog" title="我的会面档案">
@@ -3282,7 +3282,7 @@
               <button class="memory-secondary" id="assistNewConversation" type="button"><i data-lucide="plus"></i> 新对话</button>
             </div>
             <div class="assist-history-list" id="assistConversationList">
-              <div class="hist-empty">还没有和小 Mid 的历史对话。</div>
+              <div class="hist-empty">还没有和阿觅的历史对话。</div>
             </div>
           </div>
           <div class="assist-msgs" id="assistMsgs">
@@ -6300,7 +6300,7 @@
         el.className = 'assist-msg bot assist-location-consent';
         el.innerHTML = `
           <div class="bubble">
-            <div><i data-lucide="map-pin" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"></i>为了计算你和朋友之间更合适的会面点，小 Mid 需要使用你当前的位置。</div>
+            <div><i data-lucide="map-pin" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"></i>为了计算你和朋友之间更合适的会面点，阿觅需要使用你当前的位置。</div>
             <div class="assist-location-actions">
               <button type="button" class="allow">允许一次</button>
               <button type="button" class="skip">暂不允许</button>
@@ -6814,7 +6814,7 @@
         el.innerHTML = `
           <div class="aa-head">
             <i data-lucide="history"></i>
-            <span>小 Mid 的改动</span>
+            <span>阿觅的改动</span>
             <span class="aa-count"></span>
           </div>
           <div class="aa-body"></div>
@@ -7160,14 +7160,18 @@
       el.innerHTML = q.map(a => {
         const rem = Math.max(0, Math.floor((ROOM_BANNER_TTL_MS - (Date.now() - a.ts * 1000)) / 1000));
         const isHuman = a.actor_type === 'human';
-        // human 用手指图标 + "X 改了…"；ai 用 sparkles + "X 的小 Mid 改了…"
+        // human 直接显示成员操作；ai 明确说明阿觅根据哪位成员的输入完成更新。
         const icon = isHuman ? 'hand' : 'sparkles';
-        const verb = isHuman ? '改了' : ' 的小 Mid 改了';
+        const actor = escapeHtml(a.actor_name || '某人');
+        const label = escapeHtml(roomBannerLabel(a));
+        const title = isHuman
+          ? `<b>${actor}</b>改了 ${label}`
+          : `阿觅根据 <b>${actor}</b> 的操作更新了 ${label}`;
         return `
           <div class="ra-item" data-aid="${a.id}">
             <i data-lucide="${icon}" class="ra-ic"></i>
             <div class="ra-txt">
-              <div class="ra-title"><b>${escapeHtml(a.actor_name || '某人')}</b>${verb} ${escapeHtml(roomBannerLabel(a))}</div>
+              <div class="ra-title">${title}</div>
               <div class="ra-sub">${new Date(a.ts * 1000).toLocaleTimeString()}</div>
             </div>
             <button type="button" class="ra-btn" data-undo="${a.id}">撤销</button>
@@ -7301,7 +7305,7 @@
       el.innerHTML = `
         <div class="draft-head">
           <i data-lucide="sparkles"></i>
-          <div class="draft-title">小 Mid 想帮你这样填</div>
+          <div class="draft-title">阿觅想帮你这样填</div>
         </div>
         ${warnHtml}
         <div class="draft-rows"></div>
@@ -7768,7 +7772,7 @@
       const list = document.getElementById('assistConversationList');
       if (!list) return;
       if (!HIST.conversations.length) {
-        list.innerHTML = `<div class="hist-empty">还没有和小 Mid 的历史对话。</div>`;
+        list.innerHTML = `<div class="hist-empty">还没有和阿觅的历史对话。</div>`;
         return;
       }
       list.innerHTML = HIST.conversations.map(it => {
@@ -7866,7 +7870,7 @@
       }
       conversationHistoryClose();
       document.getElementById('assistInput')?.focus();
-      toast('已新建小 Mid 对话');
+      toast('已新建阿觅对话');
     }
 
     async function conversationDelete(id) {
@@ -8577,7 +8581,7 @@
             value:overrideValue || undefined, session_id:state.sessionId || '',
           }),
         });
-        if (action === 'session') toast('已仅用于当前小 Mid 会话，不会写入长期档案');
+        if (action === 'session') toast('已仅用于当前阿觅会话，不会写入长期档案');
         else if (action === 'dismiss') toast('已忽略这组线索');
         else toast('已确认并编译进会面档案');
         if (result.profile) MEMORY_UI.data = result.profile;
@@ -8772,7 +8776,7 @@
     }
     async function memoryDelete(kind, id, button) {
       const item = memoryFind(kind, id);
-      if (!item || !confirm(`让小 Mid 永久忘掉“${memoryTitle(kind,item)}”？\n相关来源原句也会清除。`)) return;
+      if (!item || !confirm(`让阿觅永久忘掉“${memoryTitle(kind,item)}”？\n相关来源原句也会清除。`)) return;
       button.disabled = true;
       try {
         await memoryFetchJson('/api/v2/memories/item', {

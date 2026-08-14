@@ -1139,8 +1139,8 @@ def _append_ai_action(
     actor_type: str = "ai",
 ) -> None:
     """把一条动作 append 进 rooms.last_ai_actions_json（滚动最多 20 条）。
-    actor_type='ai'（默认）由小 Mid 触发；actor_type='human' 是成员手动改锚点/关键词。
-    前端 banner 用这个字段区分文案："X 的小 Mid 改了…" vs "X 改了…"。"""
+    actor_type='ai'（默认）由阿觅触发；actor_type='human' 是成员手动改锚点/关键词。
+    前端 banner 用这个字段区分文案："阿觅根据 X 的操作更新了…" vs "X 改了…"。"""
     row = conn.execute(
         "SELECT last_ai_actions_json FROM rooms WHERE code=?", (code,)
     ).fetchone()
@@ -3476,7 +3476,7 @@ ASSISTANT_TOOLS = [
         "type": "function",
         "function": {
             "name": "list_memories",
-            "description": "读取小 Mid 已为当前用户保存的长期偏好。用户问‘你记得我什么’时调用。",
+            "description": "读取阿觅已为当前用户保存的长期偏好。用户问‘你记得我什么’时调用。",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -4345,7 +4345,7 @@ def _tool_get_current_result(sid: str, args: dict) -> tuple[dict, dict | None]:
 
 _MEMORY_CATEGORY_LABELS = {"transport": "出行", "food": "饮食", "budget": "预算"}
 _MEMORY_SOURCE_LABELS = {
-    "explicit_user": "你明确告诉小 Mid",
+    "explicit_user": "你明确告诉阿觅",
     "profile_edit": "你在会面档案中修改",
     "candidate_confirmation": "你确认了历史对话线索",
     "legacy_import": "旧数据导入",
@@ -6298,7 +6298,7 @@ def api_v2_memory_candidate_group_action():
         session = session_get(sid)
         if not sid or not session:
             conn.rollback()
-            return jsonify({"error": "当前没有可用的小 Mid 会话，请先开始一次对话"}), 409
+            return jsonify({"error": "当前没有可用的阿觅会话，请先开始一次对话"}), 409
         memory_did = str(session.get("memory_did") or g.device_id)
         if memory_did != g.device_id:
             conn.rollback()
@@ -7066,7 +7066,7 @@ TOOL_HANDLERS = {
 }
 
 
-_ASSISTANT_SYSTEM = """你是「中点 Middot 会面助手」，核心任务是帮用户在页面上动态调整锚点、参与者、POI 与路线；同时你是一个自然、有分寸的对话伙伴，不要把正常聊天机械挡回去。
+_ASSISTANT_SYSTEM = """你叫「阿觅」，是中点 Middot 的 AI 会面助手。核心任务是帮用户在页面上动态调整锚点、参与者、POI 与路线；同时你是一个自然、有分寸的对话伙伴，不要把正常聊天机械挡回去。
 
 ## 回答边界与自然转场（第一优先级）
 与会面直接相关的问题应完整处理，具体包括：
@@ -7124,7 +7124,7 @@ _ASSISTANT_SYSTEM = """你是「中点 Middot 会面助手」，核心任务是�
 6. 跨城市地名（"杭州文三路"、"上海外滩"、"深圳南山"）→ shift_center / set_participant_location / add_participant 必须传 `city`，否则会被当作默认城市（北京）解析出错。
 7. 每次最终回复用**一句到两句**中文概括完成了什么和用户接下来能做什么（如果是草稿，说“我先准备好了，你确认下”）。上方折叠区已经展示执行步骤，所以正文**禁止**复述内部过程，禁止出现函数名、工具名、参数名、索引、JSON、代码块或“我将调用/我调用了”之类实现细节。
 8. 回复用 **Markdown** 格式：粗体用 `**xxx**`、列表用 `-`、代码用反引号。别用 HTML。
-9. Punchy，别啰嗦。中文优先。你的名字叫「小 Mid」。
+9. Punchy，别啰嗦。中文优先。你的名字叫「阿觅」。
 10. **不要使用 Emoji**。界面已有统一线性图标，回复只用文字和 Markdown。
 11. 如果同一偏好在当前会话中反复出现但用户没有明确说“记住”，不要调用即时写入工具；可以说明它会在对话整理后作为候选评估，或询问是否现在确认保存。一次性安排永远不建议保存。
 12. 工具返回的候选地点若带 `reason`，推荐解释必须以该字段为依据，不得自行编造耗时、评分、价格或公平性理由。
@@ -7201,7 +7201,7 @@ def _history_summary_input(messages: list[dict]) -> str:
         if role == "user" and content:
             lines.append(f"用户：{content}")
         elif role == "assistant" and content:
-            lines.append(f"小 Mid：{content}")
+            lines.append(f"阿觅：{content}")
         elif role == "tool" and content:
             try:
                 result = json.loads(content)
