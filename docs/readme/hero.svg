@@ -88,6 +88,105 @@
     <g transform="translate(680 327)" font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif">
       <rect width="296" height="103" rx="20" fill="white" stroke="#CFE1F1"/>
       <g transform="translate(15 14) scale(.59)">
+        <path d="M31.7 15.8C25.2 9.5 15.6 10.1 9.9 16.3C4 22.7 4.7 32.9 10.4 39.3C15.2 44.7 22.6 47 29.1 44.8C32 38.9 34.1 32.3 35 25.7C35.5 21.8 34.3 18.4 31.7 15.8Z" fill="#278EF2"/><path d="M32.3 15.8C38.8 9.5 48.4 10.1 54.1 16.3C60 22.7 59.3 32.9 53.6 39.3C48.8 44.7 41.4 47 34.9 44.8C32 38.9 29.9 32.3 29 25.7C28.5 21.8 29.7 18.4 32.3 15.8Z" fill="#7768DF"/><path d="M32 17.7C38.9 23.1 43.3 31.4 42.5 39.6C41.7 47.2 36.8 52.3 32 54.5C27.2 52.3 22.3 47.2 21.5 39.6C20.7 31.4 25.1 23.1 32 17.7Z" fill="#14283E"/><path d="M32 20.8C38 24.5 41.1 30.1 40.5 36.4C39.9 41.9 36.7 46 32 48.4C27.3 46 24.1 41.9 23.5 36.4C22.9 30.1 26 24.5 32 20.8Z" fill="#76D8BF"/><path d="M32 28.1C32.43 30.65 33.35 31.57 35.9 32C33.35 32.43 32.43 33.35 32 35.9C31.57 33.35 30.65 32.43 28.1 32C30.65 31.57 31.57 30.65 32 28.1Z" fill="white"/>
+      </g>
+      <text x="62" y="30" fill="#122A41" font-size="14" font-weight="720">阿觅找到了更公平的会面点</text>
+      <text x="62" y="52" fill="#6A8197" font-size="12">两个人的预计路程只差 4 分钟</text>
+      <rect x="22" y="68" width="118" height="23" rx="11.5" fill="#EAF5FF"/>
+      <text x="38" y="84" fill="#1477D3" font-size="11" font-weight="650">查看推荐地点 →</text>
+    </g>
+  </g>
+</svg>
+<svg width="1200" height="560" viewBox="0 0 1200 560" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Middot — 约在真正的中间</title>
+  <desc id="desc">两个人从不同地点出发，在阿觅的帮助下找到公平会面点。</desc>
+  <defs>
+    <linearGradient id="bg" x1="70" y1="18" x2="1128" y2="548" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F5FAFF"/>
+      <stop offset="0.5" stop-color="#EAF4FF"/>
+      <stop offset="1" stop-color="#F6F1FF"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="101" y1="70" x2="260" y2="259" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6BC2FF"/>
+      <stop offset="0.5" stop-color="#1688F8"/>
+      <stop offset="1" stop-color="#005DCB"/>
+    </linearGradient>
+    <linearGradient id="midHeroBg" x1="7" y1="4" x2="57" y2="61" gradientUnits="userSpaceOnUse"><stop stop-color="#203A55"/><stop offset=".46" stop-color="#0B1726"/><stop offset="1" stop-color="#040A12"/></linearGradient>
+    <radialGradient id="midHeroGlass" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(17 10) rotate(48) scale(49)"><stop stop-color="white" stop-opacity=".26"/><stop offset="1" stop-color="white" stop-opacity="0"/></radialGradient>
+    <radialGradient id="midHeroCore" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(29.5 28.5) rotate(51) scale(10)"><stop stop-color="#DDF1FF"/><stop offset=".4" stop-color="#83C4FF"/><stop offset="1" stop-color="#247EDB"/></radialGradient>
+    <linearGradient id="ami" x1="16" y1="14" x2="52" y2="52" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#83BEFF"/>
+      <stop offset="0.48" stop-color="#3188F5"/>
+      <stop offset="1" stop-color="#6357D9"/>
+    </linearGradient>
+    <linearGradient id="route" x1="707" y1="130" x2="1050" y2="432" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#57D8BC"/>
+      <stop offset="0.48" stop-color="#188CF8"/>
+      <stop offset="1" stop-color="#FF9D72"/>
+    </linearGradient>
+    <filter id="shadow" x="-40" y="-40" width="1280" height="660" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#1B4F8A" flood-opacity="0.12"/>
+    </filter>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+    <pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.4" fill="#B7CDE3" fill-opacity="0.52"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="560" rx="36" fill="url(#bg)"/>
+  <circle cx="1045" cy="75" r="150" fill="#9B7BFF" fill-opacity="0.09" filter="url(#soft)"/>
+  <circle cx="586" cy="526" r="180" fill="#36B8FF" fill-opacity="0.11" filter="url(#soft)"/>
+  <rect x="1" y="1" width="1198" height="558" rx="35" stroke="#CFE3F6" stroke-width="2"/>
+
+  <g transform="translate(82 72) scale(1.375)">
+    <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#midHeroBg)"/>
+    <rect x="2.7" y="2.7" width="58.6" height="58.6" rx="16.3" fill="url(#midHeroGlass)"/>
+    <rect x="2.7" y="2.7" width="58.6" height="58.6" rx="16.3" stroke="#35516B" stroke-width="1.4"/>
+    <path d="M8 49C17 57 37 62 51 52" stroke="#020811" stroke-opacity=".4" stroke-width="7" stroke-linecap="round"/>
+    <path d="M13 17C24.5 17 22.5 32 32 32C41.5 32 39.5 47 51 47" stroke="#F4F8FC" stroke-width="5.5" stroke-linecap="round"/>
+    <circle cx="32" cy="32" r="8.6" fill="#081423"/><circle cx="32" cy="32" r="5.7" fill="url(#midHeroCore)"/><circle cx="30.5" cy="30.2" r=".72" fill="white" fill-opacity=".28"/>
+  </g>
+
+  <text x="82" y="218" fill="#0C1E33" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="72" font-weight="760" letter-spacing="-2">Middot</text>
+  <text x="82" y="275" fill="#1C3855" font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="32" font-weight="650">约在真正的中间</text>
+  <text x="82" y="324" fill="#607890" font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="19">让阿觅帮你和朋友，找到一个都不远、都开心的碰面地点。</text>
+
+  <g font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="15" font-weight="620">
+    <rect x="82" y="370" width="112" height="38" rx="19" fill="white" fill-opacity="0.78" stroke="#C9E1F5"/>
+    <circle cx="103" cy="389" r="5" fill="#28B99C"/><text x="117" y="395" fill="#36536E">多人会面</text>
+    <rect x="206" y="370" width="112" height="38" rx="19" fill="white" fill-opacity="0.78" stroke="#C9E1F5"/>
+    <circle cx="227" cy="389" r="5" fill="#188CF8"/><text x="241" y="395" fill="#36536E">公平路线</text>
+    <rect x="330" y="370" width="112" height="38" rx="19" fill="white" fill-opacity="0.78" stroke="#C9E1F5"/>
+    <circle cx="351" cy="389" r="5" fill="#8D6AF5"/><text x="365" y="395" fill="#36536E">会面记忆</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="618" y="56" width="504" height="448" rx="29" fill="white" fill-opacity="0.9"/>
+    <rect x="619" y="57" width="502" height="446" rx="28" stroke="#D8E7F5" stroke-width="2"/>
+    <rect x="641" y="80" width="458" height="402" rx="21" fill="#F7FAFD"/>
+    <rect x="641" y="80" width="458" height="402" rx="21" fill="url(#grid)"/>
+    <path d="M670 134C755 173 764 240 848 262C921 281 1015 242 1080 292" stroke="#D5E5F3" stroke-width="8" stroke-linecap="round"/>
+    <path d="M690 441C752 372 831 373 887 319C940 268 972 167 1075 123" stroke="#DCE9F4" stroke-width="9" stroke-linecap="round"/>
+    <path d="M694 168C755 174 761 264 848 281C933 298 996 392 1060 421" stroke="url(#route)" stroke-width="6" stroke-linecap="round" stroke-dasharray="1 13"/>
+    <circle cx="694" cy="168" r="14" fill="#55D6BA" stroke="white" stroke-width="6"/>
+    <circle cx="1060" cy="421" r="14" fill="#FF9C70" stroke="white" stroke-width="6"/>
+    <circle cx="851" cy="282" r="34" fill="#188CF8" fill-opacity="0.13"/>
+    <circle cx="851" cy="282" r="18" fill="#188CF8" stroke="white" stroke-width="6"/>
+
+    <g transform="translate(666 105)" font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif">
+      <rect width="106" height="39" rx="15" fill="white" stroke="#DCE9F4"/>
+      <circle cx="21" cy="19.5" r="8" fill="#55D6BA"/><text x="37" y="25" fill="#20374E" font-size="14" font-weight="650">我 · 国贸</text>
+    </g>
+    <g transform="translate(970 434)" font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif">
+      <rect width="105" height="35" rx="14" fill="white" stroke="#DCE9F4"/>
+      <circle cx="18" cy="17.5" r="7" fill="#FF9C70"/><text x="32" y="23" fill="#20374E" font-size="13" font-weight="650">朋友 · 清华</text>
+    </g>
+
+    <g transform="translate(680 327)" font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif">
+      <rect width="296" height="103" rx="20" fill="white" stroke="#CFE1F1"/>
+      <g transform="translate(15 14) scale(.59)">
         <path d="M29.2 5.8C41.8 6.7 51.8 14.1 56.2 24.8C47.6 23.2 39.7 26.2 32.4 34.1C26.9 24.6 25.9 15.6 29.2 5.8Z" fill="#7566F2"/><path d="M58.1 28.9C57.1 41.6 49.7 51.6 39 56C40.6 47.4 37.5 39.5 29.7 32.2C39.2 26.7 48.3 25.7 58.1 28.9Z" fill="#2D96F7"/><path d="M35 58.2C22.3 57.2 12.3 49.8 7.9 39.1C16.5 40.7 24.4 37.6 31.7 29.8C37.2 39.3 38.2 48.4 35 58.2Z" fill="#14283E"/><path d="M32 25.2C32.65 29.7 34.3 31.35 38.8 32C34.3 32.65 32.65 34.3 32 38.8C31.35 34.3 29.7 32.65 25.2 32C29.7 31.35 31.35 29.7 32 25.2Z" fill="#8AF0D3"/>
       </g>
       <text x="62" y="30" fill="#122A41" font-size="14" font-weight="720">阿觅找到了更公平的会面点</text>
