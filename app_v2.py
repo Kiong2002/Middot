@@ -1056,7 +1056,8 @@ def api_favorites_del(fid: int):
 
 
 # ─────────────── /api/v2/rooms ────────────────
-# 房间协作：任何成员可改 anchor/keyword/自己 location；用 revision 做 last-write-wins。
+# 房间协作：人工更新保持直接写；AI 更新携带字段旧值，在真正落库时做字段级 CAS。
+# 这样不同字段可并行，同一字段若已变化则拒绝覆盖。
 # 6 位纯数字 code，避开记忆锚点黑名单，且关闭后 24h 内不复用。
 
 def _gen_room_code(conn: sqlite3.Connection) -> str:
@@ -1184,11 +1185,8 @@ def _room_bump_revision(conn: sqlite3.Connection, code: str, updated_by: str | N
     )
 
 
-# ── AI 归属日志 + 写限流 ────────────────────────────────────
+# ── AI 归属日志 ────────────────────────────────────────────
 _AI_ACTION_LOG_MAX = 20
-_AI_WRITE_LAST: dict[str, float] = {}       # device_id → monotonic()
-_AI_WRITE_COOLDOWN_S = 10.0
-_AI_WRITE_TOOLS = {"shift_center", "set_participant_location", "set_keyword", "set_radius", "add_participant"}
 
 
 def _append_ai_action(
@@ -1246,26 +1244,6 @@ def _append_ai_action(
         "UPDATE rooms SET last_ai_actions_json=? WHERE code=?",
         (json.dumps(log, ensure_ascii=False), code),
     )
-
-
-def _ai_write_gate(did: str, tool_name: str) -> tuple[bool, str]:
-    """跨 stream 冷却：同一 device 10s 内只允许**一个** AI stream 写。
-    同一 stream 里 N 个 tool_call 应该被视为一次原子操作——
-    多人 one-shot『我在北大，Lisa在对外经贸，吃火锅』要一次调 3 个工具，
-    别让 10s 限流把它拆成半成品。调用侧用 stream-local flag 保证一 stream 只 gate 一次。"""
-    if not did or tool_name not in _AI_WRITE_TOOLS:
-        return True, ""
-    last = _AI_WRITE_LAST.get(did, 0.0)
-    now = time.monotonic()
-    if now - last < _AI_WRITE_COOLDOWN_S:
-        remain = int(_AI_WRITE_COOLDOWN_S - (now - last)) + 1
-        return False, f"请稍等 {remain}s，你或房间里刚有人改过（AI 写限流 10s/人）。"
-    return True, ""
-
-
-def _ai_write_touch(did: str, tool_name: str) -> None:
-    if did and tool_name in _AI_WRITE_TOOLS:
-        _AI_WRITE_LAST[did] = time.monotonic()
 
 
 @app.route("/api/v2/rooms/<code>/undo_action", methods=["POST"])
@@ -1479,28 +1457,67 @@ def api_rooms_update(code: str):
     try:
         _begin_immediate(conn)
         room = conn.execute(
-            "SELECT status FROM rooms WHERE code=?", (code,)
+            "SELECT status, anchor_json, keyword, revision FROM rooms WHERE code=?", (code,)
         ).fetchone()
         if not room or room["status"] != "active":
             conn.rollback()
             return jsonify({"error": "房间不存在或已关闭"}), 404
         member = conn.execute(
-            "SELECT 1 FROM room_members WHERE room_code=? AND device_id=?",
+            "SELECT location_json, prefer, nickname FROM room_members "
+            "WHERE room_code=? AND device_id=?",
             (code, g.device_id),
         ).fetchone()
         if not member:
             conn.rollback()
             return jsonify({"error": "你不是房间成员，请先加入"}), 403
 
-        # 人工改动 attribution 用：先把当前 anchor/keyword 拍下来，等改完再对比
-        prev_row = conn.execute(
-            "SELECT anchor_json, keyword FROM rooms WHERE code=?", (code,)
-        ).fetchone()
+        # AI 写入使用字段级 compare-and-swap：只在它准备修改的字段已经被别人
+        # 改动时拒绝；房间里其他无关字段变化不影响本次操作。
         try:
-            prev_anchor = json.loads(prev_row["anchor_json"] or "null") if prev_row else None
+            prev_anchor = json.loads(room["anchor_json"] or "null")
         except (TypeError, ValueError):
             prev_anchor = None
-        prev_keyword = prev_row["keyword"] if prev_row else None
+        try:
+            prev_location = json.loads(member["location_json"] or "null")
+        except (TypeError, ValueError):
+            prev_location = None
+        prev_keyword = room["keyword"]
+        expected = data.get("expected") if isinstance(data.get("expected"), dict) else {}
+        conflict_fields = []
+        same_value = lambda left, right: json.dumps(
+            left, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ) == json.dumps(
+            right, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        if "anchor" in data and "anchor" in expected and not same_value(
+            prev_anchor, expected.get("anchor")
+        ):
+            conflict_fields.append("anchor")
+        if "keyword" in data and "keyword" in expected and (
+            (prev_keyword or "") != (expected.get("keyword") or "")
+        ):
+            conflict_fields.append("keyword")
+        if "my_location" in data and "my_location" in expected and not same_value(
+            prev_location, expected.get("my_location")
+        ):
+            conflict_fields.append("my_location")
+        if "my_prefer" in data and "my_prefer" in expected and (
+            (member["prefer"] or "auto") != (expected.get("my_prefer") or "auto")
+        ):
+            conflict_fields.append("my_prefer")
+        if "my_nickname" in data and "my_nickname" in expected and (
+            (member["nickname"] or "") != (expected.get("my_nickname") or "")
+        ):
+            conflict_fields.append("my_nickname")
+        if conflict_fields:
+            conn.rollback()
+            return jsonify({
+                "error": "房间中的同一项刚被其他操作更新，本次修改没有覆盖它",
+                "conflict": True,
+                "conflict_fields": conflict_fields,
+                "current_revision": room["revision"],
+                "snapshot": _room_snapshot(conn, code, g.device_id),
+            }), 409
 
         # 房间级字段：任何成员可改
         if "anchor" in data:
@@ -8179,12 +8196,6 @@ def api_v2_assistant_stream():
 
     def generate():
         yield _sse({"type": "session", "session_id": sid})
-        # 一 stream = 一次原子操作：headline 用例『我在北大，Lisa在对外经贸，吃火锅』
-        # 一句话要一次调 3 个工具。10s 限流只对跨 stream 生效，同 stream 内所有 write tool
-        # 沿用第一次的 gate 判定（要么全放，要么全拒；不能拆成半成品）。
-        stream_gate_decided = False
-        stream_allow = True
-        stream_gate_err = ""
         routes_recomputed_after_prefer = False
         successful_tool_signatures: set[tuple[str, str]] = set()
 
@@ -8343,52 +8354,6 @@ def api_v2_assistant_stream():
                 waiting_for_offer_choice = False
                 location_targets_seen: set[int | str] = set()
 
-                # 写保护是跨请求的冷却，不是需要模型反复修复的工具错误。
-                # 一旦本批包含写工具且保护未放行，给所有 tool_call 补齐协议消息后
-                # 直接友好结束本轮；否则模型会在同一 stream 内连续重试到 MAX_ITERS。
-                batch_write_names = [
-                    tc["function"]["name"] for tc in tool_calls_serialized
-                    if tc["function"]["name"] in _AI_WRITE_TOOLS
-                ]
-                if batch_write_names:
-                    if not stream_gate_decided:
-                        stream_allow, stream_gate_err = _ai_write_gate(
-                            caller_did, batch_write_names[0]
-                        )
-                        stream_gate_decided = True
-                    if not stream_allow:
-                        for tc in tool_calls_serialized:
-                            name = tc["function"]["name"]
-                            cancelled = {
-                                "ok": False,
-                                "error": stream_gate_err,
-                                "retryable": True,
-                                "cancelled_batch": True,
-                            }
-                            tool_msg = {
-                                "role": "tool",
-                                "tool_call_id": tc["id"],
-                                "name": name,
-                                "content": json.dumps(cancelled, ensure_ascii=False),
-                            }
-                            messages.append(tool_msg)
-                            _assistant_append_history(sid, tool_msg)
-                            _agent_task_record(sid, name, cancelled)
-                        friendly = (
-                            "刚刚才更新过方案，我先不重复执行，避免把前一次修改覆盖掉。"
-                            + stream_gate_err
-                        )
-                        _assistant_append_history(sid, {
-                            "role": "assistant", "content": friendly,
-                        })
-                        _conversation_append_event(
-                            conversation_id, caller_did, "assistant", friendly, "message"
-                        )
-                        _agent_task_finish(sid)
-                        yield _sse({"type": "token", "delta": friendly})
-                        yield _sse({"type": "done"})
-                        return
-
                 for tc in tool_calls_serialized:
                     name = tc["function"]["name"]
                     called_names_this_batch.add(name)
@@ -8446,29 +8411,17 @@ def api_v2_assistant_stream():
                         tool_result = {"ok": False, "error": f"未知工具: {name}"}
                         state_patch = None
                     else:
-                        if name in _AI_WRITE_TOOLS:
-                            if not stream_gate_decided:
-                                stream_allow, stream_gate_err = _ai_write_gate(caller_did, name)
-                                stream_gate_decided = True
-                            allowed, gate_err = stream_allow, stream_gate_err
-                        else:
-                            allowed, gate_err = True, ""
-                        if not allowed:
-                            tool_result = {"ok": False, "error": gate_err}
+                        try:
+                            tool_result, state_patch = handler(sid, args)
+                        except Exception as e:
+                            tool_result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
                             state_patch = None
-                        else:
-                            try:
-                                tool_result, state_patch = handler(sid, args)
-                            except Exception as e:
-                                tool_result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-                                state_patch = None
-                            if tool_result.get("ok"):
-                                successful_tool_signatures.add(signature)
-                                _ai_write_touch(caller_did, name)
-                                if name == "set_participant_prefer" or (
-                                    name == "set_participant_location" and args.get("prefer")
-                                ):
-                                    prefer_changed_this_batch = True
+                        if tool_result.get("ok"):
+                            successful_tool_signatures.add(signature)
+                            if name == "set_participant_prefer" or (
+                                name == "set_participant_location" and args.get("prefer")
+                            ):
+                                prefer_changed_this_batch = True
 
                     _agent_task_record(sid, name, tool_result)
 

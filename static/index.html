@@ -3879,6 +3879,7 @@
       lockedUntil: 0,
       timer: null, timerInterval: 3000, unchangedCount: 0,
       lastAiActionsSeen: 0,
+      aiWriteChain: Promise.resolve(),
       _soloBackup: null,  // 进房间前 state.participants 的快照
     };
     const ROOM_AVATAR_COLORS = ['#4CA5FF','#F76B15','#7C5CFF','#22B573','#E64980','#F59F00','#0EA5A5','#845EC2'];
@@ -3926,6 +3927,7 @@
       if (ROOM.timer) { clearInterval(ROOM.timer); ROOM.timer = null; }
       ROOM.code = null; ROOM.members = []; ROOM.revision = 0;
       ROOM.myDeviceId = null; ROOM.lastAiActionsSeen = 0; ROOM.lockedUntil = 0;
+      ROOM.aiWriteChain = Promise.resolve();
       // 还原 solo 参与者列表（如果之前存过）
       if (ROOM._soloBackup && ROOM._soloBackup.length) {
         state.participants = ROOM._soloBackup;
@@ -4031,11 +4033,15 @@
             renderAnchorPanel(); renderAnchorOnMap();
           }
         }
+      } else if (Object.prototype.hasOwnProperty.call(snap, 'anchor') && state.anchor) {
+        // 远端把锚点清空时也必须同步；尤其是 AI CAS 冲突回滚，不能只恢复非空值。
+        setAnchor(null, { silent: true });
       }
       // 远端关键词 → 本地输入框
-      if (typeof snap.keyword === 'string') {
+      if (Object.prototype.hasOwnProperty.call(snap, 'keyword')) {
         const q = $('#queryInput');
-        if (q && q.value !== snap.keyword) q.value = snap.keyword;
+        const remoteKeyword = snap.keyword || '';
+        if (q && q.value !== remoteKeyword) q.value = remoteKeyword;
       }
       // 远端搜索结果 → 本地：session_id 不同才 apply，避免刚 publish 完自己又被自己冲一次
       if (snap.search_snapshot && snap.search_snapshot.session_id
@@ -7365,7 +7371,7 @@
       activityPush(entry);
       flashForKind(d.kind, d.data);
       syncApplyDraftsBackend([{ kind: d.kind, data: d.data }]);
-      if (typeof ROOM !== 'undefined' && ROOM.code) roomBroadcastAfterAi(d.kind, d.data, before);
+      if (typeof ROOM !== 'undefined' && ROOM.code) roomBroadcastAfterAi(d.kind, d.data, before, entry);
     }
 
     function syncApplyDraftsBackend(drafts) {
@@ -7377,39 +7383,64 @@
       }).catch(() => {});
     }
 
-    function roomBroadcastAfterAi(kind, data, before) {
-      if (typeof roomDebouncedUpdate !== 'function') return;
-      // 房间字段更新（跟人工改走同一 debounce 通道）
+    function roomBroadcastAfterAi(kind, data, before, activityEntry = null) {
+      if (!ROOM.code) return;
+      // AI 修改用一次原子请求提交“字段变化 + 归属日志 + 旧值条件”。
+      // 旧值仍相同才写入；无关字段变化不会阻塞，同一字段被抢先修改则返回 409。
+      const patch = { expected: {} };
       if (kind === 'shift_center' && data?.anchor) {
-        roomDebouncedUpdate({ anchor: {
+        patch.anchor = {
           lng: data.anchor.lng, lat: data.anchor.lat,
           name: data.anchor.name, radius_m: data.anchor.radius_m || (state.anchor?.radius_m || 5000)
-        }});
+        };
+        patch.expected.anchor = before?.anchor || null;
       } else if (kind === 'set_keyword') {
-        roomDebouncedUpdate({ keyword: data?.keyword || '' });
+        patch.keyword = data?.keyword || '';
+        if (before) patch.expected.keyword = before.keyword || '';
       } else if (kind === 'set_radius' && state.anchor) {
-        roomDebouncedUpdate({ anchor: { ...state.anchor, radius_m: data.radius_m }});
+        patch.anchor = { ...state.anchor, radius_m: data.radius_m };
+        if (before) patch.expected.anchor = { ...state.anchor, radius_m: before.radius_m || 5000 };
       } else if (kind === 'set_participant_location') {
         const meDid = ROOM.myDeviceId;
         if (data?.participant_id === `room-${meDid}`) {
-          const patch = {};
           if (data.lng != null && data.lat != null) {
-            patch.my_location = { lng: data.lng, lat: data.lat, address: data.address || '' };
+            patch.my_location = {lng:data.lng, lat:data.lat, address:data.address || ''};
+            patch.expected.my_location = before?.lng != null && before?.lat != null
+              ? {lng:before.lng, lat:before.lat, address:before.address || ''} : null;
           }
-          if (data.new_nickname) patch.my_nickname = data.new_nickname;
-          if (Object.keys(patch).length) roomDebouncedUpdate(patch);
+          if (data.new_nickname) {
+            patch.my_nickname = data.new_nickname;
+            patch.expected.my_nickname = before?.name || '';
+          }
         }
       }
-      // AI 归属日志：立刻单独发一条（不 debounce），让别人 3s 内能看到 attribution
       const aiAction = buildAiActionPayload(kind, data, before);
-      if (aiAction) {
-        fetch(`/api/v2/rooms/${ROOM.code}/update`, {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ ai_action: aiAction }),
-        }).then(r => r.json()).then(r => {
-          if (r?.revision) ROOM.revision = Math.max(ROOM.revision, r.revision);
-        }).catch(() => {});
-      }
+      if (aiAction) patch.ai_action = aiAction;
+      if (Object.keys(patch).every(key => ['expected','ai_action'].includes(key))) return;
+      const roomCode = ROOM.code;
+      // 同一轮若连续改多个字段，按产生顺序落库，避免网络乱序造成后一步先冲突。
+      ROOM.aiWriteChain = (ROOM.aiWriteChain || Promise.resolve()).then(() =>
+        fetch(`/api/v2/rooms/${roomCode}/update`, {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(patch),
+        }).then(async response => {
+          const result = await response.json().catch(() => ({}));
+          if (response.status === 409 && result.conflict) {
+            if (activityEntry) {
+              activityEntry.undone = true;
+              activityEntry.label += ' · 房间已变化，未覆盖';
+              renderActivityPanel();
+            }
+            if (result.snapshot && ROOM.code === roomCode) roomApplySnapshot(result.snapshot);
+            toast('同一项刚被房间里的其他操作更新，阿觅没有覆盖它', true);
+            return;
+          }
+          if (!response.ok) throw new Error(result.error || '房间同步失败');
+          if (ROOM.code === roomCode && result.revision) {
+            ROOM.revision = Math.max(ROOM.revision, result.revision);
+          }
+        })
+      ).catch(error => toast(error.message || '房间同步失败', true));
     }
 
     function buildAiActionPayload(kind, data, before) {
