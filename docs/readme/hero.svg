@@ -1,6 +1,6 @@
 <svg width="1200" height="560" viewBox="0 0 1200 560" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">Middot — 约在真正的中间</title>
-  <desc id="desc">两个人从不同地点出发，在小 Mid 的帮助下找到公平会面点。</desc>
+  <desc id="desc">两个人从不同地点出发，在阿觅的帮助下找到公平会面点。</desc>
   <defs>
     <linearGradient id="bg" x1="70" y1="18" x2="1128" y2="548" gradientUnits="userSpaceOnUse">
       <stop stop-color="#F5FAFF"/>
@@ -43,7 +43,7 @@
 
   <text x="82" y="218" fill="#0C1E33" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="72" font-weight="760" letter-spacing="-2">Middot</text>
   <text x="82" y="275" fill="#1C3855" font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="32" font-weight="650">约在真正的中间</text>
-  <text x="82" y="324" fill="#607890" font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="19">让小 Mid 帮你和朋友，找到一个都不远、都开心的碰面地点。</text>
+  <text x="82" y="324" fill="#607890" font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="19">让阿觅帮你和朋友，找到一个都不远、都开心的碰面地点。</text>
 
   <g font-family="Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="15" font-weight="620">
     <rect x="82" y="370" width="112" height="38" rx="19" fill="white" fill-opacity="0.78" stroke="#C9E1F5"/>
@@ -80,7 +80,7 @@
       <rect width="296" height="103" rx="20" fill="white" stroke="#CFE1F1"/>
       <circle cx="34" cy="33" r="18" fill="#E3F2FF"/>
       <circle cx="34" cy="33" r="9" fill="#188CF8"/>
-      <text x="62" y="30" fill="#122A41" font-size="14" font-weight="720">小 Mid 找到了更公平的会面点</text>
+      <text x="62" y="30" fill="#122A41" font-size="14" font-weight="720">阿觅找到了更公平的会面点</text>
       <text x="62" y="52" fill="#6A8197" font-size="12">两个人的预计路程只差 4 分钟</text>
       <rect x="22" y="68" width="118" height="23" rx="11.5" fill="#EAF5FF"/>
       <text x="38" y="84" fill="#1477D3" font-size="11" font-weight="650">查看推荐地点 →</text>

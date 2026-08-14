@@ -12,7 +12,7 @@
       <rect width="330" height="208" rx="24" fill="white" stroke="#DCE8F3"/>
       <circle cx="52" cy="55" r="28" fill="#E8FBF6"/><circle cx="45" cy="53" r="8" fill="#45C9AA"/><circle cx="61" cy="58" r="8" fill="#84DDC9"/>
       <text x="26" y="111" fill="#112A42" font-size="20" font-weight="720">01 · 说出大家在哪</text>
-      <text x="26" y="145" fill="#6B8196" font-size="15">填地点，或直接告诉小 Mid：</text>
+      <text x="26" y="145" fill="#6B8196" font-size="15">填地点，或直接告诉阿觅：</text>
       <text x="26" y="173" fill="#2F526F" font-size="15" font-weight="620">“我在国贸，朋友在清华”</text>
     </g>
     <g transform="translate(435 46)">
