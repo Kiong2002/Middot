@@ -2044,7 +2044,7 @@
 
       /* 移动端仍放在阿觅上方，保留短文字避免图标含义不清。 */
       .map-here-fab {
-        top: auto; left: auto; right: 12px; bottom: 78px;
+        top: auto; left: auto; right: 12px; bottom: calc(76px + env(safe-area-inset-bottom));
         padding: 7px 10px;
         width: auto; height: 34px;
         border-radius: 17px;
@@ -2115,7 +2115,7 @@
     /* 地图右下角常驻定位按钮，位于阿觅上方；选点模式下复用为填点。 */
     .map-here-fab {
       position: absolute; z-index: 12;
-      top: auto; left: auto; right: 20px; bottom: 86px;
+      top: auto; left: auto; right: 20px; bottom: 88px;
       display: inline-flex;
       align-items: center; gap: 6px;
       padding: 8px 12px;
@@ -2134,7 +2134,7 @@
     .map-here-fab.loading [data-lucide="locate-fixed"] { animation: spin 1s linear infinite; }
     @media (max-width: 820px) {
       .map-here-fab {
-        top: auto; left: auto; right: 12px; bottom: 78px;
+        top: auto; left: auto; right: 12px; bottom: calc(76px + env(safe-area-inset-bottom));
         padding: 7px 10px;
         width: auto; height: 34px;
         border-radius: 17px;
@@ -2908,7 +2908,7 @@
     .assist-send [data-lucide] { width: 16px; height: 16px; }
 
     @media (max-width: 820px) {
-      .assist-fab { right: 16px; bottom: 84px; width: 48px; height: 48px; }
+      .assist-fab { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); width: 48px; height: 48px; }
       .assist-fab [data-lucide] { width: 20px; height: 20px; }
       .assist-panel {
         right: 0; bottom: 0; left: 0;
@@ -6346,7 +6346,7 @@
       let suppressClickUntil = 0;
       let resizeFrame = 0;
       const mode = () => window.matchMedia('(max-width: 820px)').matches ? 'mobile' : 'desktop';
-      const storageKey = () => `middot-map-float:${el.dataset.floatingKey || el.id}:${mode()}`;
+      const storageKey = () => `middot-map-float:v2:${el.dataset.floatingKey || el.id}:${mode()}`;
       const parent = () => el.offsetParent || document.getElementById('mapWrap');
       const resetInlinePosition = () => {
         ['left','top','right','bottom','transform'].forEach(prop => el.style.removeProperty(prop));
