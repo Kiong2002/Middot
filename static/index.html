@@ -1578,6 +1578,15 @@
       padding: 2px 2px 0;
     }
     .memory-section-head span:last-child { color: var(--text-3); font-weight: 500; }
+    .memory-subsection-title {
+      display: flex; align-items: center; justify-content: space-between;
+      margin: 3px 2px 0; color: var(--text-3); font-size: 10.5px; font-weight: 650;
+    }
+    .memory-empty-compact {
+      padding: 11px 12px; border: 1px dashed var(--line); border-radius: 12px;
+      color: var(--text-3); background: color-mix(in oklch, var(--panel-2) 72%, transparent);
+      font-size: 11px; line-height: 1.45;
+    }
     .memory-item {
       display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px;
       padding: 12px; border: 1px solid var(--line); border-radius: 13px;
@@ -8327,13 +8336,16 @@
         ? `<div class="memory-source-quote">“${escapeHtml(p.excerpt)}”</div>` : '';
       return `<div class="memory-source"><i data-lucide="git-commit-horizontal"></i><span class="memory-source-badge">${escapeHtml(label)}</span>${when ? `<span>${escapeHtml(when)}</span>` : ''}</div>${quote}`;
     }
-    function memoryItemHtml(kind, item) {
+    function memoryItemHtml(kind, item, extraFacts = []) {
       const editable = kind !== 'episode';
       const expired = kind === 'person' && item.place_status === 'expired';
+      const extraHtml = extraFacts.length
+        ? `<div class="memory-item-detail">${extraFacts.map(f => `${escapeHtml(f.label)}：${escapeHtml(f.value)}`).join(' · ')}</div>` : '';
       return `<article class="memory-item${expired ? ' is-expired' : ''}" data-kind="${kind}" data-id="${Number(item.id)}">
         <div class="memory-item-main">
           <div class="memory-item-title">${escapeHtml(memoryTitle(kind, item))}</div>
           <div class="memory-item-detail">${escapeHtml(memoryDetail(kind, item))}</div>
+          ${extraHtml}
           ${memorySourceHtml(item)}
         </div>
         <div class="memory-item-actions">
@@ -8368,10 +8380,17 @@
           </div>
         </article>`).join('')}</section>`;
     }
-    function memoryWikiSection(pages) {
-      const confirmed = (pages || []).filter(page => (page.facts || []).some(f => f.status === 'confirmed'));
-      if (!confirmed.length) return '';
-      return `<section class="memory-section"><div class="memory-section-head"><span>Wiki 页面</span><span>${confirmed.length} 个实体</span></div>${confirmed.map(page => `<article class="memory-item memory-wiki-card" data-wiki-page="${escapeHtml(page.id)}"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(page.title)}</div><div class="memory-item-detail">${escapeHtml(page.summary)}</div><div class="memory-source"><i data-lucide="network"></i><span>${(page.facts || []).length} 条关联事实</span></div></div><i data-lucide="chevron-right"></i></article>`).join('')}</section>`;
+    function memoryGeneralWikiPages(pages, types) {
+      return (pages || []).filter(page => types.includes(page.type)).map(page => {
+        const facts = (page.facts || []).filter(f => f.status === 'confirmed' && !f.domain_kind);
+        return {...page, facts, summary:facts.slice(0,3).map(f => `${f.label}：${f.value}`).join('；')};
+      }).filter(page => page.facts.length);
+    }
+    function memoryWikiCards(pages) {
+      return (pages || []).map(page => `<article class="memory-item memory-wiki-card" data-wiki-page="${escapeHtml(page.id)}"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(page.title)}</div><div class="memory-item-detail">${escapeHtml(page.summary)}</div><div class="memory-source"><i data-lucide="network"></i><span>${page.facts.length} 条关联事实</span></div></div><i data-lucide="chevron-right"></i></article>`).join('');
+    }
+    function memoryProfileSection(label, count, body, emptyText) {
+      return `<section class="memory-section"><div class="memory-section-head"><span>${escapeHtml(label)}</span><span>${count} 项</span></div>${body || `<div class="memory-empty-compact">${escapeHtml(emptyText)}</div>`}</section>`;
     }
     function memoryGraphLayout(nodes, edges) {
       const signature = nodes.map(n => n.id).sort().join('|');
@@ -8686,14 +8705,21 @@
       } else if (MEMORY_UI.view === 'graph') {
         list.innerHTML = memoryGraphHtml(data.graph || {});
       } else {
-        const sections = [
-          memorySectionHtml('preference', '个人偏好', data.preferences || []),
-          memorySectionHtml('person', '常约的人', data.people || []),
-          memorySectionHtml('feedback', '店铺反馈', data.feedback || []),
-          memoryWikiSection(data.wiki_pages || []),
-          memorySectionHtml('episode', '规划记录（不等于去过）', data.episodes || []),
-        ].filter(Boolean).join('');
-        list.innerHTML = sections || `<div class="memory-empty"><i data-lucide="brain"></i>还没有已确认的会面档案。<br>历史线索可以在“待确认”中处理。</div>`;
+        const pages=data.wiki_pages||[],preferences=data.preferences||[],people=data.people||[],feedback=data.feedback||[],episodes=data.episodes||[];
+        const aboutPages=memoryGeneralWikiPages(pages,['user','preference']);
+        const personPages=memoryGeneralWikiPages(pages,['person']);
+        const placePages=memoryGeneralWikiPages(pages,['place','poi','brand','organization','school']);
+        const aboutBody=`<div class="memory-subsection-title"><span>个人偏好</span><span>${preferences.length}</span></div>${preferences.length?preferences.map(x=>memoryItemHtml('preference',x)).join(''):'<div class="memory-empty-compact">暂时还不了解你的长期出行、饮食或预算偏好。</div>'}${aboutPages.length?`<div class="memory-subsection-title"><span>其他资料</span><span>${aboutPages.length}</span></div>${memoryWikiCards(aboutPages)}`:''}`;
+        const representedPeople=new Set(people.map(x=>x.name));
+        const peopleCount=new Set([...people.map(x=>x.name),...personPages.map(page=>page.title)]).size;
+        const peopleBody=`${people.map(x=>memoryItemHtml('person',x,(personPages.find(page=>page.title===x.name)||{}).facts||[])).join('')}${memoryWikiCards(personPages.filter(page=>!representedPeople.has(page.title)))}`;
+        const placeBody=`${feedback.map(x=>memoryItemHtml('feedback',x)).join('')}${memoryWikiCards(placePages)}`;
+        list.innerHTML = [
+          memoryProfileSection('关于我',preferences.length+aboutPages.length,aboutBody,'暂时还不了解你的长期资料。'),
+          memoryProfileSection('常约的人',peopleCount,peopleBody,'还没有常约的人或人物资料。'),
+          memoryProfileSection('地点与店铺',feedback.length+placePages.length,placeBody,'还没有确认过的地点资料或店铺反馈。'),
+          memoryProfileSection('规划记录',episodes.length,episodes.map(x=>memoryItemHtml('episode',x)).join(''),'还没有规划记录；搜索和推荐不会被当成已经去过。'),
+        ].join('');
       }
       refreshIcons();
       if (MEMORY_UI.view === 'graph') requestAnimationFrame(() => memoryInitGraph(fitGraph));
@@ -8794,8 +8820,18 @@
       const page = (MEMORY_UI.data?.wiki_pages || []).find(x => x.id === pageId);
       if (!page) return;
       const editor = memoryShowSubView(page.title);
-      const facts = (page.facts || []).map(f => {const stateLabel={confirmed:'已确认并生效',challenged:'受质疑，暂停生效',conflict:'冲突待确认',candidate:'待确认'}[f.status]||'待确认';return `<article class="memory-item${f.status !== 'confirmed' ? ' memory-candidate' : ''}"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(f.label)}</div><div class="memory-item-detail">${escapeHtml(f.value)}</div><div class="memory-source"><i data-lucide="${f.status === 'confirmed' ? 'circle-check' : 'circle-help'}"></i><span>${stateLabel}</span></div></div></article>`;}).join('');
+      const facts = (page.facts || []).map(f => {const stateLabel={confirmed:'已确认并生效',challenged:'受质疑，暂停生效',expired:'已过期，暂停生效',conflict:'冲突待确认',candidate:'待确认'}[f.status]||'待确认',actions=f.origin&&f.action_id?`<div class="memory-item-actions"><button class="memory-item-btn" type="button" data-wiki-fact-action="edit" data-fact-id="${Number(f.action_id)}" data-predicate="${escapeHtml(f.predicate)}" data-value="${escapeHtml(f.value)}" title="修改"><i data-lucide="pencil"></i></button><button class="memory-item-btn danger" type="button" data-wiki-fact-action="delete" data-fact-id="${Number(f.action_id)}" data-predicate="${escapeHtml(f.predicate)}" title="删除"><i data-lucide="trash-2"></i></button></div>`:'';return `<article class="memory-item${f.status !== 'confirmed' ? ' memory-candidate' : ''}"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(f.label)}</div><div class="memory-item-detail">${escapeHtml(f.value)}</div><div class="memory-source"><i data-lucide="${f.status === 'confirmed' ? 'circle-check' : 'circle-help'}"></i><span>${stateLabel}</span></div></div>${actions}</article>`;}).join('');
       editor.insertAdjacentHTML('beforeend', `<div class="memory-intro"><i data-lucide="file-text"></i><span>${escapeHtml(page.summary)}</span></div><section class="memory-section">${facts || '<div class="memory-empty">暂无事实</div>'}</section>`);
+      editor.addEventListener('click',async event=>{
+        const button=event.target.closest('[data-wiki-fact-action]');if(!button)return;
+        const action=button.dataset.wikiFactAction,id=Number(button.dataset.factId),predicate=button.dataset.predicate;
+        let value=button.dataset.value||'';
+        if(action==='edit'){const edited=prompt(`修改“${predicate}”`,value);if(edited===null)return;value=edited.trim();if(!value)return toast('关系内容不能为空',true);}
+        else if(!confirm('删除这条事实关系？只会删除当前关系，不会删除整个实体。'))return;
+        editor.querySelectorAll('button').forEach(el=>el.disabled=true);memoryCancelLoad();
+        try{const result=await memoryFetchJson('/api/v2/memories/relation',{method:action==='delete'?'DELETE':'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({origin:'wiki',id,predicate,value:value||undefined})});MEMORY_UI.data=result.profile;memoryRender();toast(action==='delete'?'关系已删除':'关系已修改');}
+        catch(err){toast(err.message||'操作失败',true);memoryShowWikiPage(pageId);}
+      });
       refreshIcons();
     }
     function memoryShowSubView(title) {

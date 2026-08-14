@@ -30,7 +30,8 @@ def candidate(field, value, confidence=.86, persistence=.9):
         "kind": "person", "entity_key": "阿杰", "field_name": field,
         "candidate_value": value, "confidence": confidence,
         "persistence_score": persistence, "evidence_summary": f"阿杰的{field}是{value}",
-        "status": "candidate",
+        "status": "candidate", "value_type": "region" if field == "hometown" else "place",
+        "resolution_confidence": .96, "resolution_status": "resolved",
     }
 
 

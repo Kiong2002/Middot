@@ -539,9 +539,17 @@ def init_middot_db():
             ("subject_entity_id", "TEXT"),
             ("value_entity_id", "TEXT"),
             ("value_type", "TEXT"),
+            # Wiki 是唯一事实源；旧业务表只保留为可重建的运行投影。
+            ("domain_kind", "TEXT"),
+            ("domain_key", "TEXT"),
+            ("source_id", "INTEGER"),
         ):
             if name not in fact_cols:
                 conn.execute(f"ALTER TABLE memory_wiki_facts ADD COLUMN {name} {definition}")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_wiki_domain "
+            "ON memory_wiki_facts(device_id,domain_kind,domain_key)"
+        )
 
         # 旧的四张表继续作为“当前编译档案”。第一次升级时为每条旧记录补一条
         # legacy_import 来源；不伪造已经不存在的原始对话。
@@ -593,6 +601,58 @@ def init_middot_db():
                     )
         if schema_version < 2:
             conn.execute("PRAGMA user_version=2")
+        # v3：把旧偏好、人物、店铺反馈编译成规范 Wiki 事实。旧表暂不删除，
+        # 后续只作为路线/推荐代码的物化投影使用。
+        if schema_version < 3:
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_wiki_facts("
+                "device_id,subject_type,subject_key,predicate,value,confidence,status,valid_from,expires_at,"
+                "created_at,updated_at,authority,promotion_reason,value_type,domain_kind,domain_key,source_id) "
+                "SELECT a.device_id,'user','我','preference:'||a.category||':'||a.memory_key,a.memory_value,1,'confirmed',"
+                "a.updated_at,NULL,a.created_at,a.updated_at,1,'legacy_projection_migration','text','preference',CAST(a.id AS TEXT),"
+                "(SELECT e.source_id FROM memory_fact_events e WHERE e.device_id=a.device_id AND e.kind='preference' "
+                "AND e.record_id=a.id ORDER BY e.id DESC LIMIT 1) FROM agent_memories a WHERE a.status='confirmed'"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_wiki_facts("
+                "device_id,subject_type,subject_key,predicate,value,confidence,status,valid_from,expires_at,"
+                "created_at,updated_at,authority,promotion_reason,value_type,domain_kind,domain_key,source_id) "
+                "SELECT p.device_id,'person',p.name,'relation',p.relation,1,'confirmed',p.updated_at,NULL,p.created_at,p.updated_at,"
+                "1,'legacy_projection_migration','relation','person',CAST(p.id AS TEXT),"
+                "(SELECT e.source_id FROM memory_fact_events e WHERE e.device_id=p.device_id AND e.kind='person' "
+                "AND e.record_id=p.id ORDER BY e.id DESC LIMIT 1) FROM memory_people p WHERE p.relation IS NOT NULL AND p.relation!=''"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_wiki_facts("
+                "device_id,subject_type,subject_key,predicate,value,confidence,status,valid_from,expires_at,"
+                "created_at,updated_at,authority,promotion_reason,value_type,domain_kind,domain_key,source_id) "
+                "SELECT p.device_id,'person',p.name,'usual_place',p.usual_place,1,'confirmed',p.updated_at,p.expires_at,p.created_at,p.updated_at,"
+                "1,'legacy_projection_migration','place','person',CAST(p.id AS TEXT),"
+                "(SELECT e.source_id FROM memory_fact_events e WHERE e.device_id=p.device_id AND e.kind='person' "
+                "AND e.record_id=p.id ORDER BY e.id DESC LIMIT 1) FROM memory_people p WHERE p.usual_place IS NOT NULL AND p.usual_place!=''"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_wiki_facts("
+                "device_id,subject_type,subject_key,predicate,value,confidence,status,valid_from,expires_at,"
+                "created_at,updated_at,authority,promotion_reason,value_type,domain_kind,domain_key,source_id) "
+                "SELECT f.device_id,'poi',f.poi_name,CASE WHEN f.signal='visited' THEN 'feedback:visited' ELSE 'feedback:sentiment' END,"
+                "CASE f.signal WHEN 'liked' THEN '喜欢' WHEN 'disliked' THEN '不喜欢' WHEN 'visited' THEN '去过' ELSE f.signal END,"
+                "1,'confirmed',f.updated_at,NULL,f.created_at,f.updated_at,1,'legacy_projection_migration','signal','feedback',CAST(f.id AS TEXT),"
+                "(SELECT e.source_id FROM memory_fact_events e WHERE e.device_id=f.device_id AND e.kind='feedback' "
+                "AND e.record_id=f.id ORDER BY e.id DESC LIMIT 1) FROM memory_feedback f"
+            )
+            # 老版本已由候选确认写入的人物事实可能与投影语义完全相同；补上投影链接。
+            conn.execute(
+                "UPDATE memory_wiki_facts SET domain_kind='person',domain_key=("
+                "SELECT CAST(p.id AS TEXT) FROM memory_people p WHERE p.device_id=memory_wiki_facts.device_id "
+                "AND p.name=memory_wiki_facts.subject_key AND ((memory_wiki_facts.predicate='relation' AND p.relation=memory_wiki_facts.value) "
+                "OR (memory_wiki_facts.predicate='usual_place' AND p.usual_place=memory_wiki_facts.value)) LIMIT 1) "
+                "WHERE subject_type='person' AND predicate IN ('relation','usual_place') AND domain_kind IS NULL "
+                "AND EXISTS(SELECT 1 FROM memory_people p WHERE p.device_id=memory_wiki_facts.device_id "
+                "AND p.name=memory_wiki_facts.subject_key AND ((memory_wiki_facts.predicate='relation' AND p.relation=memory_wiki_facts.value) "
+                "OR (memory_wiki_facts.predicate='usual_place' AND p.usual_place=memory_wiki_facts.value)))"
+            )
+            conn.execute("PRAGMA user_version=3")
         conn.commit()
     finally:
         conn.close()
@@ -4574,6 +4634,350 @@ def _memory_append_event(
     )
 
 
+def _memory_preference_predicate(category: str, key: str) -> str:
+    """给每个偏好槽位一个稳定谓词，避免 Wiki 唯一键把多条偏好互相覆盖。"""
+    safe_category = re.sub(r"[^a-z0-9_-]", "", str(category or "").lower())[:30]
+    safe_key = re.sub(r"[^a-z0-9_-]", "", str(key or "").lower())[:60]
+    return f"preference:{safe_category}:{safe_key}"
+
+
+def _memory_feedback_predicate(signal: str) -> str:
+    # “去过”与喜欢/不喜欢正交，因此必须占用两个不同事实槽位。
+    return "feedback:visited" if signal == "visited" else "feedback:sentiment"
+
+
+def _memory_predicate_label(predicate: str) -> str:
+    if predicate.startswith("preference:"):
+        category = predicate.split(":", 2)[1] if ":" in predicate else ""
+        return f"{_MEMORY_CATEGORY_LABELS.get(category, '个人')}偏好"
+    if predicate == "feedback:visited":
+        return "到访记录"
+    if predicate == "feedback:sentiment":
+        return "店铺态度"
+    return _CANDIDATE_PREDICATE_LABELS.get(predicate, predicate)
+
+
+def _memory_delete_wiki_fact_in_tx(conn: sqlite3.Connection, fact: sqlite3.Row | dict) -> None:
+    row = dict(fact)
+    fact_id = int(row["id"])
+    source_id = row.get("source_id")
+    conn.execute("DELETE FROM memory_wiki_fact_sources WHERE fact_id=?", (fact_id,))
+    conn.execute(
+        "DELETE FROM memory_wiki_fact_versions WHERE device_id=? AND subject_type=? AND subject_key=? AND predicate=?",
+        (row["device_id"], row["subject_type"], row["subject_key"], row["predicate"]),
+    )
+    conn.execute("DELETE FROM memory_wiki_facts WHERE id=?", (fact_id,))
+    if source_id:
+        still_used = (
+            conn.execute("SELECT 1 FROM memory_wiki_facts WHERE source_id=? LIMIT 1", (source_id,)).fetchone()
+            or conn.execute("SELECT 1 FROM memory_fact_events WHERE source_id=? LIMIT 1", (source_id,)).fetchone()
+        )
+        if still_used:
+            conn.execute(
+                "UPDATE memory_sources SET source_excerpt=NULL,metadata_json=NULL WHERE id=? AND device_id=?",
+                (source_id, row["device_id"]),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM memory_sources WHERE id=? AND device_id=?", (source_id, row["device_id"])
+            )
+
+
+def _memory_upsert_wiki_fact_in_tx(
+    conn: sqlite3.Connection,
+    *,
+    device_id: str,
+    subject_type: str,
+    subject_key: str,
+    predicate: str,
+    value: str | None,
+    value_type: str = "text",
+    confidence: float = 1.0,
+    authority: float = 1.0,
+    status: str = "confirmed",
+    expires_at: int | None = None,
+    promotion_reason: str = "explicit_projection",
+    domain_kind: str | None = None,
+    domain_key: str | None = None,
+    source_id: int | None = None,
+    subject_entity_id: str | None = None,
+    value_entity_id: str | None = None,
+    updated_at: int | None = None,
+) -> int | None:
+    """唯一的正式事实写入口；版本、实体身份和投影链接在这里一起维护。"""
+    now = int(updated_at or _now())
+    subject_type = _memory_clean_text(subject_type, 30).lower()
+    subject_key = _memory_clean_text(subject_key, 100)
+    predicate = _memory_clean_text(predicate, 100)
+    clean_value = _memory_clean_text(value, 160)
+    if subject_entity_id:
+        entity = conn.execute(
+            "SELECT canonical_name FROM memory_entities WHERE id=? AND device_id=? AND status='active'",
+            (subject_entity_id, device_id),
+        ).fetchone()
+        if entity:
+            subject_key = str(entity["canonical_name"])
+    else:
+        subject_entity_id, subject_key = _memory_entity_ensure(
+            conn, device_id, subject_type, subject_key, alias=subject_key,
+            confidence=max(confidence, authority), source="wiki_fact",
+        )
+    current = conn.execute(
+        "SELECT * FROM memory_wiki_facts WHERE device_id=? AND subject_type=? AND subject_key=? AND predicate=?",
+        (device_id, subject_type, subject_key, predicate),
+    ).fetchone()
+    if not clean_value:
+        if current:
+            _memory_delete_wiki_fact_in_tx(conn, current)
+        return None
+    if current:
+        now = max(now, int(current["updated_at"] or 0) + (1 if str(current["value"]) != clean_value else 0))
+        changed = str(current["value"]) != clean_value or str(current["status"]) != status
+        if changed:
+            conn.execute(
+                "INSERT INTO memory_wiki_fact_versions(device_id,subject_type,subject_key,predicate,value,confidence,status,"
+                "valid_from,valid_to,change_reason,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (device_id, subject_type, subject_key, predicate, current["value"], current["confidence"],
+                 current["status"], current["valid_from"], now, promotion_reason, now),
+            )
+    conn.execute(
+        "INSERT INTO memory_wiki_facts(device_id,subject_type,subject_key,predicate,value,confidence,status,"
+        "valid_from,expires_at,created_at,updated_at,authority,promotion_reason,subject_entity_id,value_entity_id,value_type,"
+        "domain_kind,domain_key,source_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(device_id,subject_type,subject_key,predicate) DO UPDATE SET "
+        "value=excluded.value,confidence=excluded.confidence,status=excluded.status,valid_from=excluded.valid_from,"
+        "expires_at=excluded.expires_at,updated_at=excluded.updated_at,authority=excluded.authority,"
+        "promotion_reason=excluded.promotion_reason,subject_entity_id=excluded.subject_entity_id,"
+        "value_entity_id=excluded.value_entity_id,value_type=excluded.value_type,domain_kind=excluded.domain_kind,"
+        "domain_key=excluded.domain_key,source_id=COALESCE(excluded.source_id,memory_wiki_facts.source_id)",
+        (device_id, subject_type, subject_key, predicate, clean_value, confidence, status, now, expires_at,
+         now, now, authority, promotion_reason, subject_entity_id, value_entity_id, value_type,
+         domain_kind, str(domain_key) if domain_key is not None else None, source_id),
+    )
+    row = conn.execute(
+        "SELECT id FROM memory_wiki_facts WHERE device_id=? AND subject_type=? AND subject_key=? AND predicate=?",
+        (device_id, subject_type, subject_key, predicate),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def _memory_sync_business_record_to_wiki_in_tx(
+    conn: sqlite3.Connection, device_id: str, kind: str, record_id: int,
+    *, source_id: int | None = None, reason: str = "business_projection_sync",
+    only_predicates: set[str] | None = None,
+) -> list[int]:
+    """把兼容投影的当前值同步回规范事实；所有旧入口过渡期共用。"""
+    ids: list[int] = []
+    if kind == "preference":
+        row = conn.execute(
+            "SELECT * FROM agent_memories WHERE id=? AND device_id=?", (record_id, device_id)
+        ).fetchone()
+        if not row:
+            return ids
+        fact_id = _memory_upsert_wiki_fact_in_tx(
+            conn, device_id=device_id, subject_type="user", subject_key="我",
+            predicate=_memory_preference_predicate(row["category"], row["memory_key"]),
+            value=row["memory_value"], value_type="text", expires_at=None,
+            promotion_reason=reason, domain_kind=kind, domain_key=str(record_id),
+            source_id=source_id, updated_at=row["updated_at"],
+        )
+        if fact_id: ids.append(fact_id)
+    elif kind == "person":
+        row = conn.execute(
+            "SELECT * FROM memory_people WHERE id=? AND device_id=?", (record_id, device_id)
+        ).fetchone()
+        if not row:
+            return ids
+        for predicate, value, value_type, expires in (
+            ("relation", row["relation"], "relation", None),
+            ("usual_place", row["usual_place"], "place", row["expires_at"]),
+        ):
+            if only_predicates is not None and predicate not in only_predicates:
+                continue
+            fact_id = _memory_upsert_wiki_fact_in_tx(
+                conn, device_id=device_id, subject_type="person", subject_key=row["name"],
+                predicate=predicate, value=value, value_type=value_type, expires_at=expires,
+                promotion_reason=reason, domain_kind=kind, domain_key=str(record_id),
+                source_id=source_id, updated_at=row["updated_at"],
+            )
+            if fact_id: ids.append(fact_id)
+    elif kind == "feedback":
+        row = conn.execute(
+            "SELECT * FROM memory_feedback WHERE id=? AND device_id=?", (record_id, device_id)
+        ).fetchone()
+        if not row:
+            return ids
+        predicate = _memory_feedback_predicate(row["signal"])
+        # 反馈维度变化时，清除同一个投影记录留下的旧事实槽位。
+        stale = conn.execute(
+            "SELECT * FROM memory_wiki_facts WHERE device_id=? AND domain_kind='feedback' AND domain_key=? AND predicate<>?",
+            (device_id, str(record_id), predicate),
+        ).fetchall()
+        for fact in stale:
+            _memory_delete_wiki_fact_in_tx(conn, fact)
+        display_value = {"liked":"喜欢", "disliked":"不喜欢", "visited":"去过"}.get(row["signal"], row["signal"])
+        fact_id = _memory_upsert_wiki_fact_in_tx(
+            conn, device_id=device_id, subject_type="poi", subject_key=row["poi_name"],
+            predicate=predicate, value=display_value, value_type="signal", expires_at=None,
+            promotion_reason=reason, domain_kind=kind, domain_key=str(record_id),
+            source_id=source_id, updated_at=row["updated_at"],
+        )
+        if fact_id: ids.append(fact_id)
+    return ids
+
+
+def _memory_backfill_missing_business_facts_in_tx(conn: sqlite3.Connection, device_id: str) -> int:
+    """幂等补迁移：只处理尚未拥有规范事实的旧投影记录。"""
+    before = int(conn.execute(
+        "SELECT COUNT(*) FROM memory_wiki_facts WHERE device_id=?", (device_id,)
+    ).fetchone()[0])
+    for row in conn.execute(
+        "SELECT id,category,memory_key FROM agent_memories WHERE device_id=? AND status='confirmed'", (device_id,)
+    ).fetchall():
+        predicate = _memory_preference_predicate(row["category"], row["memory_key"])
+        if not conn.execute(
+            "SELECT 1 FROM memory_wiki_facts WHERE device_id=? AND subject_type='user' AND subject_key='我' AND predicate=?",
+            (device_id, predicate),
+        ).fetchone():
+            _memory_sync_business_record_to_wiki_in_tx(conn, device_id, "preference", int(row["id"]), reason="legacy_projection_migration")
+    for row in conn.execute(
+        "SELECT id,name,relation,usual_place FROM memory_people WHERE device_id=?", (device_id,)
+    ).fetchall():
+        expected = [p for p, value in (("relation", row["relation"]), ("usual_place", row["usual_place"])) if value]
+        existing = {str(x["predicate"]) for x in conn.execute(
+            "SELECT predicate FROM memory_wiki_facts WHERE device_id=? AND subject_type='person' AND subject_key=?",
+            (device_id, row["name"]),
+        ).fetchall()}
+        if any(predicate not in existing for predicate in expected):
+            _memory_sync_business_record_to_wiki_in_tx(conn, device_id, "person", int(row["id"]), reason="legacy_projection_migration")
+    for row in conn.execute(
+        "SELECT id,poi_name,signal FROM memory_feedback WHERE device_id=?", (device_id,)
+    ).fetchall():
+        predicate = _memory_feedback_predicate(row["signal"])
+        if not conn.execute(
+            "SELECT 1 FROM memory_wiki_facts WHERE device_id=? AND subject_type='poi' AND subject_key=? AND predicate=?",
+            (device_id, row["poi_name"], predicate),
+        ).fetchone():
+            _memory_sync_business_record_to_wiki_in_tx(conn, device_id, "feedback", int(row["id"]), reason="legacy_projection_migration")
+    after = int(conn.execute(
+        "SELECT COUNT(*) FROM memory_wiki_facts WHERE device_id=?", (device_id,)
+    ).fetchone()[0])
+    return after - before
+
+
+def _memory_project_wiki_fact_to_business_in_tx(
+    conn: sqlite3.Connection, device_id: str, fact_id: int,
+    *, source_type: str = "candidate_confirmation", source_ref: str | None = None,
+) -> tuple[str | None, int | None]:
+    """由规范事实重建受路线/推荐代码消费的物化投影。"""
+    fact = conn.execute(
+        "SELECT * FROM memory_wiki_facts WHERE id=? AND device_id=?", (fact_id, device_id)
+    ).fetchone()
+    if not fact or fact["status"] != "confirmed":
+        return None, None
+    now = int(fact["updated_at"] or _now())
+    source_ref = source_ref or f"wiki-fact:{fact_id}:{now}"
+    source_id = int(fact["source_id"]) if fact["source_id"] else _memory_get_or_create_source(
+        conn, device_id, source_type, source_ref,
+        f"确认档案事实：{fact['subject_key']} · {_memory_predicate_label(fact['predicate'])} · {fact['value']}",
+        {"fact_id": fact_id},
+    )
+    kind: str | None = None
+    record_id: int | None = None
+    if fact["subject_type"] == "person" and fact["predicate"] in ("relation", "usual_place"):
+        old = conn.execute(
+            "SELECT * FROM memory_people WHERE device_id=? AND name=?", (device_id, fact["subject_key"])
+        ).fetchone()
+        effective_now = max(now, int(old["updated_at"] or 0) + 1) if old else now
+        if fact["predicate"] == "relation":
+            relation, place = fact["value"], old["usual_place"] if old else None
+            city, expires = (old["city"], old["expires_at"]) if old else (None, None)
+        else:
+            relation, place = (old["relation"] if old else None), fact["value"]
+            city = _landmark_city(place) or _extract_city(place)
+            expires = int(fact["expires_at"] or (effective_now + 90 * 86400))
+        conn.execute(
+            "INSERT INTO memory_people(device_id,name,relation,usual_place,city,expires_at,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(device_id,name) DO UPDATE SET relation=excluded.relation,"
+            "usual_place=excluded.usual_place,city=excluded.city,expires_at=excluded.expires_at,updated_at=excluded.updated_at",
+            (device_id, fact["subject_key"], relation, place, city, expires, effective_now, effective_now),
+        )
+        row = conn.execute(
+            "SELECT * FROM memory_people WHERE device_id=? AND name=?", (device_id, fact["subject_key"])
+        ).fetchone()
+        kind, record_id = "person", int(row["id"])
+        _memory_append_event(
+            conn, device_id=device_id, kind=kind, record_id=record_id,
+            action="update" if old else "assert", value=dict(row),
+            changed_fields=[fact["predicate"]], source_id=source_id, source_ref=source_ref,
+            expires_at=row["expires_at"],
+        )
+    elif fact["subject_type"] == "user" and str(fact["predicate"]).startswith("preference:"):
+        _, category, key = str(fact["predicate"]).split(":", 2)
+        old = conn.execute(
+            "SELECT * FROM agent_memories WHERE device_id=? AND category=? AND memory_key=?",
+            (device_id, category, key),
+        ).fetchone()
+        effective_now = max(now, int(old["updated_at"] or 0) + 1) if old else now
+        conn.execute(
+            "INSERT INTO agent_memories(device_id,category,memory_key,memory_value,source,status,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,'confirmed',?,?) ON CONFLICT(device_id,category,memory_key) DO UPDATE SET "
+            "memory_value=excluded.memory_value,source=excluded.source,status='confirmed',updated_at=excluded.updated_at",
+            (device_id, category, key, fact["value"], source_type, effective_now, effective_now),
+        )
+        row = conn.execute(
+            "SELECT * FROM agent_memories WHERE device_id=? AND category=? AND memory_key=?",
+            (device_id, category, key),
+        ).fetchone()
+        kind, record_id = "preference", int(row["id"])
+        _memory_append_event(
+            conn, device_id=device_id, kind=kind, record_id=record_id,
+            action="update" if old else "assert", value=dict(row), changed_fields=["memory_value"],
+            source_id=source_id, source_ref=source_ref,
+        )
+    elif fact["subject_type"] in ("poi", "brand") and str(fact["predicate"]).startswith("feedback:"):
+        signal = "visited" if fact["predicate"] == "feedback:visited" else {
+            "喜欢": "liked", "不喜欢": "disliked"
+        }.get(str(fact["value"]))
+        if signal:
+            old = conn.execute(
+                "SELECT * FROM memory_feedback WHERE device_id=? AND poi_name=? AND signal=?",
+                (device_id, fact["subject_key"], signal),
+            ).fetchone()
+            if not old and signal in ("liked", "disliked"):
+                old = conn.execute(
+                    "SELECT * FROM memory_feedback WHERE device_id=? AND poi_name=? AND signal IN ('liked','disliked') "
+                    "ORDER BY updated_at DESC LIMIT 1", (device_id, fact["subject_key"]),
+                ).fetchone()
+            effective_now = max(now, int(old["updated_at"] or 0) + 1) if old else now
+            if old:
+                conn.execute(
+                    "UPDATE memory_feedback SET signal=?,updated_at=? WHERE id=?",
+                    (signal, effective_now, old["id"]),
+                )
+                record_id = int(old["id"])
+            else:
+                cur = conn.execute(
+                    "INSERT INTO memory_feedback(device_id,poi_id,poi_name,signal,reason,created_at,updated_at) "
+                    "VALUES(?,NULL,?,?,NULL,?,?)",
+                    (device_id, fact["subject_key"], signal, effective_now, effective_now),
+                )
+                record_id = int(cur.lastrowid)
+            row = conn.execute("SELECT * FROM memory_feedback WHERE id=?", (record_id,)).fetchone()
+            kind = "feedback"
+            _memory_append_event(
+                conn, device_id=device_id, kind=kind, record_id=record_id,
+                action="update" if old else "assert", value=dict(row), changed_fields=["signal"],
+                source_id=source_id, source_ref=source_ref,
+            )
+    if kind and record_id is not None:
+        conn.execute(
+            "UPDATE memory_wiki_facts SET domain_kind=?,domain_key=?,source_id=? WHERE id=?",
+            (kind, str(record_id), source_id, fact_id),
+        )
+    return kind, record_id
+
+
 def _memory_purge_provenance(
     conn: sqlite3.Connection, device_id: str, kind: str, record_id: int
 ) -> None:
@@ -5176,54 +5580,23 @@ def _candidate_groups(device_id: str) -> list[dict]:
 
 
 def _memory_wiki_projection(device_id: str, candidate_groups: list[dict] | None = None) -> dict:
-    """Wiki 页面与图谱都由同一事实集合投影，图谱本身不保存第二套事实。"""
+    """档案页面与图谱只读规范 Wiki 事实；旧业务表不再拼成第二套事实。"""
     conn = _db_connect()
     try:
         facts = [dict(r) for r in conn.execute(
-            "SELECT id,subject_type,subject_key,predicate,value,confidence,status,valid_from,expires_at,updated_at "
+            "SELECT id,subject_type,subject_key,predicate,value,confidence,status,valid_from,expires_at,updated_at,"
+            "domain_kind,domain_key "
             "FROM memory_wiki_facts WHERE device_id=? AND status IN ('confirmed','challenged') ORDER BY updated_at DESC",
             (device_id,),
         ).fetchall()]
+        now = _now()
         for fact in facts:
+            if fact.get("expires_at") and int(fact["expires_at"]) <= now:
+                fact["status"] = "expired"
             fact["origin"] = "wiki"
             fact["action_id"] = fact["id"]
-        people_rows = [dict(r) for r in conn.execute(
-            "SELECT id,name,relation,usual_place,city,expires_at,updated_at FROM memory_people WHERE device_id=?",
-            (device_id,),
-        ).fetchall()]
-        preference_rows = [dict(r) for r in conn.execute(
-            "SELECT id,category,memory_key,memory_value,updated_at FROM agent_memories "
-            "WHERE device_id=? AND status='confirmed'", (device_id,),
-        ).fetchall()]
-        feedback_rows = [dict(r) for r in conn.execute(
-            "SELECT id,poi_name,signal,updated_at FROM memory_feedback WHERE device_id=?", (device_id,),
-        ).fetchall()]
     finally:
         conn.close()
-    now = _now()
-    for row in people_rows:
-        if row.get("relation"):
-            facts.append({"id": f"person-relation-{row['id']}", "subject_type":"person", "subject_key":row["name"],
-                          "predicate":"relation", "value":row["relation"], "confidence":1, "status":"confirmed",
-                          "valid_from":row["updated_at"], "expires_at":None, "updated_at":row["updated_at"],
-                          "origin":"person", "action_id":row["id"]})
-        if row.get("usual_place"):
-            facts.append({"id": f"person-place-{row['id']}", "subject_type":"person", "subject_key":row["name"],
-                          "predicate":"usual_place", "value":row["usual_place"], "confidence":1,
-                          "status":"confirmed" if not row.get("expires_at") or int(row["expires_at"]) > now else "expired",
-                          "valid_from":row["updated_at"], "expires_at":row.get("expires_at"), "updated_at":row["updated_at"],
-                          "origin":"person", "action_id":row["id"]})
-    for row in preference_rows:
-        facts.append({"id": f"preference-{row['id']}", "subject_type":"user", "subject_key":"我",
-                      "predicate":"preference", "value":row["memory_value"], "confidence":1, "status":"confirmed",
-                      "valid_from":row["updated_at"], "expires_at":None, "updated_at":row["updated_at"],
-                      "origin":"preference", "action_id":row["id"]})
-    for row in feedback_rows:
-        signal = {"liked":"喜欢", "disliked":"不喜欢", "visited":"去过"}.get(row["signal"], row["signal"])
-        facts.append({"id": f"feedback-{row['id']}", "subject_type":"poi", "subject_key":row["poi_name"],
-                      "predicate":"feedback", "value":signal, "confidence":1, "status":"confirmed",
-                      "valid_from":row["updated_at"], "expires_at":None, "updated_at":row["updated_at"],
-                      "origin":"feedback", "action_id":row["id"]})
     groups = candidate_groups if candidate_groups is not None else _candidate_groups(device_id)
     pages: dict[tuple[str, str], dict] = {}
     nodes: dict[str, dict] = {"user:me": {"id": "user:me", "type": "user", "label": "我", "status": "confirmed"}}
@@ -5247,15 +5620,16 @@ def _memory_wiki_projection(device_id: str, candidate_groups: list[dict] | None 
         page = ensure_page(fact["subject_type"], fact["subject_key"])
         page["facts"].append({
             "id": fact["id"], "predicate": fact["predicate"],
-            "label": _CANDIDATE_PREDICATE_LABELS.get(fact["predicate"], fact["predicate"]),
+            "label": _memory_predicate_label(fact["predicate"]),
             "value": fact["value"], "status": fact["status"], "updated_at": fact["updated_at"],
             "origin": fact.get("origin"), "action_id": fact.get("action_id"),
+            "domain_kind": fact.get("domain_kind"), "domain_key": fact.get("domain_key"),
         })
         value_node = f"value:{fact['predicate']}:{fact['value']}"
         value_type = "place" if fact["predicate"] in ("usual_place", "workplace", "place_detail", "study_city", "work_city", "located_in") else "fact"
         nodes.setdefault(value_node, {"id": value_node, "type": value_type, "label": fact["value"], "status": fact["status"]})
         edges.append({"id": f"fact:{fact['id']}", "source": page["id"], "target": value_node,
-                      "label": _CANDIDATE_PREDICATE_LABELS.get(fact["predicate"], fact["predicate"]), "status": fact["status"],
+                      "label": _memory_predicate_label(fact["predicate"]), "status": fact["status"],
                       "predicate":fact["predicate"], "value":fact["value"], "origin":fact.get("origin"),
                       "action_id":fact.get("action_id")})
     for group in groups:
@@ -5297,6 +5671,7 @@ def _memory_snapshot(device_id: str) -> dict:
     entity_conn = _db_connect()
     try:
         entity_conn.execute("BEGIN IMMEDIATE")
+        _memory_backfill_missing_business_facts_in_tx(entity_conn, device_id)
         _memory_entity_bootstrap_in_tx(entity_conn, device_id)
         entity_conn.commit()
         entity_catalog = _memory_entity_catalog(entity_conn, device_id)
@@ -5305,6 +5680,15 @@ def _memory_snapshot(device_id: str) -> dict:
             "FROM memory_entity_merge_events WHERE device_id=? ORDER BY created_at DESC LIMIT 30",
             (device_id,),
         ).fetchall()]
+        now = _now()
+        active_count = int(entity_conn.execute(
+            "SELECT COUNT(*) FROM memory_wiki_facts WHERE device_id=? AND status='confirmed' "
+            "AND (expires_at IS NULL OR expires_at>?)", (device_id, now),
+        ).fetchone()[0])
+        expired_count = int(entity_conn.execute(
+            "SELECT COUNT(*) FROM memory_wiki_facts WHERE device_id=? AND status='confirmed' "
+            "AND expires_at IS NOT NULL AND expires_at<=?", (device_id, now),
+        ).fetchone()[0])
     except Exception:
         entity_conn.rollback()
         raise
@@ -5328,10 +5712,6 @@ def _memory_snapshot(device_id: str) -> dict:
                 "excerpt": None, "at": item.get("updated_at") or item.get("happened_at"),
                 "action": "import",
             })
-    active_count = (
-        len(preferences) + len(feedback) +
-        sum(1 for p in people if p.get("relation") or p.get("place_status") == "active")
-    )
     return {
         "preferences": preferences,
         "people": people,
@@ -5347,7 +5727,7 @@ def _memory_snapshot(device_id: str) -> dict:
         "graph": wiki["graph"],
         "stats": {
             "active": active_count,
-            "expired": sum(1 for p in people if p.get("place_status") == "expired"),
+            "expired": expired_count,
             "planning_records": len(episodes),
             "candidates": len(candidate_groups),
             "entities": len(entity_catalog),
@@ -5379,6 +5759,12 @@ def _memory_delete_record(
     ).fetchone()
     if not row:
         return 0
+    linked_facts = conn.execute(
+        "SELECT * FROM memory_wiki_facts WHERE device_id=? AND domain_kind=? AND domain_key=?",
+        (device_id, kind, str(record_id)),
+    ).fetchall()
+    for fact in linked_facts:
+        _memory_delete_wiki_fact_in_tx(conn, fact)
     _memory_purge_provenance(conn, device_id, kind, record_id)
     if kind == "person":
         conn.execute(
@@ -5415,6 +5801,14 @@ def _memory_clear_all(conn: sqlite3.Connection, device_id: str) -> int:
         conn.execute(f"DELETE FROM memory_wiki_fact_sources WHERE fact_id IN ({placeholders})", fact_ids)
     conn.execute("DELETE FROM memory_wiki_facts WHERE device_id=?", (device_id,))
     conn.execute("DELETE FROM memory_wiki_fact_versions WHERE device_id=?", (device_id,))
+    entity_ids = [str(r["id"]) for r in conn.execute(
+        "SELECT id FROM memory_entities WHERE device_id=?", (device_id,)
+    ).fetchall()]
+    if entity_ids:
+        placeholders = ",".join("?" for _ in entity_ids)
+        conn.execute(f"DELETE FROM memory_entity_aliases WHERE entity_id IN ({placeholders})", entity_ids)
+    conn.execute("DELETE FROM memory_entity_merge_events WHERE device_id=?", (device_id,))
+    conn.execute("DELETE FROM memory_entities WHERE device_id=?", (device_id,))
     for table in _MEMORY_KIND_TABLES.values():
         conn.execute(f"DELETE FROM {table} WHERE device_id=?", (device_id,))
     return int(total)
@@ -5486,7 +5880,9 @@ def _memory_context(
     try:
         compiled_facts = [dict(row) for row in conn.execute(
             "SELECT subject_type,subject_key,predicate,value,confidence FROM memory_wiki_facts "
-            "WHERE device_id=? AND status='confirmed' ORDER BY updated_at DESC LIMIT 100",(device_id,),
+            "WHERE device_id=? AND status='confirmed' AND domain_kind IS NULL "
+            "AND (expires_at IS NULL OR expires_at>?) "
+            "ORDER BY updated_at DESC LIMIT 100",(device_id, _now()),
         ).fetchall()]
     finally:
         conn.close()
@@ -6042,6 +6438,10 @@ def _tool_remember_preference(sid: str, args: dict) -> tuple[dict, dict | None]:
             action="update" if old else "assert", value=dict(row),
             changed_fields=["memory_value"], source_id=source_id, source_ref=source_ref,
         )
+        _memory_sync_business_record_to_wiki_in_tx(
+            conn, device_id, "preference", int(row["id"]),
+            source_id=source_id, reason="explicit_user",
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -6053,7 +6453,13 @@ def _tool_remember_preference(sid: str, args: dict) -> tuple[dict, dict | None]:
 
 def _tool_list_memories(sid: str, _args: dict) -> tuple[dict, dict | None]:
     did = _memory_device_id(sid); snapshot = _memory_snapshot(did)
-    total = sum(len(snapshot[key]) for key in ("preferences", "people", "episodes", "feedback"))
+    general_facts = [
+        {"subject_type": page["type"], "subject": page["title"],
+         "predicate": fact["predicate"], "value": fact["value"], "status": fact["status"]}
+        for page in snapshot.get("wiki_pages", []) for fact in page.get("facts", [])
+        if not fact.get("domain_kind") and fact.get("status") == "confirmed"
+    ]
+    total = int(snapshot.get("stats", {}).get("active") or 0) + len(snapshot["episodes"])
     model_snapshot = {
         key: [
             {field: value for field, value in item.items() if field != "provenance"}
@@ -6065,6 +6471,7 @@ def _tool_list_memories(sid: str, _args: dict) -> tuple[dict, dict | None]:
         "ok": True,
         "summary": f"会面档案共 {total} 项（规划记录不等于实际到访）",
         **model_snapshot,
+        "facts": general_facts[:100],
         "stats": snapshot["stats"],
         "policy": snapshot["policy"],
     }, None
@@ -6182,38 +6589,50 @@ def _confirm_candidate_group(
     subject_type = group["kind"]
     subject_key = group["entity_key"]
     predicate = group["predicate"]
+    value_type = group.get("value_type") or "text"
+    # 候选编译器使用通用语义；正式入档时分配稳定业务槽位，避免不同偏好、
+    # “去过”和“喜欢”被 Wiki 的唯一键互相覆盖。
+    if predicate == "preference":
+        subject_type, subject_key = "user", "我"
+        if value in ("公交", "骑行", "驾车", "步行", "最快"):
+            category, key = "transport", "default_mode"
+        elif re.fullmatch(r"\d{1,5}(?:元)?", value):
+            category, key = "budget", "per_person_max"
+        else:
+            category, key = "food", "general"
+        predicate = _memory_preference_predicate(category, key)
+        value_type = "text"
+    elif predicate == "feedback":
+        signal = {"喜欢":"liked", "不喜欢":"disliked", "去过":"visited"}.get(value)
+        if signal:
+            predicate = _memory_feedback_predicate(signal)
+            value_type = "signal"
     expires_at = now + 90 * 86400 if predicate == "usual_place" else None
-    current=conn.execute(
+    current = conn.execute(
         "SELECT * FROM memory_wiki_facts WHERE device_id=? AND subject_type=? AND subject_key=? AND predicate=?",
-        (device_id,subject_type,subject_key,predicate),
-    ).fetchone()
-    changed=bool(current and str(current["value"])!=value)
-    if changed:
-        conn.execute(
-            "INSERT INTO memory_wiki_fact_versions(device_id,subject_type,subject_key,predicate,value,confidence,status,"
-            "valid_from,valid_to,change_reason,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (device_id,subject_type,subject_key,predicate,current["value"],current["confidence"],current["status"],
-             current["valid_from"],now,promotion_reason,now),
-        )
-    fact_confidence=1.0 if authority>=1 else max(float(group["confidence"]),float(current["confidence"]) if current and not changed else 0)
-    conn.execute(
-        "INSERT INTO memory_wiki_facts(device_id,subject_type,subject_key,predicate,value,confidence,status,"
-        "valid_from,expires_at,created_at,updated_at,authority,promotion_reason,subject_entity_id,value_entity_id,value_type) "
-        "VALUES(?,?,?,?,?,?, 'confirmed',?,?,?,?,?,?,?,?,?) "
-        "ON CONFLICT(device_id,subject_type,subject_key,predicate) DO UPDATE SET "
-        "value=excluded.value,confidence=excluded.confidence,status='confirmed',valid_from=excluded.valid_from,"
-        "expires_at=excluded.expires_at,updated_at=excluded.updated_at,authority=excluded.authority,"
-        "promotion_reason=excluded.promotion_reason,subject_entity_id=excluded.subject_entity_id,"
-        "value_entity_id=excluded.value_entity_id,value_type=excluded.value_type",
-        (device_id,subject_type,subject_key,predicate,value,fact_confidence,
-         now,expires_at,now,now,authority,promotion_reason,group.get("subject_entity_id"),
-         group.get("value_entity_id"),group.get("value_type")),
-    )
-    fact = conn.execute(
-        "SELECT id FROM memory_wiki_facts WHERE device_id=? AND subject_type=? AND subject_key=? AND predicate=?",
         (device_id, subject_type, subject_key, predicate),
     ).fetchone()
-    fact_id = int(fact["id"])
+    changed = bool(current and str(current["value"]) != value)
+    fact_confidence = 1.0 if authority >= 1 else max(
+        float(group["confidence"]),
+        float(current["confidence"]) if current and not changed else 0,
+    )
+    source_ref = f"candidate-confirm:{group['group_id']}:{now}"
+    source_id = _memory_get_or_create_source(
+        conn, device_id, "candidate_confirmation", source_ref,
+        f"确认历史线索：{subject_key} · {_memory_predicate_label(predicate)} · {value}",
+        {"candidate_ids": group["candidate_ids"]},
+    )
+    fact_id = _memory_upsert_wiki_fact_in_tx(
+        conn, device_id=device_id, subject_type=subject_type, subject_key=subject_key,
+        predicate=predicate, value=value, value_type=value_type,
+        confidence=fact_confidence, authority=authority, status="confirmed",
+        expires_at=expires_at, promotion_reason=promotion_reason, source_id=source_id,
+        subject_entity_id=(group.get("subject_entity_id") if subject_type == group["kind"] else None),
+        value_entity_id=group.get("value_entity_id"), updated_at=now,
+    )
+    if fact_id is None:
+        raise ValueError("候选事实无法写入")
     if changed:
         conn.execute("DELETE FROM memory_wiki_fact_sources WHERE fact_id=?",(fact_id,))
     for row in rows:
@@ -6222,37 +6641,9 @@ def _confirm_candidate_group(
             "VALUES(?,?,?,?,?)",
             (fact_id, int(row["id"]), row.get("source_conversation_id"), row.get("source_from_seq"), row.get("source_to_seq")),
         )
-    # 会面规划的兼容投影：人物常用出发地进入现有 memory_people，其他 Wiki
-    # 事实只供用户浏览，不会擅自影响规划。
-    if subject_type == "person" and predicate == "usual_place":
-        city = _landmark_city(value) or _extract_city(value)
-        old = conn.execute(
-            "SELECT id,updated_at FROM memory_people WHERE device_id=? AND name=?", (device_id, subject_key)
-        ).fetchone()
-        effective_now = max(now, int(old["updated_at"] or 0) + 1) if old else now
-        expires_at = effective_now + 90 * 86400
-        source_ref = f"candidate-confirm:{group['group_id']}:{effective_now}"
-        source_id = _memory_get_or_create_source(
-            conn, device_id, "candidate_confirmation", source_ref,
-            f"确认历史线索：{subject_key} · {group['predicate_label']} · {value}",
-            {"candidate_ids": group["candidate_ids"]},
-        )
-        conn.execute(
-            "INSERT INTO memory_people(device_id,name,relation,usual_place,city,expires_at,created_at,updated_at) "
-            "VALUES(?,?,NULL,?,?,?,?,?) ON CONFLICT(device_id,name) DO UPDATE SET "
-            "usual_place=excluded.usual_place,city=excluded.city,expires_at=excluded.expires_at,updated_at=excluded.updated_at",
-            (device_id, subject_key, value, city, expires_at, effective_now, effective_now),
-        )
-        person = conn.execute(
-            "SELECT id,name,relation,usual_place,city,expires_at,created_at,updated_at FROM memory_people "
-            "WHERE device_id=? AND name=?", (device_id, subject_key),
-        ).fetchone()
-        _memory_append_event(
-            conn, device_id=device_id, kind="person", record_id=int(person["id"]),
-            action="update" if old else "assert", value=dict(person),
-            changed_fields=["usual_place", "city", "expires_at"], source_id=source_id,
-            source_ref=source_ref, expires_at=expires_at,
-        )
+    _memory_project_wiki_fact_to_business_in_tx(
+        conn, device_id, fact_id, source_type="candidate_confirmation", source_ref=source_ref,
+    )
     conn.execute(
         f"UPDATE memory_candidates SET status='confirmed',updated_at=? WHERE device_id=? AND id IN ({','.join('?' for _ in rows)})",
         (now, device_id, *(int(r["id"]) for r in rows)),
@@ -6369,28 +6760,42 @@ def api_v2_memory_relation():
                 "SELECT candidate_id FROM memory_wiki_fact_sources WHERE fact_id=?",(action_id,),
             ).fetchall()]
             if request.method=="DELETE":
-                conn.execute("DELETE FROM memory_wiki_fact_sources WHERE fact_id=?",(action_id,))
-                conn.execute("DELETE FROM memory_wiki_facts WHERE id=?",(action_id,))
-                conn.execute("DELETE FROM memory_wiki_fact_versions WHERE device_id=? AND subject_type=? AND subject_key=? AND predicate=?",(g.device_id,row["subject_type"],row["subject_key"],row["predicate"]))
+                domain_kind,domain_key=row["domain_kind"],row["domain_key"]
+                if domain_kind in ("preference","feedback") and domain_key:
+                    _memory_delete_record(conn,g.device_id,domain_kind,int(domain_key))
+                else:
+                    _memory_delete_wiki_fact_in_tx(conn,row)
                 if candidate_ids:
                     conn.execute(f"DELETE FROM memory_candidates WHERE device_id=? AND id IN ({','.join('?' for _ in candidate_ids)})",(g.device_id,*candidate_ids))
-                if row["subject_type"]=="person" and row["predicate"]=="usual_place":
-                    person=conn.execute("SELECT id,usual_place FROM memory_people WHERE device_id=? AND name=?",(g.device_id,row["subject_key"])).fetchone()
-                    if person and person["usual_place"]==row["value"]:
-                        conn.execute("UPDATE memory_people SET usual_place=NULL,city=NULL,expires_at=NULL,updated_at=? WHERE id=?",(now,person["id"]))
+                if domain_kind=="person" and domain_key:
+                    if row["predicate"]=="usual_place":
+                        conn.execute("UPDATE memory_people SET usual_place=NULL,city=NULL,expires_at=NULL,updated_at=? WHERE id=? AND device_id=?",(now,int(domain_key),g.device_id))
+                    elif row["predicate"]=="relation":
+                        conn.execute("UPDATE memory_people SET relation=NULL,updated_at=? WHERE id=? AND device_id=?",(now,int(domain_key),g.device_id))
             else:
-                conn.execute(
-                    "INSERT INTO memory_wiki_fact_versions(device_id,subject_type,subject_key,predicate,value,confidence,status,valid_from,valid_to,change_reason,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                    (g.device_id,row["subject_type"],row["subject_key"],row["predicate"],row["value"],row["confidence"],row["status"],row["valid_from"],now,"profile_relation_edit",now),
-                )
                 conn.execute("DELETE FROM memory_wiki_fact_sources WHERE fact_id=?",(action_id,))
                 if candidate_ids:
                     conn.execute(f"DELETE FROM memory_candidates WHERE device_id=? AND id IN ({','.join('?' for _ in candidate_ids)})",(g.device_id,*candidate_ids))
+                if str(row["predicate"]).startswith("preference:"):
+                    _,category,key=str(row["predicate"]).split(":",2)
+                    error=_memory_validate_preference(category,key,value)
+                    if error:conn.rollback();return jsonify({"error":error}),400
+                if row["predicate"]=="feedback:visited" and value!="去过":
+                    conn.rollback();return jsonify({"error":"到访关系只能保持为“去过”"}),400
+                if row["predicate"]=="feedback:sentiment" and value not in ("喜欢","不喜欢"):
+                    conn.rollback();return jsonify({"error":"店铺态度只能是喜欢或不喜欢"}),400
+                source_id,source_ref=_memory_profile_source(conn,g.device_id,"update")
                 expires_at=now+90*86400 if row["predicate"]=="usual_place" else row["expires_at"]
-                conn.execute("UPDATE memory_wiki_facts SET value=?,confidence=1,status='confirmed',authority=1,promotion_reason='profile_relation_edit',valid_from=?,expires_at=?,updated_at=? WHERE id=?",(value,now,expires_at,now,action_id))
-                if row["subject_type"]=="person" and row["predicate"]=="usual_place":
-                    city=_landmark_city(value) or _extract_city(value)
-                    conn.execute("UPDATE memory_people SET usual_place=?,city=?,expires_at=?,updated_at=? WHERE device_id=? AND name=?",(value,city,expires_at,now,g.device_id,row["subject_key"]))
+                fact_id=_memory_upsert_wiki_fact_in_tx(
+                    conn,device_id=g.device_id,subject_type=row["subject_type"],subject_key=row["subject_key"],
+                    predicate=row["predicate"],value=value,value_type=row["value_type"] or "text",confidence=1,
+                    authority=1,status="confirmed",expires_at=expires_at,promotion_reason="profile_relation_edit",
+                    domain_kind=row["domain_kind"],domain_key=row["domain_key"],source_id=source_id,
+                    subject_entity_id=row["subject_entity_id"],value_entity_id=row["value_entity_id"],updated_at=now,
+                )
+                _memory_project_wiki_fact_to_business_in_tx(
+                    conn,g.device_id,int(fact_id),source_type="profile_edit",source_ref=source_ref,
+                )
         elif origin=="person":
             row=conn.execute("SELECT * FROM memory_people WHERE id=? AND device_id=?",(action_id,g.device_id)).fetchone()
             if not row or predicate not in ("relation","usual_place"):
@@ -6406,6 +6811,7 @@ def api_v2_memory_relation():
                 conn.execute("DELETE FROM memory_wiki_fact_versions WHERE device_id=? AND subject_type='person' AND subject_key=? AND predicate=?",(g.device_id,row["name"],predicate))
             updated=dict(conn.execute("SELECT * FROM memory_people WHERE id=?",(action_id,)).fetchone())
             _memory_append_event(conn,device_id=g.device_id,kind="person",record_id=action_id,action="update" if value else "delete_field",value=updated,changed_fields=changed,source_id=source_id,source_ref=source_ref,expires_at=updated.get("expires_at"))
+            _memory_sync_business_record_to_wiki_in_tx(conn,g.device_id,"person",action_id,source_id=source_id,reason="profile_relation_edit",only_predicates={predicate})
         elif origin=="preference":
             row=conn.execute("SELECT * FROM agent_memories WHERE id=? AND device_id=?",(action_id,g.device_id)).fetchone()
             if not row:
@@ -6419,6 +6825,7 @@ def api_v2_memory_relation():
                 source_id,source_ref=_memory_profile_source(conn,g.device_id,"update")
                 updated=dict(conn.execute("SELECT * FROM agent_memories WHERE id=?",(action_id,)).fetchone())
                 _memory_append_event(conn,device_id=g.device_id,kind="preference",record_id=action_id,action="update",value=updated,changed_fields=["memory_value"],source_id=source_id,source_ref=source_ref)
+                _memory_sync_business_record_to_wiki_in_tx(conn,g.device_id,"preference",action_id,source_id=source_id,reason="profile_relation_edit")
         else:
             if request.method!="DELETE":
                 conn.rollback();return jsonify({"error":"店铺反馈请删除后重新记录"}),400
@@ -6605,6 +7012,13 @@ def api_v2_memory_update_item():
             action="update", value=dict(updated), changed_fields=changed,
             source_id=source_id, source_ref=source_ref, expires_at=expires_at,
         )
+        _memory_sync_business_record_to_wiki_in_tx(
+            conn, g.device_id, kind, record_id,
+            source_id=source_id, reason="profile_edit",
+            only_predicates=({"relation"} if kind == "person" and "relation" in changed and "usual_place" not in changed and "expires_at" not in changed
+                             else {"usual_place"} if kind == "person" and ("usual_place" in changed or "expires_at" in changed) and "relation" not in changed
+                             else None),
+        )
         conn.commit()
     except sqlite3.IntegrityError:
         conn.rollback()
@@ -6780,6 +7194,10 @@ def _commit_confirmed_person_memory(sid: str, did: str, draft: dict) -> str:
             changed_fields=[x for x, present in (("relation", relation), ("usual_place", place), ("city", city)) if present is not None],
             source_id=source_id, source_ref=source_ref, expires_at=row["expires_at"],
         )
+        _memory_sync_business_record_to_wiki_in_tx(
+            conn, did, "person", int(row["id"]),
+            source_id=source_id, reason="explicit_user_confirmation",
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -6847,6 +7265,10 @@ def _tool_remember_feedback(sid: str, args: dict) -> tuple[dict, dict | None]:
             conn, device_id=did, kind="feedback", record_id=record_id,
             action=action, value=dict(row), changed_fields=["signal", "reason"],
             source_id=source_id, source_ref=source_ref,
+        )
+        _memory_sync_business_record_to_wiki_in_tx(
+            conn, did, "feedback", record_id,
+            source_id=source_id, reason="explicit_user",
         )
         conn.commit()
     except Exception:
