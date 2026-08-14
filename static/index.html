@@ -2093,50 +2093,17 @@
     }
     .assist-fab:active { transform: scale(.96); }
     .assist-fab.hidden { display: none; }
-    .mid-orb {
-      position: relative;
-      display: inline-flex;
-      width: 36px; height: 36px;
-      align-items: center; justify-content: center;
+    .ami-mark {
+      display: block;
+      width: 38px; height: 38px;
       border-radius: 50%;
-      background:
-        radial-gradient(circle at 31% 24%, rgba(255,255,255,.95) 0 5%, rgba(255,255,255,.42) 6%, transparent 27%),
-        radial-gradient(circle at 60% 68%, #0077ED 0, #168FF8 48%, #5FC3FF 78%, #BDE8FF 100%);
-      box-shadow:
-        inset -4px -5px 9px rgba(0,55,145,.30),
-        inset 3px 3px 7px rgba(255,255,255,.52),
-        0 5px 12px rgba(0,112,243,.28);
-      transform-origin: center 60%;
-      animation: fabWiggle 3.6s ease-in-out infinite;
+      filter: drop-shadow(0 5px 9px rgba(37,105,202,.2));
+      animation: amiBreathe 4.8s ease-in-out infinite;
     }
-    .mid-orb::after {
-      content: '';
-      position: absolute; inset: 2px;
-      border: 1px solid rgba(255,255,255,.38);
-      border-radius: 50%;
-    }
-    .mid-orb-ring {
-      width: 21px; height: 13px;
-      border: 1.7px solid rgba(255,255,255,.9);
-      border-left-color: transparent;
-      border-radius: 50%;
-      transform: rotate(-22deg);
-      filter: drop-shadow(0 1px 1px rgba(0,65,150,.28));
-    }
-    .mid-orb-dot {
-      position: absolute;
-      width: 5px; height: 5px;
-      border-radius: 50%;
-      background: #fff;
-      box-shadow: 0 0 0 3px rgba(255,255,255,.18), 0 1px 3px rgba(0,60,140,.35);
-    }
-    .assist-avatar .mid-orb { width: 27px; height: 27px; animation: none; }
-    .assist-avatar .mid-orb-ring { width: 16px; height: 10px; border-width: 1.3px; }
-    .assist-avatar .mid-orb-dot { width: 4px; height: 4px; }
-    @keyframes fabWiggle {
-      0%, 88%, 100% { transform: rotate(0deg); }
-      92%           { transform: rotate(-14deg); }
-      96%           { transform: rotate(12deg); }
+    .assist-avatar .ami-mark { width: 28px; height: 28px; animation: none; filter: none; }
+    @keyframes amiBreathe {
+      0%, 100% { transform: scale(1); filter: drop-shadow(0 5px 9px rgba(37,105,202,.2)); }
+      50% { transform: scale(1.025); filter: drop-shadow(0 7px 12px rgba(78,91,211,.26)); }
     }
     .assist-fab .fab-badge {
       position: absolute;
@@ -3254,13 +3221,13 @@
 
         <!-- ── AI 助手：右下浮球 + 折叠面板 ────────────────────── -->
         <button class="assist-fab" id="assistFab" title="阿觅 · 中点里的 AI 助手" aria-label="阿觅，中点 AI 助手">
-          <span class="mid-orb" aria-hidden="true"><span class="mid-orb-ring"></span><span class="mid-orb-dot"></span></span>
+          <img class="ami-mark" src="/static/ami-mark.svg" alt="" aria-hidden="true">
           <span class="fab-badge">AI</span>
         </button>
         <aside class="assist-panel" id="assistPanel" hidden>
           <header class="assist-head">
             <div class="assist-title">
-              <span class="assist-avatar" aria-hidden="true"><span class="mid-orb"><span class="mid-orb-ring"></span><span class="mid-orb-dot"></span></span></span>
+              <span class="assist-avatar" aria-hidden="true"><img class="ami-mark" src="/static/ami-mark.svg" alt=""></span>
               <div>
                 <div class="assist-name">阿觅</div>
                 <div class="assist-sub" id="assistSub">你的会面小雷达 · 换关键词 · 移锚点 · 重算路线</div>
