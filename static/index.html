@@ -2320,9 +2320,8 @@
       transition: transform .54s var(--ease-spring), filter .3s var(--ease-standard);
     }
     .assist-avatar .ami-mark { width: 28px; height: 28px; filter: none; }
-    .ami-left-petal,
-    .ami-right-petal,
-    .ami-core,
+    .ami-voice-left,
+    .ami-voice-right,
     .ami-spark {
       transform-box: fill-box;
       transform-origin: center;
@@ -2339,15 +2338,12 @@
       transform: translateY(-1px) scale(1.045);
       filter: drop-shadow(0 7px 12px rgba(37,74,160,.23));
     }
-    .assist-fab:hover .ami-left-petal,
-    .assist-fab:focus-visible .ami-left-petal,
-    .assist-avatar:hover .ami-left-petal { transform: translateX(1.35px) rotate(1.2deg); }
-    .assist-fab:hover .ami-right-petal,
-    .assist-fab:focus-visible .ami-right-petal,
-    .assist-avatar:hover .ami-right-petal { transform: translateX(-1.35px) rotate(-1.2deg); }
-    .assist-fab:hover .ami-core,
-    .assist-fab:focus-visible .ami-core,
-    .assist-avatar:hover .ami-core { transform: scale(1.075); }
+    .assist-fab:hover .ami-voice-left,
+    .assist-fab:focus-visible .ami-voice-left,
+    .assist-avatar:hover .ami-voice-left { transform: translate(2px,-1.5px) rotate(-1deg); }
+    .assist-fab:hover .ami-voice-right,
+    .assist-fab:focus-visible .ami-voice-right,
+    .assist-avatar:hover .ami-voice-right { transform: translate(-2px,1.5px) rotate(1deg); }
     .assist-fab:hover .ami-spark,
     .assist-fab:focus-visible .ami-spark,
     .assist-avatar:hover .ami-spark { animation: amiConsensusSpark .9s cubic-bezier(.2,.82,.2,1) both; }
@@ -2436,9 +2432,8 @@
     .assist-avatar [data-lucide] { width: 16px; height: 16px; }
     @media (prefers-reduced-motion: reduce) {
       .ami-mark,
-      .ami-left-petal,
-      .ami-right-petal,
-      .ami-core,
+      .ami-voice-left,
+      .ami-voice-right,
       .ami-spark,
       .assist-fab::before,
       .assist-avatar::before,
@@ -3536,19 +3531,16 @@
         <!-- ── AI 助手：右下浮球 + 折叠面板 ────────────────────── -->
         <svg class="ami-defs" width="0" height="0" aria-hidden="true" focusable="false">
           <defs>
-            <linearGradient id="amiUiLeft" x1="8" y1="13" x2="35" y2="48" gradientUnits="userSpaceOnUse"><stop stop-color="#67BFFF"/><stop offset=".52" stop-color="#278EF2"/><stop offset="1" stop-color="#235FB5"/></linearGradient>
-            <linearGradient id="amiUiRight" x1="55" y1="13" x2="31" y2="49" gradientUnits="userSpaceOnUse"><stop stop-color="#A69AF7"/><stop offset=".52" stop-color="#7768DF"/><stop offset="1" stop-color="#5143AA"/></linearGradient>
-            <linearGradient id="amiUiOverlap" x1="32" y1="18" x2="32" y2="56" gradientUnits="userSpaceOnUse"><stop stop-color="#294A72"/><stop offset="1" stop-color="#0C1B2E"/></linearGradient>
-            <linearGradient id="amiUiCore" x1="26" y1="23" x2="39" y2="48" gradientUnits="userSpaceOnUse"><stop stop-color="#B6F2E1"/><stop offset=".58" stop-color="#76D8BF"/><stop offset="1" stop-color="#48BDA3"/></linearGradient>
+            <linearGradient id="amiUiBlue" x1="8" y1="27" x2="35" y2="52" gradientUnits="userSpaceOnUse"><stop stop-color="#6BC1FF"/><stop offset=".52" stop-color="#2E91EF"/><stop offset="1" stop-color="#2364B9"/></linearGradient>
+            <linearGradient id="amiUiViolet" x1="34" y1="9" x2="56" y2="34" gradientUnits="userSpaceOnUse"><stop stop-color="#B2A8F6"/><stop offset=".5" stop-color="#8273E1"/><stop offset="1" stop-color="#5748B2"/></linearGradient>
+            <linearGradient id="amiUiMint" x1="32" y1="29" x2="39" y2="39" gradientUnits="userSpaceOnUse"><stop stop-color="#C8F6EA"/><stop offset="1" stop-color="#58C8AE"/></linearGradient>
           </defs>
         </svg>
         <button class="assist-fab map-floating-draggable" id="assistFab" data-floating-key="ami" title="阿觅 · 中点里的 AI 助手；按住可拖动" aria-label="阿觅，中点 AI 助手；按住可拖动">
           <svg class="ami-mark" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
-            <path class="ami-left-petal" d="M31.7 15.8C25.2 9.5 15.6 10.1 9.9 16.3C4 22.7 4.7 32.9 10.4 39.3C15.2 44.7 22.6 47 29.1 44.8C32 38.9 34.1 32.3 35 25.7C35.5 21.8 34.3 18.4 31.7 15.8Z" fill="url(#amiUiLeft)"/>
-            <path class="ami-right-petal" d="M32.3 15.8C38.8 9.5 48.4 10.1 54.1 16.3C60 22.7 59.3 32.9 53.6 39.3C48.8 44.7 41.4 47 34.9 44.8C32 38.9 29.9 32.3 29 25.7C28.5 21.8 29.7 18.4 32.3 15.8Z" fill="url(#amiUiRight)"/>
-            <path d="M32 17.7C38.9 23.1 43.3 31.4 42.5 39.6C41.7 47.2 36.8 52.3 32 54.5C27.2 52.3 22.3 47.2 21.5 39.6C20.7 31.4 25.1 23.1 32 17.7Z" fill="url(#amiUiOverlap)"/>
-            <path class="ami-core" d="M32 20.8C38 24.5 41.1 30.1 40.5 36.4C39.9 41.9 36.7 46 32 48.4C27.3 46 24.1 41.9 23.5 36.4C22.9 30.1 26 24.5 32 20.8Z" fill="url(#amiUiCore)"/>
-            <path class="ami-spark" d="M32 28.1C32.43 30.65 33.35 31.57 35.9 32C33.35 32.43 32.43 33.35 32 35.9C31.57 33.35 30.65 32.43 28.1 32C30.65 31.57 31.57 30.65 32 28.1Z" fill="#F9FFFD"/>
+            <g class="ami-voice-left"><path d="M7 37.1C7 29.5 13 24 21.2 24H23.8C32.1 24 38 29.4 38 37C38 44.5 32.1 49.8 23.8 49.8H18.5L11.1 55L12.8 47.2C9.2 44.9 7 41.4 7 37.1Z" fill="url(#amiUiBlue)"/><path d="M15 36.9H27.7" stroke="white" stroke-width="3.1" stroke-linecap="round" stroke-opacity=".88"/></g>
+            <g class="ami-voice-right"><path d="M31 19.5C31 12.9 36.3 8.5 43.5 8.5H46C53.2 8.5 58 12.9 58 19.5C58 25.4 54.1 29.4 48.2 30.3L50.1 35.5L44.1 30.5H43.5C36.3 30.5 31 26.1 31 19.5Z" fill="url(#amiUiViolet)"/><path d="M39 19.3H50" stroke="white" stroke-width="2.8" stroke-linecap="round" stroke-opacity=".82"/></g>
+            <path class="ami-spark" d="M35.3 29.7C35.78 32.72 36.88 33.82 39.9 34.3C36.88 34.78 35.78 35.88 35.3 38.9C34.82 35.88 33.72 34.78 30.7 34.3C33.72 33.82 34.82 32.72 35.3 29.7Z" fill="url(#amiUiMint)"/>
           </svg>
           <span class="fab-badge">AI</span>
         </button>
@@ -3557,11 +3549,9 @@
             <div class="assist-title">
               <span class="assist-avatar" aria-hidden="true">
                 <svg class="ami-mark" viewBox="0 0 64 64" focusable="false">
-                  <path class="ami-left-petal" d="M31.7 15.8C25.2 9.5 15.6 10.1 9.9 16.3C4 22.7 4.7 32.9 10.4 39.3C15.2 44.7 22.6 47 29.1 44.8C32 38.9 34.1 32.3 35 25.7C35.5 21.8 34.3 18.4 31.7 15.8Z" fill="url(#amiUiLeft)"/>
-                  <path class="ami-right-petal" d="M32.3 15.8C38.8 9.5 48.4 10.1 54.1 16.3C60 22.7 59.3 32.9 53.6 39.3C48.8 44.7 41.4 47 34.9 44.8C32 38.9 29.9 32.3 29 25.7C28.5 21.8 29.7 18.4 32.3 15.8Z" fill="url(#amiUiRight)"/>
-                  <path d="M32 17.7C38.9 23.1 43.3 31.4 42.5 39.6C41.7 47.2 36.8 52.3 32 54.5C27.2 52.3 22.3 47.2 21.5 39.6C20.7 31.4 25.1 23.1 32 17.7Z" fill="url(#amiUiOverlap)"/>
-                  <path class="ami-core" d="M32 20.8C38 24.5 41.1 30.1 40.5 36.4C39.9 41.9 36.7 46 32 48.4C27.3 46 24.1 41.9 23.5 36.4C22.9 30.1 26 24.5 32 20.8Z" fill="url(#amiUiCore)"/>
-                  <path class="ami-spark" d="M32 28.1C32.43 30.65 33.35 31.57 35.9 32C33.35 32.43 32.43 33.35 32 35.9C31.57 33.35 30.65 32.43 28.1 32C30.65 31.57 31.57 30.65 32 28.1Z" fill="#F9FFFD"/>
+                  <g class="ami-voice-left"><path d="M7 37.1C7 29.5 13 24 21.2 24H23.8C32.1 24 38 29.4 38 37C38 44.5 32.1 49.8 23.8 49.8H18.5L11.1 55L12.8 47.2C9.2 44.9 7 41.4 7 37.1Z" fill="url(#amiUiBlue)"/><path d="M15 36.9H27.7" stroke="white" stroke-width="3.1" stroke-linecap="round" stroke-opacity=".88"/></g>
+                  <g class="ami-voice-right"><path d="M31 19.5C31 12.9 36.3 8.5 43.5 8.5H46C53.2 8.5 58 12.9 58 19.5C58 25.4 54.1 29.4 48.2 30.3L50.1 35.5L44.1 30.5H43.5C36.3 30.5 31 26.1 31 19.5Z" fill="url(#amiUiViolet)"/><path d="M39 19.3H50" stroke="white" stroke-width="2.8" stroke-linecap="round" stroke-opacity=".82"/></g>
+                  <path class="ami-spark" d="M35.3 29.7C35.78 32.72 36.88 33.82 39.9 34.3C36.88 34.78 35.78 35.88 35.3 38.9C34.82 35.88 33.72 34.78 30.7 34.3C33.72 33.82 34.82 32.72 35.3 29.7Z" fill="url(#amiUiMint)"/>
                 </svg>
               </span>
               <div>
