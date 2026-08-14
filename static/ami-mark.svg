@@ -1,5 +1,56 @@
 <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">阿觅</title>
+  <desc id="desc">两片声音相遇，在中央形成一束共识微光</desc>
+  <defs>
+    <linearGradient id="ami-left" x1="8" y1="13" x2="35" y2="48" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67BFFF"/>
+      <stop offset="0.52" stop-color="#278EF2"/>
+      <stop offset="1" stop-color="#235FB5"/>
+    </linearGradient>
+    <linearGradient id="ami-right" x1="55" y1="13" x2="31" y2="49" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A69AF7"/>
+      <stop offset="0.52" stop-color="#7768DF"/>
+      <stop offset="1" stop-color="#5143AA"/>
+    </linearGradient>
+    <linearGradient id="ami-overlap" x1="32" y1="18" x2="32" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#294A72"/>
+      <stop offset="1" stop-color="#0C1B2E"/>
+    </linearGradient>
+    <linearGradient id="ami-core" x1="26" y1="23" x2="39" y2="48" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B6F2E1"/>
+      <stop offset="0.58" stop-color="#76D8BF"/>
+      <stop offset="1" stop-color="#48BDA3"/>
+    </linearGradient>
+    <filter id="ami-shadow" x="-24%" y="-20%" width="148%" height="160%">
+      <feDropShadow dy="3" stdDeviation="3.2" flood-color="#183B63" flood-opacity="0.22"/>
+    </filter>
+    <filter id="ami-soft-light" x="-120%" y="-120%" width="340%" height="340%">
+      <feGaussianBlur stdDeviation="1.2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <style>
+    .ami-left-petal,.ami-right-petal,.ami-core,.ami-spark { transform-box: fill-box; transform-origin: center; }
+    svg:hover .ami-left-petal { animation: ami-left-meet .82s cubic-bezier(.2,.8,.2,1) both; }
+    svg:hover .ami-right-petal { animation: ami-right-meet .82s cubic-bezier(.2,.8,.2,1) both; }
+    svg:hover .ami-core { animation: ami-core-awake .82s cubic-bezier(.2,.8,.2,1) both; }
+    svg:hover .ami-spark { animation: ami-spark-awake .82s cubic-bezier(.2,.8,.2,1) both; }
+    @keyframes ami-left-meet { 0% { transform: translateX(0) rotate(0); } 48% { transform: translateX(2.2px) rotate(2.2deg); } 100% { transform: translateX(1.1px) rotate(1deg); } }
+    @keyframes ami-right-meet { 0% { transform: translateX(0) rotate(0); } 48% { transform: translateX(-2.2px) rotate(-2.2deg); } 100% { transform: translateX(-1.1px) rotate(-1deg); } }
+    @keyframes ami-core-awake { 0% { transform: scale(.96); } 52% { transform: scale(1.09); } 100% { transform: scale(1.035); } }
+    @keyframes ami-spark-awake { 0% { opacity:.72; transform: scale(.76) rotate(0); } 52% { opacity:1; transform: scale(1.3) rotate(18deg); } 100% { opacity:.96; transform: scale(1.08) rotate(9deg); } }
+    @media (prefers-reduced-motion: reduce) { .ami-left-petal,.ami-right-petal,.ami-core,.ami-spark { animation: none !important; } }
+  </style>
+  <g filter="url(#ami-shadow)">
+    <path class="ami-left-petal" d="M31.7 15.8C25.2 9.5 15.6 10.1 9.9 16.3C4 22.7 4.7 32.9 10.4 39.3C15.2 44.7 22.6 47 29.1 44.8C32 38.9 34.1 32.3 35 25.7C35.5 21.8 34.3 18.4 31.7 15.8Z" fill="url(#ami-left)"/>
+    <path class="ami-right-petal" d="M32.3 15.8C38.8 9.5 48.4 10.1 54.1 16.3C60 22.7 59.3 32.9 53.6 39.3C48.8 44.7 41.4 47 34.9 44.8C32 38.9 29.9 32.3 29 25.7C28.5 21.8 29.7 18.4 32.3 15.8Z" fill="url(#ami-right)"/>
+    <path d="M32 17.7C38.9 23.1 43.3 31.4 42.5 39.6C41.7 47.2 36.8 52.3 32 54.5C27.2 52.3 22.3 47.2 21.5 39.6C20.7 31.4 25.1 23.1 32 17.7Z" fill="url(#ami-overlap)"/>
+    <path class="ami-core" d="M32 20.8C38 24.5 41.1 30.1 40.5 36.4C39.9 41.9 36.7 46 32 48.4C27.3 46 24.1 41.9 23.5 36.4C22.9 30.1 26 24.5 32 20.8Z" fill="url(#ami-core)"/>
+  </g>
+  <path class="ami-spark" d="M32 28.1C32.43 30.65 33.35 31.57 35.9 32C33.35 32.43 32.43 33.35 32 35.9C31.57 33.35 30.65 32.43 28.1 32C30.65 31.57 31.57 30.65 32 28.1Z" fill="#F9FFFD" filter="url(#ami-soft-light)"/>
+</svg>
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">阿觅</title>
   <desc id="desc">三片柔和的寻意光叶围合出一束灵感微光</desc>
   <defs>
     <linearGradient id="ami-iris" x1="28" y1="7" x2="50" y2="36" gradientUnits="userSpaceOnUse">
