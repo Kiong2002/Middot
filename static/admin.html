@@ -22,7 +22,7 @@
 <body>
   <div class="login-shell" id="loginView">
     <form class="login-card" id="loginForm">
-      <div class="brand"><div class="orb"><img src="/static/middot-mark.svg" alt="Middot"></div><div><strong>Middot 管理台</strong><span>系统与数据管理</span></div></div>
+      <div class="brand"><div class="orb"><img src="/static/middot-mark.svg?v=4" alt="Middot"></div><div><strong>Middot 管理台</strong><span>系统与数据管理</span></div></div>
       <label for="username">账号</label><input class="field" id="username" autocomplete="username" value="admin" required>
       <label for="password">密码</label><input class="field" id="password" type="password" autocomplete="current-password" required autofocus>
       <button class="primary" type="submit">登录</button><div class="error" id="loginError"></div>
@@ -30,7 +30,7 @@
   </div>
 
   <div class="app hidden" id="appView">
-    <header class="top"><div class="brand"><div class="orb"><img src="/static/middot-mark.svg" alt="Middot"></div><div><strong>Middot 管理台</strong><span>统一管理入口</span></div></div><div class="top-actions"><button class="ghost" id="refreshBtn">刷新</button><button class="ghost danger" id="logoutBtn">退出</button></div></header>
+    <header class="top"><div class="brand"><div class="orb"><img src="/static/middot-mark.svg?v=4" alt="Middot"></div><div><strong>Middot 管理台</strong><span>统一管理入口</span></div></div><div class="top-actions"><button class="ghost" id="refreshBtn">刷新</button><button class="ghost danger" id="logoutBtn">退出</button></div></header>
     <div class="layout">
       <nav class="nav" id="nav"><button class="active" data-view="overview">系统总览</button><button data-view="jobs">消息队列</button><button data-view="conversations">历史对话</button><button data-view="candidates">待确认记忆</button></nav>
       <main class="main"><div class="section-head"><div><h1 id="viewTitle">系统总览</h1><p id="viewSub">Middot 后台运行与数据处理状态</p></div><span class="updated" id="updatedAt"></span></div><div id="content"></div></main>

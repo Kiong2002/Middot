@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>中点 Middot · 每次约都刚好在中间</title>
-  <link rel="icon" type="image/svg+xml" href="/static/middot-mark.svg"/>
+  <link rel="icon" type="image/svg+xml" href="/static/middot-mark.svg?v=4"/>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -2949,7 +2949,7 @@
         <button class="icon-btn mobile-only" id="mobileMenuBtn" title="打开侧栏" aria-label="打开侧栏">
           <i data-lucide="menu"></i>
         </button>
-        <div class="brand-icon" title="中点 · 一条路线穿过会面点"><img src="/static/middot-mark.svg" alt="中点 logo"></div>
+        <div class="brand-icon" title="中点 · 两端汇合于蓝色中点"><img src="/static/middot-mark.svg?v=4" alt="中点 logo"></div>
         <div>
           <span class="brand-name">中点</span>
           <span class="brand-sub">Middot · 约在正中间</span>
@@ -3257,8 +3257,8 @@
                     stroke-linecap="round" fill="none"
                     opacity="0"/>
 
-              <!-- 两端白点向蓝色中点汇合 -->
-              <circle r="1.55" fill="#FFFFFF" opacity="0">
+              <!-- 雾青与灰紫两端向蓝色中点汇合 -->
+              <circle r="1.55" fill="#A9C7C3" opacity="0">
                 <animateMotion dur="1.8s" repeatCount="indefinite"
                   path="M 6.5 8.5 C 12.25 8.5, 11.25 16, 16 16 C 20.75 16, 19.75 23.5, 25.5 23.5"
                   keyPoints="0;0.5;0.5"
@@ -3269,13 +3269,17 @@
                   values="0;1;1;0;0"
                   keyTimes="0;0.2;0.5;0.6;1"
                   dur="1.8s" repeatCount="indefinite"/>
+                <animate attributeName="fill"
+                  values="#A9C7C3;#A9C7C3;#4A9FFF;#4A9FFF"
+                  keyTimes="0;0.35;0.55;1"
+                  dur="1.8s" repeatCount="indefinite"/>
                 <animate attributeName="r"
                   values="1.5;1.9;1.9;1.5"
                   keyTimes="0;0.3;0.55;1"
                   dur="1.8s" repeatCount="indefinite"/>
               </circle>
 
-              <circle r="1.55" fill="#F4F8FC" opacity="0">
+              <circle r="1.55" fill="#B6AFC4" opacity="0">
                 <animateMotion dur="1.8s" repeatCount="indefinite"
                   path="M 25.5 23.5 C 19.75 23.5, 20.75 16, 16 16 C 11.25 16, 12.25 8.5, 6.5 8.5"
                   keyPoints="0;0.5;0.5"
@@ -3285,6 +3289,10 @@
                 <animate attributeName="opacity"
                   values="0;1;1;0;0"
                   keyTimes="0;0.2;0.5;0.6;1"
+                  dur="1.8s" repeatCount="indefinite"/>
+                <animate attributeName="fill"
+                  values="#B6AFC4;#B6AFC4;#4A9FFF;#4A9FFF"
+                  keyTimes="0;0.35;0.55;1"
                   dur="1.8s" repeatCount="indefinite"/>
                 <animate attributeName="r"
                   values="1.5;1.9;1.9;1.5"
@@ -3355,7 +3363,7 @@
 
         <section class="card" id="resultsCard" hidden style="padding:16px;">
           <div class="recalc-state" id="recalcState" hidden role="status" aria-live="polite">
-            <span class="recalc-mark" aria-hidden="true"><img src="/static/middot-mark.svg?v=2" alt=""></span>
+            <span class="recalc-mark" aria-hidden="true"><img src="/static/middot-mark.svg?v=4" alt=""></span>
             <span class="recalc-copy"><strong>正在重算路线</strong><span>保留候选，只更新每个人的真实耗时</span></span>
           </div>
           <div class="summary" id="resultSummary" hidden></div>
