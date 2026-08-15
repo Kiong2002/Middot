@@ -35,10 +35,10 @@ def candidate(field, value, confidence=.86, persistence=.9):
     }
 
 
-# 一条证据不自动晋升；第二个独立对话使低风险稳定事实超过阈值。
+# 一条证据不自动晋升；跨证据日且相隔48小时后，低风险稳定事实才超过阈值。
 first = add(candidate("hometown", "浙江"), "conversation-a", 1)
 assert first["promoted"] == 0
-second = add(candidate("hometown", "浙江"), "conversation-b", 3)
+second = add(candidate("hometown", "浙江"), "conversation-b", 48 * 3600 + 1)
 assert second["promoted"] == 1, second
 fact = conn.execute(
     "SELECT * FROM memory_wiki_facts WHERE device_id=? AND subject_key='阿杰' AND predicate='hometown'", (did,)
@@ -47,8 +47,8 @@ assert fact and fact["status"] == "confirmed" and fact["promotion_reason"] == "a
 assert .88 <= float(fact["confidence"]) < 1
 
 # 第三方常用位置属于敏感事实，即使证据强也只进入待确认。
-add(candidate("usual_place", "浙江大学紫金港校区", .95, .95), "conversation-c", 5)
-blocked = add(candidate("usual_place", "浙江大学紫金港校区", .95, .95), "conversation-d", 7)
+add(candidate("usual_place", "浙江大学紫金港校区", .95, .95), "conversation-c", 72 * 3600 + 1)
+blocked = add(candidate("usual_place", "浙江大学紫金港校区", .95, .95), "conversation-d", 120 * 3600 + 1)
 assert blocked["promoted"] == 0
 place = conn.execute(
     "SELECT * FROM memory_candidates WHERE device_id=? AND field_name='usual_place'", (did,)
@@ -57,8 +57,8 @@ assert place["status"] == "candidate" and "敏感" in (place["decision_reason"] 
 assert not conn.execute("SELECT 1 FROM memory_people WHERE device_id=?", (did,)).fetchone()
 
 # 强冲突不会静默覆盖：旧事实降为 challenged，不再属于当前生效事实。
-add(candidate("hometown", "江苏", .9, .9), "conversation-e", 9)
-conflict_result = add(candidate("hometown", "江苏", .9, .9), "conversation-f", 11)
+add(candidate("hometown", "江苏", .9, .9), "conversation-e", 144 * 3600 + 1)
+conflict_result = add(candidate("hometown", "江苏", .9, .9), "conversation-f", 192 * 3600 + 1)
 assert conflict_result["challenged"] == 1, conflict_result
 fact = conn.execute("SELECT * FROM memory_wiki_facts WHERE id=?", (fact["id"],)).fetchone()
 assert fact["value"] == "浙江" and fact["status"] == "challenged"

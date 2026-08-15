@@ -57,14 +57,17 @@ assert patch["question"].startswith("阿杰在"), patch
 
 # 即便模型错误传 city=北京，本轮解析出的杭州仍必须优先；具体校区才能落草稿。
 calls = []
-def fake_geocode(address, city=None):
-    calls.append((address, city))
+def fake_input_tips(keyword, city=None, limit=6):
+    calls.append((keyword, city, limit))
     return {
-        "success": True, "lng": 120.091986, "lat": 30.297066,
-        "formatted_address": "浙江省杭州市西湖区浙江大学紫金港校区",
-        "city": "杭州市",
+        "success": True,
+        "tips": [{
+            "id": "zju-zijingang", "name": "浙江大学紫金港校区",
+            "district": "浙江省杭州市西湖区", "address": "余杭塘路866号",
+            "lng": 120.091986, "lat": 30.297066,
+        }],
     }
-module.amap_geocode = fake_geocode
+module.amap_input_tips = fake_input_tips
 module.session_update(sid, {
     "current_user_message": "浙江大学紫金港校区",
     "current_utterance_parse": {
@@ -80,7 +83,7 @@ result, patch = module._tool_set_participant_location(
 )
 assert result["ok"] and patch["type"] == "draft", (result, patch)
 assert calls[0][1] == "杭州", calls
-assert patch["data"]["address"].startswith("浙江省杭州市"), patch
+assert "浙江省杭州市" in patch["data"]["address"], patch
 
 # “查询成功但只返回北京市”是伪成功，不能再写进参与者地址。
 module.amap_geocode = lambda address, city=None: {
