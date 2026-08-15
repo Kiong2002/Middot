@@ -9404,11 +9404,6 @@ def api_v2_apply_drafts():
     if updates:
         session_update(sid, updates)
 
-    # “请记住”开启一个短时草稿流程；后续回答校区/城市时延续同一授权，
-    # 但任何事实仍要经过最终可见确认卡才会落库。
-    if raw_user_msg:
-        _memory_track_authorization(sid, raw_user_msg)
-
     snap = session_get(sid) or {}
     return jsonify({
         "ok": True,
@@ -9564,6 +9559,10 @@ def api_v2_assistant_stream():
     caller_did = g.device_id
     # 长期记忆身份与房间里的 my_did 语义分离，并在进入 SSE worker 前固定下来。
     session_update(sid, {"memory_did": caller_did})
+    # “请记住”开启一个短时草稿流程；后续回答校区/城市时延续同一授权，
+    # 但任何事实仍要经过最终可见确认卡才会落库。
+    if raw_user_msg:
+        _memory_track_authorization(sid, raw_user_msg)
     pre_state = _assistant_get_state(sid)
     pre_me_idx = _compute_me_index(pre_state["participants"], pre_state.get("my_did") or "")
     # 先从本轮明确交通判断是否应跳过长期默认，再进行可能耗时的整句解析。

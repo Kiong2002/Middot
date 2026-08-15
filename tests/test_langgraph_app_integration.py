@@ -187,6 +187,12 @@ def test_assistant_stream_uses_main_langgraph_orchestrator(monkeypatch, tmp_path
         },
     )
     monkeypatch.setattr(module, "_memory_context", lambda *args, **kwargs: "[记忆] 无")
+    tracked_authorizations = []
+    monkeypatch.setattr(
+        module,
+        "_memory_track_authorization",
+        lambda sid, text: tracked_authorizations.append((sid, text)),
+    )
 
     class FakeCompletions:
         def create(self, **kwargs):
@@ -225,6 +231,7 @@ def test_assistant_stream_uses_main_langgraph_orchestrator(monkeypatch, tmp_path
     assert '"type": "token"' in body
     assert "已经准备好了。" in body
     assert '"type": "done"' in body
+    assert tracked_authorizations[0][1] == "帮我找咖啡馆"
 
     conn = module._db_connect()
     try:
@@ -305,3 +312,25 @@ def test_normal_choice_survives_session_and_runtime_restart(monkeypatch, tmp_pat
     assert module._consume_offer_choice_answers(
         resumed_sid, [{"token": token, "label": "坐地铁"}]
     ) == ("", [])
+
+
+def test_apply_drafts_does_not_reference_assistant_message(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [],
+            "query": "咖啡",
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={
+            "session_id": sid,
+            "drafts": [{"kind": "set_keyword", "data": {"keyword": "日料"}}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["query"] == "日料"
