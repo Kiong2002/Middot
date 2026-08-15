@@ -1,0 +1,91 @@
+<svg width="1200" height="480" viewBox="0 0 1200 480" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">认识阿觅，中点 Middot 的 AI 会面伙伴</title>
+  <desc id="desc">阿觅理解自然对话，并把用户的表达转化为参与者、地点、偏好和路线的实际变化。</desc>
+  <defs>
+    <linearGradient id="bg" x1="34" y1="12" x2="1152" y2="468" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F4F1FF"/>
+      <stop offset="0.48" stop-color="#F7FBFF"/>
+      <stop offset="1" stop-color="#EDF9F7"/>
+    </linearGradient>
+    <linearGradient id="orb" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#8CBFFF"/>
+      <stop offset="0.55" stop-color="#3D83F4"/>
+      <stop offset="1" stop-color="#6656D9"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#6C67E8"/>
+      <stop offset="1" stop-color="#29B99E"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dy="10" stdDeviation="15" flood-color="#163A59" flood-opacity="0.11"/>
+    </filter>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#9DB5CA" fill-opacity="0.24"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="480" rx="34" fill="url(#bg)"/>
+  <rect width="1200" height="480" rx="34" fill="url(#dots)"/>
+
+  <g transform="translate(62 56)" font-family="Inter,-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">
+    <circle cx="82" cy="82" r="68" fill="white" fill-opacity="0.74"/>
+    <g transform="translate(50 50)">
+      <path d="M7 37.1C7 29.5 13 24 21.2 24H23.8C32.1 24 38 29.4 38 37C38 44.5 32.1 49.8 23.8 49.8H18.5L11.1 55L12.8 47.2C9.2 44.9 7 41.4 7 37.1Z" fill="#2E91EF"/><path d="M15 36.9H27.7" stroke="white" stroke-width="3.1" stroke-linecap="round"/>
+      <path d="M31 19.5C31 12.9 36.3 8.5 43.5 8.5H46C53.2 8.5 58 12.9 58 19.5C58 25.4 54.1 29.4 48.2 30.3L50.1 35.5L44.1 30.5H43.5C36.3 30.5 31 26.1 31 19.5Z" fill="#8273E1"/><path d="M39 19.3H50" stroke="white" stroke-width="2.8" stroke-linecap="round"/>
+      <path d="M35.3 29.7C35.78 32.72 36.88 33.82 39.9 34.3C36.88 34.78 35.78 35.88 35.3 38.9C34.82 35.88 33.72 34.78 30.7 34.3C33.72 33.82 34.82 32.72 35.3 29.7Z" fill="#70D2BA"/>
+    </g>
+
+    <text x="0" y="190" fill="#7560D7" font-size="13" font-weight="760" letter-spacing="1.6">AI MEETING COMPANION</text>
+    <text x="0" y="240" fill="#102A43" font-size="38" font-weight="780">你好，我是阿觅。</text>
+    <text x="0" y="279" fill="#5F7589" font-size="17">我住在中点里，听懂你们怎么约，</text>
+    <text x="0" y="308" fill="#5F7589" font-size="17">也把说好的变化真正放回地图。</text>
+
+    <g transform="translate(0 337)">
+      <rect width="126" height="35" rx="17.5" fill="white" stroke="#D7E4EF"/>
+      <circle cx="19" cy="17.5" r="5" fill="#6D67E8"/>
+      <text x="32" y="23" fill="#385169" font-size="12" font-weight="650">理解上下文</text>
+      <rect x="138" width="126" height="35" rx="17.5" fill="white" stroke="#D7E4EF"/>
+      <circle cx="157" cy="17.5" r="5" fill="#2AB99F"/>
+      <text x="170" y="23" fill="#385169" font-size="12" font-weight="650">执行到地图</text>
+    </g>
+  </g>
+
+  <g transform="translate(424 44)" font-family="Inter,-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">
+    <path d="M102 104C201 104 183 202 280 202C370 202 357 298 455 298" stroke="url(#line)" stroke-width="3" stroke-linecap="round" stroke-dasharray="7 9" opacity="0.72"/>
+
+    <g filter="url(#shadow)">
+      <rect width="460" height="116" rx="24" fill="white" stroke="#D8E5F0"/>
+      <circle cx="38" cy="35" r="16" fill="#E8F3FF"/>
+      <path d="M31 36C34 31 39 31 43 36" stroke="#278AF2" stroke-width="2.5" stroke-linecap="round"/>
+      <circle cx="34" cy="32" r="2" fill="#278AF2"/><circle cx="42" cy="32" r="2" fill="#278AF2"/>
+      <text x="65" y="30" fill="#778B9D" font-size="12" font-weight="650">你可以直接说</text>
+      <text x="26" y="73" fill="#173149" font-size="18" font-weight="680">“朋友改从清华出发，想找安静的火锅。”</text>
+      <rect x="26" y="88" width="89" height="20" rx="10" fill="#EFF4F8"/><text x="42" y="102" fill="#668096" font-size="10">自然表达</text>
+    </g>
+
+    <g transform="translate(104 146)" filter="url(#shadow)">
+      <rect width="472" height="118" rx="24" fill="#142D45"/>
+      <g transform="translate(19 16) scale(.6)">
+        <path d="M7 37.1C7 29.5 13 24 21.2 24H23.8C32.1 24 38 29.4 38 37C38 44.5 32.1 49.8 23.8 49.8H18.5L11.1 55L12.8 47.2C9.2 44.9 7 41.4 7 37.1Z" fill="#2E91EF"/><path d="M15 36.9H27.7" stroke="white" stroke-width="3.1" stroke-linecap="round"/><path d="M31 19.5C31 12.9 36.3 8.5 43.5 8.5H46C53.2 8.5 58 12.9 58 19.5C58 25.4 54.1 29.4 48.2 30.3L50.1 35.5L44.1 30.5H43.5C36.3 30.5 31 26.1 31 19.5Z" fill="#8273E1"/><path d="M39 19.3H50" stroke="white" stroke-width="2.8" stroke-linecap="round"/><path d="M35.3 29.7C35.78 32.72 36.88 33.82 39.9 34.3C36.88 34.78 35.78 35.88 35.3 38.9C34.82 35.88 33.72 34.78 30.7 34.3C33.72 33.82 34.82 32.72 35.3 29.7Z" fill="#70D2BA"/>
+      </g>
+      <text x="66" y="31" fill="#B7C9D8" font-size="12" font-weight="650">阿觅理解为</text>
+      <text x="26" y="69" fill="white" font-size="16" font-weight="690">修改朋友出发地 · 保留火锅 · 增加安静偏好</text>
+      <g transform="translate(26 84)">
+        <rect width="88" height="23" rx="11.5" fill="#24445F"/><text x="18" y="16" fill="#C9E6FF" font-size="10">人物与地点</text>
+        <rect x="98" width="76" height="23" rx="11.5" fill="#24445F"/><text x="116" y="16" fill="#D7CEF9" font-size="10">当前方案</text>
+        <rect x="184" width="76" height="23" rx="11.5" fill="#24445F"/><text x="202" y="16" fill="#BDEADF" font-size="10">偏好变化</text>
+      </g>
+    </g>
+
+    <g transform="translate(220 292)" filter="url(#shadow)">
+      <rect width="460" height="114" rx="24" fill="white" stroke="#D8E5F0"/>
+      <rect x="22" y="20" width="74" height="74" rx="18" fill="#EAF5FF"/>
+      <path d="M39 74C50 52 61 72 79 39" stroke="#188CF8" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="59" cy="59" r="7" fill="white" stroke="#188CF8" stroke-width="4"/>
+      <text x="116" y="37" fill="#74899C" font-size="11" font-weight="650">页面已经更新</text>
+      <text x="116" y="65" fill="#173149" font-size="17" font-weight="730">新路线和会面点已重新计算</text>
+      <circle cx="120" cy="84" r="4" fill="#2AB99F"/>
+      <text x="132" y="89" fill="#638096" font-size="11">变化可见 · 仍可撤销 · 可以继续聊</text>
+    </g>
+  </g>
+</svg>
