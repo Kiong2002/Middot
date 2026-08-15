@@ -80,11 +80,21 @@ def make_runtime(deps, saver=None):
 
 def test_default_runtime_is_legacy(monkeypatch):
     monkeypatch.delenv("MIDDOT_AGENT_RUNTIME", raising=False)
+    monkeypatch.delenv("MIDDOT_AGENT_ORCHESTRATOR", raising=False)
     monkeypatch.delenv("MIDDOT_LANGSMITH_TRACING", raising=False)
     settings = load_runtime_settings()
     assert settings.agent_runtime == "legacy"
     assert settings.use_langgraph is False
+    assert settings.use_langgraph_orchestrator is False
     assert settings.langsmith_tracing is False
+
+
+def test_main_orchestrator_flag_is_independent(monkeypatch):
+    monkeypatch.setenv("MIDDOT_AGENT_RUNTIME", "langgraph")
+    monkeypatch.setenv("MIDDOT_AGENT_ORCHESTRATOR", "langgraph")
+    settings = load_runtime_settings()
+    assert settings.use_langgraph is True
+    assert settings.use_langgraph_orchestrator is True
 
 
 def test_uncertain_location_interrupts_then_resumes_without_requery():

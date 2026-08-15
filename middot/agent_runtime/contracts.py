@@ -70,3 +70,38 @@ class LocationRunOutcome:
     interrupt_id: str = ""
     prompt: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
+
+
+class PlannerResult(TypedDict):
+    content: str
+    tool_calls: list[dict[str, Any]]
+
+
+class MainAgentState(TypedDict, total=False):
+    """单次 Agent turn 的可持久化状态。
+
+    这里不放数据库连接、Flask request 或函数对象；checkpoint 只保存恢复执行所需的
+    纯数据。页面 session 是这个状态的投影，不再承担编排游标的职责。
+    """
+
+    request_id: str
+    thread_id: str
+    session_id: str
+    trace_id: str
+    conversation_id: str
+    caller_device_id: str
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]]
+    iteration: int
+    max_iterations: int
+    successful_tool_signatures: list[str]
+    routes_recomputed_after_prefer: bool
+    me_has_location: bool
+    planner_content: str
+    pending_tool_calls: list[dict[str, Any]]
+    called_names: list[str]
+    verification_issues: list[str]
+    waiting_kind: str
+    final_response: str
+    status: str
+    error: str
