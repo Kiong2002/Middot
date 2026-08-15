@@ -11,6 +11,7 @@
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/memory_graph_layout.js?v=2"></script>
   <script>
     // 主题早期初始化：防 FOUC
     (function() {
@@ -8609,8 +8610,9 @@
     const MEMORY_UI = {
       data: null, controller: null, requestSeq: 0,
       trigger: null, editing: null, subviewSeq: 0, view: 'profile',
-      graph: { x: 0, y: 0, k: 1, ready: false, signature: '', selected: null, positions: {}, searchQuery: '' },
+      graph: { x: 0, y: 0, k: 1, ready: false, signature: '', selected: null, positions: {}, searchQuery: '', storageLoaded: false, saveTimer: null },
     };
+    const MEMORY_GRAPH_LAYOUT_KEY = 'middot-memory-graph-layout-v2';
     const MEMORY_KIND_LABELS = {
       preference: '个人偏好', person: '常约的人',
       feedback: '店铺反馈', episode: '规划记录',
@@ -8710,36 +8712,41 @@
     function memoryProfileSection(icon, label, count, unit, body, emptyText) {
       return `<section class="memory-section memory-profile-card"><div class="memory-section-head"><span class="memory-profile-card-title"><span class="memory-profile-card-icon" aria-hidden="true"><i data-lucide="${escapeHtml(icon)}"></i></span>${escapeHtml(label)}</span><span>${count} ${escapeHtml(unit)}</span></div>${body || `<div class="memory-empty-compact">${escapeHtml(emptyText)}</div>`}</section>`;
     }
+    function memoryGraphLoadStoredLayout(nodeIds) {
+      const state=MEMORY_UI.graph;
+      if(state.storageLoaded)return;
+      state.storageLoaded=true;
+      try{
+        const raw=JSON.parse(localStorage.getItem(MEMORY_GRAPH_LAYOUT_KEY)||'null');
+        if(!raw)return;
+        const safe=window.MiddotMemoryGraphLayout.sanitizeSnapshot(raw,nodeIds);
+        state.positions=safe.positions;state.x=safe.x;state.y=safe.y;state.k=safe.k;
+        state.ready=Object.keys(safe.positions).length>0;
+      }catch(_){}
+    }
+    function memoryGraphSaveLayout(immediate = false) {
+      const state=MEMORY_UI.graph;
+      if(state.saveTimer){clearTimeout(state.saveTimer);state.saveTimer=null;}
+      const save=()=>{
+        state.saveTimer=null;
+        try{
+          const positions={};
+          Object.entries(state.positions||{}).slice(0,100).forEach(([id,p])=>{if(Number.isFinite(p?.x)&&Number.isFinite(p?.y))positions[id]={x:p.x,y:p.y};});
+          localStorage.setItem(MEMORY_GRAPH_LAYOUT_KEY,JSON.stringify({version:2,positions,x:state.x,y:state.y,k:state.k,updatedAt:Date.now()}));
+        }catch(_){}
+      };
+      if(immediate)save();else state.saveTimer=setTimeout(save,180);
+    }
     function memoryGraphLayout(nodes, edges) {
       const signature = nodes.map(n => n.id).sort().join('|');
-      const state = MEMORY_UI.graph;
+      const state = MEMORY_UI.graph,nodeIds=new Set(nodes.map(node=>node.id));
+      memoryGraphLoadStoredLayout(nodeIds);
       if (state.signature !== signature) {
-        const oldPositions=state.positions||{},nodeIds=new Set(nodes.map(node=>node.id)),kept={};
+        const oldPositions=state.positions||{},kept={};
         Object.entries(oldPositions).forEach(([id,pos])=>{if(nodeIds.has(id))kept[id]=pos;});
-        state.signature=signature;state.positions=kept;state.selected=nodeIds.has(state.selected)?state.selected:null;
-        if(Object.keys(kept).length){
-          nodes.forEach((node,index)=>{if(state.positions[node.id])return;const linked=edges.find(edge=>(edge.source===node.id&&state.positions[edge.target])||(edge.target===node.id&&state.positions[edge.source])),anchor=linked?state.positions[linked.source===node.id?linked.target:linked.source]:{x:0,y:0},angle=index*2.3999632297;state.positions[node.id]={x:anchor.x+Math.cos(angle)*105,y:anchor.y+Math.sin(angle)*105};});
-          state.ready=true;
-        }else state.ready=false;
-      }
-      if (!Object.keys(state.positions).length) {
-        const ordered = [...nodes].sort((a,b) => String(a.id).localeCompare(String(b.id)));
-        ordered.forEach((node,index) => {
-          if (node.id === 'user:me' || node.type === 'user') { state.positions[node.id] = {x:0,y:0}; return; }
-          const angle=index*2.3999632297, radius=110+34*Math.sqrt(index);
-          state.positions[node.id]={x:Math.cos(angle)*radius,y:Math.sin(angle)*radius};
-        });
-        const validEdges=edges.filter(edge=>state.positions[edge.source]&&state.positions[edge.target]);
-        for(let step=0;step<180;step++){
-          const forces={}; ordered.forEach(node=>forces[node.id]={x:0,y:0});
-          for(let i=0;i<ordered.length;i++) for(let j=i+1;j<ordered.length;j++){
-            const a=state.positions[ordered[i].id],b=state.positions[ordered[j].id],dx=a.x-b.x,dy=a.y-b.y,dist2=Math.max(900,dx*dx+dy*dy),dist=Math.sqrt(dist2),force=7800/dist2;
-            const fx=dx/dist*force,fy=dy/dist*force; forces[ordered[i].id].x+=fx;forces[ordered[i].id].y+=fy;forces[ordered[j].id].x-=fx;forces[ordered[j].id].y-=fy;
-          }
-          validEdges.forEach(edge=>{const a=state.positions[edge.source],b=state.positions[edge.target],dx=b.x-a.x,dy=b.y-a.y,dist=Math.max(1,Math.hypot(dx,dy)),desired=edge.status==='candidate'?150:125,force=(dist-desired)*.022,fx=dx/dist*force,fy=dy/dist*force;forces[edge.source].x+=fx;forces[edge.source].y+=fy;forces[edge.target].x-=fx;forces[edge.target].y-=fy;});
-          const cooling=.88*(1-step/210);
-          ordered.forEach(node=>{const p=state.positions[node.id];if(node.id==='user:me'||node.type==='user'){p.x=0;p.y=0;return;}const f=forces[node.id];f.x-=p.x*.006;f.y-=p.y*.006;const magnitude=Math.max(1,Math.hypot(f.x,f.y)),limit=11*cooling;p.x+=f.x/magnitude*Math.min(magnitude,limit);p.y+=f.y/magnitude*Math.min(magnitude,limit);});
-        }
+        const generated=window.MiddotMemoryGraphLayout.computeSemanticLayout(nodes,edges).positions;
+        state.signature=signature;state.positions={...generated,...kept};state.selected=nodeIds.has(state.selected)?state.selected:null;
+        state.ready=Object.keys(kept).length>0;
       }
       return state.positions;
     }
@@ -8762,7 +8769,7 @@
           </div>
         </div>
         <div class="memory-graph-layout">
-          <div class="memory-graph-wrap" id="memoryGraphWrap"><svg class="memory-graph" id="memoryGraphSvg" role="img" aria-label="可拖动、缩放和搜索的会面记忆图谱"><g class="memory-graph-viewport" id="memoryGraphViewport">${lines}${circles}</g></svg><div class="memory-graph-tip">拖动画布 · 滚轮缩放 · 拖动节点 · 双击打开页面</div></div>
+          <div class="memory-graph-wrap" id="memoryGraphWrap"><svg class="memory-graph" id="memoryGraphSvg" role="img" aria-label="可拖动、缩放和搜索的会面记忆图谱"><g class="memory-graph-viewport" id="memoryGraphViewport">${lines}${circles}</g></svg><div class="memory-graph-tip">拖动会自动保存 · 滚轮缩放 · 双击打开页面</div></div>
           <aside class="memory-graph-inspector" id="memoryGraphInspector" aria-live="polite"><div class="memory-graph-inspector-empty"><i data-lucide="mouse-pointer-2"></i><span>选择一个节点<br>查看它与谁、什么地点有关</span></div></aside>
         </div>
         <div class="memory-graph-legend"><span>已确认</span><span class="candidate">待确认</span><span class="challenged">受质疑</span><span class="conflict">冲突</span></div>
@@ -8790,6 +8797,7 @@
       const viewport=document.getElementById('memoryGraphViewport');
       if (viewport && animated) { viewport.style.transition='transform .24s ease'; setTimeout(()=>{ if(viewport) viewport.style.transition=''; },260); }
       memoryGraphTransform(); state.ready=true;
+      if(animated)memoryGraphSaveLayout();
     }
     function memoryGraphZoom(factor, clientX, clientY) {
       const wrap=document.getElementById('memoryGraphWrap'); if(!wrap)return;
@@ -8797,7 +8805,7 @@
       const px=(clientX ?? rect.left+rect.width/2)-rect.left, py=(clientY ?? rect.top+rect.height/2)-rect.top;
       const oldK=state.k, nextK=Math.max(.3,Math.min(2.8,oldK*factor));
       state.x=px-(px-state.x)*(nextK/oldK); state.y=py-(py-state.y)*(nextK/oldK); state.k=nextK;
-      memoryGraphTransform();
+      memoryGraphTransform();memoryGraphSaveLayout();
     }
     function memoryGraphUpdateNode(nodeId, x, y) {
       MEMORY_UI.graph.positions[nodeId]={x,y};
@@ -8927,7 +8935,10 @@
       form.querySelector('input').focus();form.scrollIntoView({block:'nearest'});
     }
     function memoryGraphResetLayout() {
-      MEMORY_UI.graph.signature=''; MEMORY_UI.graph.positions={}; MEMORY_UI.graph.ready=false; MEMORY_UI.graph.selected=null;
+      const state=MEMORY_UI.graph;
+      if(state.saveTimer){clearTimeout(state.saveTimer);state.saveTimer=null;}
+      try{localStorage.removeItem(MEMORY_GRAPH_LAYOUT_KEY);}catch(_){}
+      state.signature='';state.positions={};state.x=0;state.y=0;state.k=1;state.ready=false;state.selected=null;state.storageLoaded=true;
       const list=document.getElementById('memoryList'); if(list)list.innerHTML=memoryGraphHtml(MEMORY_UI.data?.graph||{});
       refreshIcons(); requestAnimationFrame(()=>memoryInitGraph(true));
     }
@@ -8948,7 +8959,7 @@
         if(gesture.type==='pan'){state.x=gesture.ox+dx;state.y=gesture.oy+dy;memoryGraphTransform();}
         else memoryGraphUpdateNode(gesture.id,gesture.ox+dx/state.k,gesture.oy+dy/state.k);
       });
-      const endGesture=e=>{if(!gesture)return;const finished=gesture;gesture=null;wrap.classList.remove('is-panning');if(finished.type==='node'&&!finished.moved)memoryGraphFocus(finished.id,false);else if(finished.type==='pan'&&!finished.moved)memoryGraphClearFocus();try{svg.releasePointerCapture?.(e.pointerId);}catch(_){}};
+      const endGesture=e=>{if(!gesture)return;const finished=gesture;gesture=null;wrap.classList.remove('is-panning');if(finished.type==='node'&&!finished.moved)memoryGraphFocus(finished.id,false);else if(finished.type==='pan'&&!finished.moved)memoryGraphClearFocus();else if(finished.moved)memoryGraphSaveLayout(true);try{svg.releasePointerCapture?.(e.pointerId);}catch(_){}};
       svg.addEventListener('pointerup',endGesture);svg.addEventListener('pointercancel',endGesture);
       svg.querySelectorAll('.memory-graph-node').forEach(node=>{
         node.addEventListener('dblclick',e=>{e.stopPropagation();const id=node.dataset.wikiNode;if((MEMORY_UI.data?.wiki_pages||[]).some(page=>page.id===id))memoryShowWikiPage(id);});
