@@ -351,6 +351,32 @@ def init_middot_db():
         );
         CREATE INDEX IF NOT EXISTS idx_conversation_events_time
           ON conversation_events(conversation_id, seq);
+        CREATE TABLE IF NOT EXISTS conversation_recovery (
+          conversation_id       TEXT PRIMARY KEY,
+          device_id             TEXT NOT NULL,
+          summary_text          TEXT,
+          state_json            TEXT,
+          pending_kind          TEXT,
+          pending_interrupt_id  TEXT,
+          pending_thread_id     TEXT,
+          pending_payload_json  TEXT,
+          updated_at            INTEGER NOT NULL,
+          FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_recovery_device
+          ON conversation_recovery(device_id, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS conversation_operation_events (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_id TEXT NOT NULL,
+          event_key       TEXT NOT NULL,
+          tool_name       TEXT NOT NULL,
+          summary         TEXT NOT NULL,
+          created_at      INTEGER NOT NULL,
+          UNIQUE(conversation_id, event_key),
+          FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_operation_events
+          ON conversation_operation_events(conversation_id, id DESC);
         CREATE TABLE IF NOT EXISTS agent_traces (
           id              TEXT PRIMARY KEY,
           conversation_id TEXT,
@@ -1924,6 +1950,150 @@ def _conversation_for_session(sid: str, device_id: str, first_text: str = "") ->
     return conversation_id
 
 
+def _conversation_state_from_session(sid: str) -> dict:
+    """只持久化能够重建会面页面的业务状态，不保存 Flask/Graph 运行对象。"""
+    state = session_get(sid) or {}
+    pois = state.get("last_pois") or state.get("pois") or []
+    return {
+        "anchor": state.get("anchor"),
+        "participants": [dict(item) for item in (state.get("participants") or [])[:12]],
+        "pois": [dict(item) for item in pois[:30]],
+        "query": str(state.get("query") or "")[:500],
+        "city": str(state.get("city") or "")[:80],
+        "center": state.get("center"),
+        "search_radius_m": state.get("search_radius_m"),
+        "plan": state.get("plan"),
+        "departure_time": state.get("departure_time"),
+    }
+
+
+def _conversation_save_state(sid: str) -> None:
+    state = session_get(sid) or {}
+    conversation_id = str(state.get("conversation_id") or "")
+    device_id = str(state.get("memory_did") or state.get("my_did") or "")
+    if not conversation_id or not device_id:
+        return
+    payload = _conversation_state_from_session(sid)
+    conn = _db_connect()
+    try:
+        conn.execute(
+            "INSERT INTO conversation_recovery(conversation_id,device_id,state_json,updated_at) "
+            "VALUES(?,?,?,?) ON CONFLICT(conversation_id) DO UPDATE SET "
+            "device_id=excluded.device_id,state_json=excluded.state_json,updated_at=excluded.updated_at",
+            (conversation_id, device_id, json.dumps(payload, ensure_ascii=False), _now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _conversation_save_summary(sid: str, summary: str) -> None:
+    state = session_get(sid) or {}
+    conversation_id = str(state.get("conversation_id") or "")
+    device_id = str(state.get("memory_did") or state.get("my_did") or "")
+    if not conversation_id or not device_id:
+        return
+    conn = _db_connect()
+    try:
+        conn.execute(
+            "INSERT INTO conversation_recovery(conversation_id,device_id,summary_text,updated_at) "
+            "VALUES(?,?,?,?) ON CONFLICT(conversation_id) DO UPDATE SET "
+            "device_id=excluded.device_id,summary_text=excluded.summary_text,updated_at=excluded.updated_at",
+            (conversation_id, device_id, str(summary or "")[:_ASSISTANT_SUMMARY_MAX_CHARS], _now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _conversation_record_operation(sid: str, tool_name: str, result: dict) -> None:
+    if not result.get("ok"):
+        return
+    summary = str(result.get("summary") or "").strip()
+    if not summary:
+        return
+    state = session_get(sid) or {}
+    conversation_id = str(state.get("conversation_id") or "")
+    task_id = str((state.get("agent_task") or {}).get("id") or "")
+    if not conversation_id:
+        return
+    material = "\x1f".join((task_id, str(tool_name), summary))
+    event_key = hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+    conn = _db_connect()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO conversation_operation_events("
+            "conversation_id,event_key,tool_name,summary,created_at) VALUES(?,?,?,?,?)",
+            (conversation_id, event_key, str(tool_name)[:80], summary[:1000], _now()),
+        )
+        # 恢复上下文只需要最近的业务结论，旧原始详情仍保留在 agent trace。
+        conn.execute(
+            "DELETE FROM conversation_operation_events WHERE conversation_id=? AND id NOT IN ("
+            "SELECT id FROM conversation_operation_events WHERE conversation_id=? ORDER BY id DESC LIMIT 80)",
+            (conversation_id, conversation_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    summaries = list(state.get("restored_operation_summaries") or [])
+    item = f"{tool_name}：{summary}"
+    if item not in summaries:
+        summaries.append(item)
+        session_update(sid, {"restored_operation_summaries": summaries[-24:]})
+
+
+def _conversation_set_pending(
+    sid: str, *, kind: str, interrupt_id: str, thread_id: str, payload: dict
+) -> None:
+    state = session_get(sid) or {}
+    conversation_id = str(state.get("conversation_id") or "")
+    device_id = str(state.get("memory_did") or state.get("my_did") or "")
+    if not conversation_id or not device_id or not interrupt_id:
+        return
+    conn = _db_connect()
+    try:
+        conn.execute(
+            "INSERT INTO conversation_recovery(conversation_id,device_id,pending_kind,"
+            "pending_interrupt_id,pending_thread_id,pending_payload_json,updated_at) "
+            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(conversation_id) DO UPDATE SET "
+            "device_id=excluded.device_id,pending_kind=excluded.pending_kind,"
+            "pending_interrupt_id=excluded.pending_interrupt_id,pending_thread_id=excluded.pending_thread_id,"
+            "pending_payload_json=excluded.pending_payload_json,updated_at=excluded.updated_at",
+            (
+                conversation_id, device_id, kind, interrupt_id, thread_id,
+                json.dumps(payload, ensure_ascii=False), _now(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _conversation_clear_pending(sid: str, interrupt_id: str = "") -> None:
+    state = session_get(sid) or {}
+    conversation_id = str(state.get("conversation_id") or "")
+    if not conversation_id:
+        return
+    conn = _db_connect()
+    try:
+        if interrupt_id:
+            conn.execute(
+                "UPDATE conversation_recovery SET pending_kind=NULL,pending_interrupt_id=NULL,"
+                "pending_thread_id=NULL,pending_payload_json=NULL,updated_at=? "
+                "WHERE conversation_id=? AND pending_interrupt_id=?",
+                (_now(), conversation_id, interrupt_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE conversation_recovery SET pending_kind=NULL,pending_interrupt_id=NULL,"
+                "pending_thread_id=NULL,pending_payload_json=NULL,updated_at=? WHERE conversation_id=?",
+                (_now(), conversation_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _enqueue_memory_job(
     conversation_id: str,
     target_seq: int,
@@ -2100,6 +2270,8 @@ def _conversation_purge(conn: sqlite3.Connection, conversation_id: str) -> None:
         (conversation_id,),
     )
     conn.execute("DELETE FROM conversation_events WHERE conversation_id=?", (conversation_id,))
+    conn.execute("DELETE FROM conversation_operation_events WHERE conversation_id=?", (conversation_id,))
+    conn.execute("DELETE FROM conversation_recovery WHERE conversation_id=?", (conversation_id,))
     conn.execute("DELETE FROM memory_compile_runs WHERE conversation_id=?", (conversation_id,))
     conn.execute("DELETE FROM memory_jobs WHERE conversation_id=?", (conversation_id,))
     conn.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
@@ -2157,14 +2329,74 @@ def api_conversation_continue(conversation_id: str):
         {"role": row["role"], "content": row["visible_content"]}
         for row in rows if row["role"] in ("user", "assistant")
     ]
+    recovery = conn.execute(
+        "SELECT * FROM conversation_recovery WHERE conversation_id=? AND device_id=?",
+        (conversation_id, g.device_id),
+    ).fetchone()
+    try:
+        restored_state = json.loads(recovery["state_json"] or "{}") if recovery else {}
+    except json.JSONDecodeError:
+        restored_state = {}
+    operation_rows = conn.execute(
+        "SELECT tool_name,summary FROM conversation_operation_events "
+        "WHERE conversation_id=? ORDER BY id DESC LIMIT 24",
+        (conversation_id,),
+    ).fetchall()[::-1]
+    operation_summaries = [
+        f"{row['tool_name']}：{row['summary']}" for row in operation_rows
+    ]
+    restored_summary = str(recovery["summary_text"] or "") if recovery else ""
+    if not restored_summary:
+        older_rows = conn.execute(
+            "SELECT role,visible_content FROM conversation_events WHERE conversation_id=? "
+            "ORDER BY seq DESC LIMIT 80 OFFSET 24",
+            (conversation_id,),
+        ).fetchall()[::-1]
+        if older_rows:
+            restored_summary = _history_summary_input([
+                {"role": row["role"], "content": row["visible_content"]}
+                for row in older_rows if row["role"] in ("user", "assistant")
+            ])[-_ASSISTANT_SUMMARY_MAX_CHARS:]
+    pending = None
+    if recovery and recovery["pending_interrupt_id"] and recovery["pending_payload_json"]:
+        try:
+            pending_payload = json.loads(recovery["pending_payload_json"] or "{}")
+        except json.JSONDecodeError:
+            pending_payload = {}
+        if pending_payload:
+            pending = {
+                "kind": recovery["pending_kind"],
+                "interrupt_id": recovery["pending_interrupt_id"],
+                "thread_id": recovery["pending_thread_id"],
+                "patch": pending_payload,
+            }
     sid = session_create({
         "conversation_id": conversation_id,
         "memory_did": g.device_id,
         "my_did": g.device_id,
         "chat_history": history,
-        "participants": [], "last_pois": [], "query": "", "city": "",
+        "chat_summary": restored_summary,
+        "restored_operation_summaries": operation_summaries,
+        "participants": restored_state.get("participants") or [],
+        "last_pois": restored_state.get("pois") or [],
+        "query": restored_state.get("query") or "",
+        "city": restored_state.get("city") or "",
+        "anchor": restored_state.get("anchor"),
+        "center": restored_state.get("center"),
+        "search_radius_m": restored_state.get("search_radius_m"),
+        "plan": restored_state.get("plan"),
+        "departure_time": restored_state.get("departure_time"),
     })
-    return jsonify({"ok": True, "session_id": sid})
+    if restored_summary and not (recovery and recovery["summary_text"]):
+        _conversation_save_summary(sid, restored_summary)
+    return jsonify({
+        "ok": True,
+        "session_id": sid,
+        "state": restored_state,
+        "pending_interaction": pending,
+        "operation_summaries": operation_summaries,
+        "has_summary": bool(restored_summary),
+    })
 
 
 @app.route("/api/v2/conversations/<conversation_id>", methods=["DELETE"])
@@ -3492,7 +3724,14 @@ def api_v2_routes():
         session_update(session_id, {
             "participants":   participants,
             "departure_time": departure_time,
+            "last_pois":      enriched,
         })
+        _conversation_record_operation(
+            session_id,
+            "recompute_routes",
+            {"ok": True, "summary": f"已按最新出行方式重算 {len(enriched)} 个地点的路线"},
+        )
+        _conversation_save_state(session_id)
         resp = {
             "success":         True,
             "session_id":      session_id,
@@ -4523,7 +4762,7 @@ def _zju_campus_choice(sid: str, participant_name: str) -> tuple[dict, dict]:
         "updated_at": int(time.time()),
     })
     session_update(sid, {"agent_task": task, "city": "杭州"})
-    _register_choice_interrupt(sid, task)
+    token = _register_choice_interrupt(sid, task)
     return {
         "ok": True, "summary": "浙江大学有多个校区，等待用户确认",
         "waiting_for_user": True,
@@ -7852,7 +8091,7 @@ def _tool_remember_person(sid: str, args: dict) -> tuple[dict, dict | None]:
         "updated_at": _now(),
     })
     session_update(sid, {"agent_task": task, "pending_person_memory_seed": None})
-    _register_choice_interrupt(sid, task)
+    token = _register_choice_interrupt(sid, task)
     return {
         "ok": True, "summary": "人物档案草稿已准备好，等待你确认",
         "waiting_for_user": True,
@@ -8033,7 +8272,7 @@ def _tool_offer_choices(sid: str, args: dict) -> tuple[dict, dict | None]:
         "updated_at": int(time.time()),
     })
     session_update(sid, {"agent_task": task})
-    _register_choice_interrupt(sid, task)
+    token = _register_choice_interrupt(sid, task)
     return {"ok":True,"summary":"已给出可选答案"},{"type":"choices","token":token,"question":question,"mode":mode,"options":options}
 
 
@@ -8403,7 +8642,7 @@ def _merge_history_summary(previous: str, removed: list[dict]) -> str:
         return fallback[-_ASSISTANT_SUMMARY_MAX_CHARS:]
 
 
-def _compact_assistant_history(s: dict) -> None:
+def _compact_assistant_history(s: dict, sid: str = "") -> None:
     hist = s.setdefault("chat_history", [])
     if len(hist) <= _ASSISTANT_HISTORY_TRIGGER:
         return
@@ -8415,6 +8654,8 @@ def _compact_assistant_history(s: dict) -> None:
         return
     removed = hist[:cut]
     s["chat_summary"] = _merge_history_summary(s.get("chat_summary") or "", removed)
+    if sid:
+        _conversation_save_summary(sid, s["chat_summary"])
     del hist[:cut]
     conversation_id = str(s.get("conversation_id") or "")
     if conversation_id:
@@ -8438,7 +8679,7 @@ def _assistant_append_history(sid: str, msg: dict) -> None:
         return
     hist = s.setdefault("chat_history", [])
     hist.append(msg)
-    _compact_assistant_history(s)
+    _compact_assistant_history(s, sid)
 
 
 def _agent_task_begin(sid: str, message: str) -> dict:
@@ -8483,6 +8724,12 @@ def _agent_task_record(sid: str, name: str, result: dict) -> None:
         task["status"] = "running" if result.get("ok") else "recoverable_error"
     task["updated_at"] = int(time.time())
     session_update(sid, {"agent_task": task})
+    if name in {
+        "search_pois", "recompute_routes", "remember_preference",
+        "remember_feedback", "forget_memory",
+    }:
+        _conversation_record_operation(sid, name, result)
+    _conversation_save_state(sid)
 
 
 def _agent_task_finish(sid: str) -> None:
@@ -8503,18 +8750,74 @@ def _agent_task_context(sid: str) -> str:
     return "[当前任务状态] " + json.dumps(task, ensure_ascii=False)
 
 
-def _register_choice_interrupt(sid: str, task: dict) -> None:
-    """把普通选择卡落库，避免部署或进程重启后按钮永远失效。"""
+_choice_graph_runtime = None
+_choice_graph_conn = None
+_choice_graph_lock = threading.Lock()
+
+
+def _get_choice_graph_runtime():
+    global _choice_graph_runtime, _choice_graph_conn
+    if _choice_graph_runtime is not None:
+        return _choice_graph_runtime
+    with _choice_graph_lock:
+        if _choice_graph_runtime is not None:
+            return _choice_graph_runtime
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        from middot.agent_runtime.choice_graph import ChoiceResolutionRuntime, build_choice_graph
+
+        _choice_graph_conn = sqlite3.connect(
+            MIDDOT_LANGGRAPH_DB_PATH, timeout=5.0, check_same_thread=False
+        )
+        _choice_graph_conn.execute("PRAGMA journal_mode=WAL")
+        _choice_graph_conn.execute("PRAGMA busy_timeout=3000")
+        graph = build_choice_graph(checkpointer=SqliteSaver(_choice_graph_conn))
+        _choice_graph_runtime = ChoiceResolutionRuntime(graph)
+        return _choice_graph_runtime
+
+
+def _register_choice_interrupt(sid: str, task: dict) -> str:
+    """普通选择卡使用 LangGraph interrupt，并把卡片投影到业务库。"""
     token = str(task.get("choice_token") or "")
-    if not token:
-        return
     session = session_get(sid) or {}
+    conversation_id = str(session.get("conversation_id") or "")
+    payload = {"memory_draft": task.get("memory_draft")}
+    if _main_agent_graph_enabled() and conversation_id:
+        material = json.dumps(
+            {
+                "task": task.get("id"),
+                "question": task.get("waiting_for"),
+                "mode": task.get("choice_mode"),
+                "options": task.get("choices"),
+                "purpose": task.get("choice_purpose"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        request_id = "choice:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+        thread_id = f"choice:{conversation_id}:{request_id}"
+        outcome = _get_choice_graph_runtime().start(
+            thread_id=thread_id,
+            request_id=request_id,
+            question=str(task.get("waiting_for") or "请选择"),
+            mode=str(task.get("choice_mode") or "single"),
+            options=list(task.get("choices") or []),
+            purpose=str(task.get("choice_purpose") or ""),
+            payload=payload,
+        )
+        if outcome.status != "waiting_user":
+            raise RuntimeError("普通选择图未进入等待状态")
+        token = outcome.interrupt_id
+        task.update({
+            "choice_token": token,
+            "choice_graph_thread_id": thread_id,
+            "choice_graph_request_id": request_id,
+        })
+        session_update(sid, {"agent_task": task})
+    if not token:
+        return ""
     device_id = str(session.get("memory_did") or session.get("my_did") or "")
     if not device_id:
-        return
-    payload = {
-        "memory_draft": task.get("memory_draft"),
-    }
+        return ""
     conn = _db_connect()
     try:
         conn.execute(
@@ -8542,6 +8845,22 @@ def _register_choice_interrupt(sid: str, task: dict) -> None:
         conn.commit()
     finally:
         conn.close()
+    patch = {
+        "type": "choices",
+        "purpose": str(task.get("choice_purpose") or ""),
+        "token": token,
+        "question": str(task.get("waiting_for") or "请选择"),
+        "mode": str(task.get("choice_mode") or "single"),
+        "options": task.get("choices") or [],
+    }
+    _conversation_set_pending(
+        sid,
+        kind="choice",
+        interrupt_id=token,
+        thread_id=str(task.get("choice_graph_thread_id") or ""),
+        payload=patch,
+    )
+    return token
 
 
 def _consume_offer_choice_answers(sid: str, submitted: list) -> tuple[str, list[str]]:
@@ -8590,6 +8909,18 @@ def _consume_offer_choice_answers(sid: str, submitted: list) -> tuple[str, list[
             "failures": [],
             "updated_at": _now(),
         }
+        recovery = None
+        conn = _db_connect()
+        try:
+            recovery = conn.execute(
+                "SELECT pending_thread_id FROM conversation_recovery "
+                "WHERE pending_interrupt_id=? AND device_id=?",
+                (submitted_token, current_device),
+            ).fetchone()
+        finally:
+            conn.close()
+        if recovery and recovery["pending_thread_id"]:
+            task["choice_graph_thread_id"] = recovery["pending_thread_id"]
         session_update(sid, {"agent_task": task})
         token = submitted_token
     if task.get("status") != "waiting_user" or not token:
@@ -8611,6 +8942,19 @@ def _consume_offer_choice_answers(sid: str, submitted: list) -> tuple[str, list[
         return "", []
     if not labels:
         return "", []
+    choice_thread_id = str(task.get("choice_graph_thread_id") or "")
+    if _main_agent_graph_enabled() and choice_thread_id:
+        try:
+            outcome = _get_choice_graph_runtime().resume(
+                thread_id=choice_thread_id,
+                interrupt_id=submitted_token or token,
+                labels=labels,
+            )
+        except (RuntimeError, ValueError):
+            return "", []
+        if outcome.status != "completed":
+            return "", []
+        labels = [str(item) for item in ((outcome.result or {}).get("labels") or [])]
     # 持久化卡片用事务原子消费；两个并发请求最多只有一个能继续执行。
     if submitted_token:
         conn = _db_connect()
@@ -8639,6 +8983,7 @@ def _consume_offer_choice_answers(sid: str, submitted: list) -> tuple[str, list[
     # token 用过即失效；保留 waiting_user 到 _agent_task_begin，确保任务按原链路续接。
     task.update({"choice_token": "", "choices": [], "updated_at": int(time.time())})
     session_update(sid, {"agent_task": task})
+    _conversation_clear_pending(sid, submitted_token or token)
     return str(task.get("waiting_for") or "请选择").strip(), labels
 
 
@@ -8659,6 +9004,10 @@ def _apply_memory_confirmation_choice(sid: str, device_id: str, labels: list[str
             "pending_memory_authorization": None,
             "pending_person_memory_seed": None,
         })
+        if draft.get("kind") == "person" and result and "失效" not in result:
+            _conversation_record_operation(
+                sid, "remember_person", {"ok": True, "summary": result}
+            )
     elif label == "修改":
         result = "用户选择修改记忆草稿；请询问要改哪一项，不要保存"
         task["status"] = "running"
@@ -8673,6 +9022,7 @@ def _apply_memory_confirmation_choice(sid: str, device_id: str, labels: list[str
     task.pop("memory_draft", None)
     task["updated_at"] = _now()
     session_update(sid, {"agent_task": task})
+    _conversation_save_state(sid)
     return result
 
 
@@ -8914,6 +9264,23 @@ def _start_location_graph(sid: str, place_name: str, target_city: str, target: d
     )
     if outcome.status == "waiting_user":
         _register_location_interrupt(outcome, str(s.get("memory_did") or s.get("my_did") or ""))
+        candidates = [
+            {key: value for key, value in item.items() if not str(key).startswith("_")}
+            for item in (outcome.prompt or {}).get("candidates", [])
+        ]
+        _conversation_set_pending(
+            sid,
+            kind="location_choice",
+            interrupt_id=outcome.interrupt_id,
+            thread_id=outcome.thread_id,
+            payload={
+                "type": "location_choices",
+                "question": f"{target.get('name') or '参与者'}具体从哪个地点出发？",
+                "token": outcome.interrupt_id,
+                "target_name": target.get("name") or "参与者",
+                "options": candidates,
+            },
+        )
     return outcome
 
 
@@ -8974,7 +9341,13 @@ def _apply_location_choice(sid: str, choice: dict) -> tuple[bool, str, str]:
         if outcome.status != "completed":
             return False, "找不到所选地点，请根据最新候选重新选择", ""
         result = dict((outcome.result or {}).get("commit_result") or {})
-        return True, str(result.get("answer") or "位置已确认"), str(result.get("canonical_label") or "")
+        answer = str(result.get("answer") or "位置已确认")
+        _conversation_record_operation(
+            sid, "set_participant_location", {"ok": True, "summary": answer}
+        )
+        _conversation_clear_pending(sid, str(choice.get("token") or ""))
+        _conversation_save_state(sid)
+        return True, answer, str(result.get("canonical_label") or "")
 
     s = session_get(sid) or {}
     task = dict(s.get("agent_task") or {})
@@ -9020,6 +9393,11 @@ def _apply_location_choice(sid: str, choice: dict) -> tuple[bool, str, str]:
         source="user_candidate_choice",
     )
     canonical_label = str(selected.get("label") or selected.get("address") or "所选位置").strip()
+    _conversation_record_operation(
+        sid, "set_participant_location", {"ok": True, "summary": task["answer"]}
+    )
+    _conversation_clear_pending(sid, submitted_token)
+    _conversation_save_state(sid)
     return True, task["answer"], canonical_label
 
 
@@ -9226,6 +9604,8 @@ def _main_graph_finalize(state: dict, content: str) -> str:
         "message",
     )
     _agent_task_finish(state["session_id"])
+    _conversation_clear_pending(state["session_id"])
+    _conversation_save_state(state["session_id"])
     _trace_step(
         state["trace_id"],
         "assistant",
@@ -9239,6 +9619,35 @@ def _main_graph_finalize(state: dict, content: str) -> str:
 
 def _main_graph_mark_waiting(state: dict, kind: str) -> None:
     is_location = kind == "location_choice"
+    sid = state["session_id"]
+    task = dict((session_get(sid) or {}).get("agent_task") or {})
+    if is_location:
+        target = dict(task.get("location_target") or {})
+        payload = {
+            "type": "location_choices",
+            "question": f"{target.get('name') or '参与者'}具体从哪个地点出发？",
+            "token": str(task.get("location_choice_token") or ""),
+            "target_name": target.get("name") or "参与者",
+            "options": task.get("location_candidates") or [],
+        }
+        interrupt_id = str(task.get("location_choice_token") or "")
+        thread_id = str(task.get("location_graph_thread_id") or "")
+    else:
+        payload = {
+            "type": "choices",
+            "purpose": str(task.get("choice_purpose") or ""),
+            "token": str(task.get("choice_token") or ""),
+            "question": str(task.get("waiting_for") or "请选择"),
+            "mode": str(task.get("choice_mode") or "single"),
+            "options": task.get("choices") or [],
+        }
+        interrupt_id = str(task.get("choice_token") or "")
+        thread_id = str(task.get("choice_graph_thread_id") or "")
+    if interrupt_id:
+        _conversation_set_pending(
+            sid, kind=kind, interrupt_id=interrupt_id, thread_id=thread_id, payload=payload
+        )
+    _conversation_save_state(sid)
     _trace_step(
         state["trace_id"],
         "waiting",
@@ -9250,6 +9659,7 @@ def _main_graph_mark_waiting(state: dict, kind: str) -> None:
 
 
 def _main_graph_mark_failed(state: dict, error: str) -> None:
+    _conversation_save_state(state["session_id"])
     _trace_step(
         state["trace_id"],
         "error",
@@ -9403,6 +9813,11 @@ def api_v2_apply_drafts():
 
     if updates:
         session_update(sid, updates)
+        for kind in applied:
+            _conversation_record_operation(
+                sid, kind, {"ok": True, "summary": f"用户已应用 {kind} 修改"}
+            )
+        _conversation_save_state(sid)
 
     snap = session_get(sid) or {}
     return jsonify({
@@ -9632,6 +10047,11 @@ def api_v2_assistant_stream():
 
         history = _sanitize_history_for_model(list(_assistant_history(sid)))
         history_summary = str((session_get(sid) or {}).get("chat_summary") or "").strip()
+        restored_operations = [
+            str(item)[:1000]
+            for item in ((session_get(sid) or {}).get("restored_operation_summaries") or [])[-24:]
+            if str(item).strip()
+        ]
         # 系统消息 + 历史 + 本次
         state = _assistant_get_state(sid)
         me_idx = _compute_me_index(state["participants"], state.get("my_did") or "")
@@ -9683,6 +10103,12 @@ def api_v2_assistant_stream():
                 "。这是被压缩的会话上下文，不是长期记忆；若与当前快照或本轮消息冲突，以更新的信息为准。"
                 if history_summary else
                 "[较早对话的滚动摘要] 无。"
+            )},
+            {"role": "system", "content": (
+                "[历史中已完成的业务操作] " + "；".join(restored_operations) +
+                "。这些是已落地结果，不要重复执行；当前会面快照与本轮原文优先。"
+                if restored_operations else
+                "[历史中已完成的业务操作] 无。"
             )},
             {"role": "system", "content": (
                 "运行时位置约束：设备已为‘我’提供有效经纬度。无论用户原句是否写出本人地点，"

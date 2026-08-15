@@ -187,6 +187,30 @@ CREATE TABLE IF NOT EXISTS conversation_events (
   FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_conversation_events_time ON conversation_events(conversation_id, seq);
+CREATE TABLE IF NOT EXISTS conversation_recovery (
+  conversation_id       TEXT PRIMARY KEY,
+  device_id             TEXT NOT NULL,
+  summary_text          TEXT,
+  state_json            TEXT,
+  pending_kind          TEXT,
+  pending_interrupt_id  TEXT,
+  pending_thread_id     TEXT,
+  pending_payload_json  TEXT,
+  updated_at            INTEGER NOT NULL,
+  FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_recovery_device ON conversation_recovery(device_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS conversation_operation_events (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL,
+  event_key       TEXT NOT NULL,
+  tool_name       TEXT NOT NULL,
+  summary         TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  UNIQUE(conversation_id, event_key),
+  FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_operation_events ON conversation_operation_events(conversation_id, id DESC);
 CREATE TABLE IF NOT EXISTS memory_jobs (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   job_type        TEXT NOT NULL,
