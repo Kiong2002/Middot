@@ -126,7 +126,7 @@ self_fact = module._memory_normalize_candidate_in_tx(conn, did, {
     "subject_type": "person", "subject_mention": "user", "canonical_subject": "user",
     "predicate": "education", "value": "南京", "canonical_value": "南京",
     "value_type": "city", "resolution_confidence": .96,
-    "confidence": .90, "persistence_score": .80,
+    "confidence": .90, "persistence_score": .90,
     "evidence_summary": "用户明确表示在南京上学。", "status": "candidate",
 })
 assert self_fact["kind"] == "user" and self_fact["entity_key"] == "我", self_fact

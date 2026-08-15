@@ -39,6 +39,7 @@ from amap_client import (
     AMAP_KEY,
     AMAP_JS_KEY,
     amap_geocode,
+    amap_input_tips,
     amap_get_best_route,
     amap_search_nearby,
     haversine_distance,
@@ -342,6 +343,58 @@ def init_middot_db():
         );
         CREATE INDEX IF NOT EXISTS idx_conversation_events_time
           ON conversation_events(conversation_id, seq);
+        CREATE TABLE IF NOT EXISTS agent_traces (
+          id              TEXT PRIMARY KEY,
+          conversation_id TEXT,
+          device_id       TEXT NOT NULL,
+          session_id      TEXT,
+          user_message    TEXT NOT NULL,
+          status          TEXT NOT NULL DEFAULT 'running',
+          tool_count      INTEGER NOT NULL DEFAULT 0,
+          started_at      INTEGER NOT NULL,
+          finished_at     INTEGER,
+          duration_ms     INTEGER,
+          error           TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_traces_started
+          ON agent_traces(started_at DESC);
+        CREATE TABLE IF NOT EXISTS agent_trace_steps (
+          trace_id         TEXT NOT NULL,
+          seq              INTEGER NOT NULL,
+          step_type        TEXT NOT NULL,
+          tool_name        TEXT,
+          title            TEXT NOT NULL,
+          summary          TEXT,
+          payload_json     TEXT,
+          duration_ms      INTEGER,
+          created_at_ms    INTEGER NOT NULL,
+          PRIMARY KEY(trace_id, seq),
+          FOREIGN KEY(trace_id) REFERENCES agent_traces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_trace_steps
+          ON agent_trace_steps(trace_id, seq);
+        CREATE TABLE IF NOT EXISTS place_alias_evidence (
+          id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id          TEXT NOT NULL,
+          city               TEXT NOT NULL,
+          alias              TEXT NOT NULL,
+          alias_norm         TEXT NOT NULL,
+          poi_id             TEXT NOT NULL,
+          canonical_name     TEXT NOT NULL,
+          address            TEXT,
+          lng                REAL NOT NULL,
+          lat                REAL NOT NULL,
+          confirmation_count INTEGER NOT NULL DEFAULT 1,
+          status             TEXT NOT NULL DEFAULT 'confirmed',
+          source             TEXT NOT NULL DEFAULT 'user_location_confirmation',
+          created_at         INTEGER NOT NULL,
+          updated_at         INTEGER NOT NULL,
+          UNIQUE(device_id,city,alias_norm,poi_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_place_alias_personal
+          ON place_alias_evidence(device_id,city,alias_norm,status,updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_place_alias_global
+          ON place_alias_evidence(city,alias_norm,poi_id,status);
         CREATE TABLE IF NOT EXISTS memory_jobs (
           id              INTEGER PRIMARY KEY AUTOINCREMENT,
           job_type        TEXT NOT NULL,
@@ -519,10 +572,16 @@ def init_middot_db():
 
         # 记忆置信度状态机采用追加列迁移，兼容已经上线的候选与 Wiki 数据。
         candidate_cols = {r["name"] for r in conn.execute("PRAGMA table_info(memory_candidates)").fetchall()}
+        semantic_seed_column = ("semantic_persistence_score"
+                                if "semantic_persistence_score" in candidate_cols else "persistence_score")
         for name, definition in (
             ("persistence_score", "REAL NOT NULL DEFAULT 0.5"),
+            ("semantic_persistence_score", "REAL NOT NULL DEFAULT 0.5"),
+            ("temporal_coverage_score", "REAL NOT NULL DEFAULT 0.25"),
             ("evidence_count", "INTEGER NOT NULL DEFAULT 1"),
             ("independent_count", "INTEGER NOT NULL DEFAULT 1"),
+            ("distinct_day_count", "INTEGER NOT NULL DEFAULT 1"),
+            ("evidence_span_hours", "REAL NOT NULL DEFAULT 0"),
             ("decision_reason", "TEXT"),
             ("subject_entity_id", "TEXT"),
             ("value_entity_id", "TEXT"),
@@ -531,7 +590,44 @@ def init_middot_db():
             ("resolution_status", "TEXT NOT NULL DEFAULT 'unresolved'"),
         ):
             if name not in candidate_cols:
-                conn.execute(f"ALTER TABLE memory_candidates ADD COLUMN {name} {definition}")
+                try:
+                    conn.execute(f"ALTER TABLE memory_candidates ADD COLUMN {name} {definition}")
+                except sqlite3.OperationalError as exc:
+                    # Web 与 memory worker 可能同时冷启动迁移；另一进程已添加
+                    # 同名列时视为成功，其余数据库错误仍继续抛出。
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+        # 对既有候选按证据时间回填。自然日按产品时区（UTC+8）划分；长期分数
+        # 由语义稳定性和跨日覆盖共同构成，同日重复不能伪造成长期习惯。
+        conn.execute(f"""
+            UPDATE memory_candidates SET
+              semantic_persistence_score=COALESCE((
+                SELECT AVG(e.persistence_score) FROM memory_candidate_evidence e
+                WHERE e.candidate_id=memory_candidates.id
+              ), {semantic_seed_column}),
+              distinct_day_count=MAX(1,COALESCE((
+                SELECT COUNT(DISTINCT CAST((e.created_at+28800)/86400 AS INTEGER))
+                FROM memory_candidate_evidence e WHERE e.candidate_id=memory_candidates.id
+              ),1)),
+              evidence_span_hours=MAX(0,COALESCE((
+                SELECT (MAX(e.created_at)-MIN(e.created_at))/3600.0
+                FROM memory_candidate_evidence e WHERE e.candidate_id=memory_candidates.id
+              ),0))
+        """)
+        conn.execute("""
+            UPDATE memory_candidates SET temporal_coverage_score=CASE
+              WHEN distinct_day_count>=5 AND evidence_span_hours>=720 THEN 1.0
+              WHEN distinct_day_count>=3 AND evidence_span_hours>=168 THEN 0.85
+              WHEN distinct_day_count>=3 AND evidence_span_hours>=48 THEN 0.72
+              WHEN distinct_day_count>=2 AND evidence_span_hours>=36 THEN 0.55
+              WHEN distinct_day_count>=2 AND evidence_span_hours>=20 THEN 0.45
+              ELSE 0.25 END
+        """)
+        conn.execute("""
+            UPDATE memory_candidates SET persistence_score=MIN(0.99,
+              semantic_persistence_score +
+              (1.0-semantic_persistence_score)*temporal_coverage_score*0.7)
+        """)
         fact_cols = {r["name"] for r in conn.execute("PRAGMA table_info(memory_wiki_facts)").fetchall()}
         for name, definition in (
             ("authority", "REAL NOT NULL DEFAULT 0.7"),
@@ -1879,6 +1975,79 @@ def _conversation_append_event(
         conn.close()
 
 
+_TRACE_SECRET_KEYS = {"password", "token", "secret", "api_key", "authorization", "cookie"}
+
+
+def _trace_safe(value, depth: int = 0):
+    """Keep traces useful while removing credentials and bounding large map payloads."""
+    if depth > 5:
+        return "[已折叠]"
+    if isinstance(value, dict):
+        out = {}
+        for key, item in list(value.items())[:200]:
+            lowered = str(key).lower()
+            out[str(key)] = "[已脱敏]" if any(x in lowered for x in _TRACE_SECRET_KEYS) else _trace_safe(item, depth + 1)
+        return out
+    if isinstance(value, list):
+        return [_trace_safe(item, depth + 1) for item in value[:100]]
+    if isinstance(value, str):
+        return value[:20000]
+    return value
+
+
+def _trace_start(conversation_id: str, device_id: str, session_id: str, message: str) -> str:
+    trace_id = uuid.uuid4().hex
+    now_ms = int(time.time() * 1000)
+    conn = _db_connect()
+    try:
+        conn.execute(
+            "INSERT INTO agent_traces(id,conversation_id,device_id,session_id,user_message,status,started_at) "
+            "VALUES(?,?,?,?,?,'running',?)",
+            (trace_id, conversation_id, device_id, session_id, str(message or "")[:4000], now_ms),
+        )
+        conn.execute(
+            "INSERT INTO agent_trace_steps(trace_id,seq,step_type,title,summary,payload_json,created_at_ms) "
+            "VALUES(?,1,'user','用户请求',?,?,?)",
+            (trace_id, str(message or "")[:500], json.dumps({"message": str(message or "")[:4000]}, ensure_ascii=False), now_ms),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return trace_id
+
+
+def _trace_step(trace_id: str, step_type: str, title: str, *, tool_name: str | None = None,
+                summary: str = "", payload=None, duration_ms: int | None = None) -> None:
+    conn = _db_connect()
+    try:
+        row = conn.execute("SELECT COALESCE(MAX(seq),0)+1 AS seq FROM agent_trace_steps WHERE trace_id=?", (trace_id,)).fetchone()
+        conn.execute(
+            "INSERT INTO agent_trace_steps(trace_id,seq,step_type,tool_name,title,summary,payload_json,duration_ms,created_at_ms) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (trace_id, int(row["seq"]), step_type, tool_name, title, str(summary or "")[:1000],
+             json.dumps(_trace_safe(payload), ensure_ascii=False)[:200000] if payload is not None else None,
+             duration_ms, int(time.time() * 1000)),
+        )
+        if step_type == "tool_result":
+            conn.execute("UPDATE agent_traces SET tool_count=tool_count+1 WHERE id=?", (trace_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _trace_finish(trace_id: str, status: str, *, error: str = "") -> None:
+    now_ms = int(time.time() * 1000)
+    conn = _db_connect()
+    try:
+        conn.execute(
+            "UPDATE agent_traces SET status=?,finished_at=?,duration_ms=?-started_at,error=? WHERE id=?",
+            (status, now_ms, now_ms, str(error or "")[:2000] or None, trace_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _conversation_purge(conn: sqlite3.Connection, conversation_id: str) -> None:
     # 已形成的结构化记忆可以保留，但删除对话后不再保留可回放的原始聊天引用。
     conn.execute(
@@ -2037,6 +2206,44 @@ def api_admin_memory_overview():
         "oldest_wait_seconds": max(0, now - int(oldest)) if oldest and oldest <= now else 0,
         "database_bytes": os.path.getsize(MIDDOT_DB_PATH) if os.path.exists(MIDDOT_DB_PATH) else 0,
     })
+
+
+@app.route("/api/admin/agent-traces")
+@_admin_required
+def api_admin_agent_traces():
+    try:
+        limit = min(200, max(1, int(request.args.get("limit", "80"))))
+    except ValueError:
+        limit = 80
+    rows = _db().execute(
+        "SELECT id,substr(device_id,1,8) AS device,substr(session_id,1,8) AS session,user_message,"
+        "status,tool_count,started_at,finished_at,duration_ms,error "
+        "FROM agent_traces ORDER BY started_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return jsonify({"items": [dict(row) for row in rows]})
+
+
+@app.route("/api/admin/agent-traces/<trace_id>")
+@_admin_required
+def api_admin_agent_trace_detail(trace_id: str):
+    conn = _db()
+    trace = conn.execute(
+        "SELECT id,conversation_id,substr(device_id,1,8) AS device,substr(session_id,1,8) AS session,"
+        "user_message,status,tool_count,started_at,finished_at,duration_ms,error "
+        "FROM agent_traces WHERE id=?", (trace_id,)
+    ).fetchone()
+    if not trace:
+        return jsonify({"error": "调用记录不存在"}), 404
+    steps = [dict(row) for row in conn.execute(
+        "SELECT seq,step_type,tool_name,title,summary,payload_json,duration_ms,created_at_ms "
+        "FROM agent_trace_steps WHERE trace_id=? ORDER BY seq", (trace_id,)
+    ).fetchall()]
+    for step in steps:
+        try:
+            step["payload"] = json.loads(step.pop("payload_json") or "null")
+        except json.JSONDecodeError:
+            step["payload"] = None
+    return jsonify({"trace": dict(trace), "steps": steps})
 
 
 @app.route("/api/admin/memory/jobs")
@@ -3386,38 +3593,11 @@ def api_geocode_suggest():
     if cached and (now - cached[0]) < _GEOCODE_SUGGEST_TTL:
         return jsonify({"tips": cached[1]})
 
-    url = "https://restapi.amap.com/v3/assistant/inputtips"
-    params = {
-        "key":      AMAP_KEY,
-        "keywords": keyword,
-        "datatype": "all",
-        "output":   "json",
-    }
-    try:
-        resp   = requests.get(url, params=params, timeout=8)
-        result = resp.json()
-    except Exception as e:
-        return jsonify({"tips": [], "error": str(e)})
-
-    tips = []
-    if result.get("status") == "1":
-        for tip in result.get("tips", []):
-            location = tip.get("location", "")
-            if not location or location == "[]":
-                continue
-            try:
-                lng_s, lat_s = location.split(",")
-                tips.append({
-                    "name":     tip.get("name", ""),
-                    "district": tip.get("district", ""),
-                    "address":  tip.get("address", "") if isinstance(tip.get("address"), str) else "",
-                    "lng":      float(lng_s),
-                    "lat":      float(lat_s),
-                })
-            except (ValueError, TypeError):
-                continue
-
-    tips = tips[:6]
+    result = amap_input_tips(keyword, city=data.get("city") or None, limit=6)
+    tips = result.get("tips") or []
+    if not result.get("success"):
+        return jsonify({"tips": [], "error": result.get("error"),
+                        "provider": result.get("provider"), "infocode": result.get("infocode")})
     _GEOCODE_SUGGEST_CACHE[key] = (now, tips)
     # 简易 LRU：超上限踢最旧
     if len(_GEOCODE_SUGGEST_CACHE) > 500:
@@ -3788,6 +3968,19 @@ def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
     keyword = (args.get("keyword") or "").strip()
     if not keyword:
         return {"ok": False, "error": "缺少 keyword"}, None
+    participants = st.get("participants") or []
+    unresolved = [
+        p.get("name") or f"参与者{i + 1}"
+        for i, p in enumerate(participants)
+        if p.get("lng") is None or p.get("lat") is None
+    ]
+    if unresolved:
+        return {
+            "ok": False,
+            "error": "以下参与者尚未确认位置，不能生成正式公平推荐：" + "、".join(unresolved),
+            "blocked_by": "unresolved_participants",
+            "unresolved_participants": unresolved,
+        }, None
     center_lng = args.get("center_lng")
     center_lat = args.get("center_lat")
     if center_lng is None or center_lat is None:
@@ -3868,6 +4061,11 @@ _ZJU_CAMPUS_CHOICES = (
     "浙江大学西溪校区", "浙江大学华家池校区",
 )
 
+_PERSONAL_PLACE_REFERENCES = {
+    "家", "我家", "家里", "公司", "我公司", "单位", "学校", "我学校",
+    "宿舍", "办公室", "工作地点", "住处", "老地方",
+}
+
 
 def _extract_city(name: str) -> str | None:
     """从一段地址或自然语言中提取城市名，找不到返回 None。"""
@@ -3923,6 +4121,185 @@ def _validated_place_geocode(place_name: str, target_city: str) -> dict:
             continue
         return geo
     return {"success": False, "error": last_error}
+
+
+def _place_norm(value: str) -> str:
+    return re.sub(r"[\s·・，。,.、()（）\-]+", "", str(value or "")).lower()
+
+
+def _place_alias_mapping(device_id: str, alias: str, city: str) -> dict | None:
+    """Personal confirmation first; global mapping requires independent agreement."""
+    norm = _place_norm(alias)
+    conn = _db_connect()
+    try:
+        personal = conn.execute(
+            "SELECT poi_id,canonical_name,address,lng,lat,confirmation_count,'personal' AS scope "
+            "FROM place_alias_evidence WHERE device_id=? AND city=? AND alias_norm=? AND status='confirmed' "
+            "ORDER BY confirmation_count DESC,updated_at DESC LIMIT 1",
+            (device_id, city, norm),
+        ).fetchone()
+        if personal:
+            return dict(personal)
+        rows = conn.execute(
+            "SELECT poi_id,canonical_name,address,lng,lat,COUNT(DISTINCT device_id) AS users,"
+            "SUM(confirmation_count) AS confirmations FROM place_alias_evidence "
+            "WHERE city=? AND alias_norm=? AND status='confirmed' GROUP BY poi_id "
+            "ORDER BY users DESC,confirmations DESC",
+            (city, norm),
+        ).fetchall()
+        if not rows:
+            return None
+        total_users = sum(int(row["users"] or 0) for row in rows)
+        best = rows[0]
+        # Do not globalize a single person's habit. Three independent users and
+        # at least 80% agreement are required before global reuse.
+        if int(best["users"] or 0) >= 3 and int(best["users"] or 0) / max(1, total_users) >= 0.8:
+            return {**dict(best), "scope": "global",
+                    "agreement": round(int(best["users"] or 0) / max(1, total_users), 4)}
+        return None
+    finally:
+        conn.close()
+
+
+def _record_place_alias_confirmation(device_id: str, alias: str, city: str, candidate: dict,
+                                     source: str = "user_location_confirmation") -> None:
+    if not device_id or not alias or _place_norm(alias) in {_place_norm(x) for x in _PERSONAL_PLACE_REFERENCES}:
+        return
+    poi_id = str(candidate.get("id") or "").strip()
+    if not poi_id or candidate.get("lng") is None or candidate.get("lat") is None:
+        return
+    now = _now(); norm = _place_norm(alias)
+    conn = _db_connect()
+    try:
+        conn.execute(
+            "INSERT INTO place_alias_evidence(device_id,city,alias,alias_norm,poi_id,canonical_name,address,lng,lat,"
+            "confirmation_count,status,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,'confirmed',?,?,?) "
+            "ON CONFLICT(device_id,city,alias_norm,poi_id) DO UPDATE SET "
+            "confirmation_count=confirmation_count+1,canonical_name=excluded.canonical_name,address=excluded.address,"
+            "lng=excluded.lng,lat=excluded.lat,status='confirmed',source=excluded.source,updated_at=excluded.updated_at",
+            (device_id, city, alias, norm, poi_id, str(candidate.get("label") or "")[:160],
+             str(candidate.get("address") or "")[:300], float(candidate["lng"]), float(candidate["lat"]),
+             source, now, now),
+        )
+        # A new confirmation for the same alias supersedes the user's older target.
+        conn.execute(
+            "UPDATE place_alias_evidence SET status='superseded',updated_at=? "
+            "WHERE device_id=? AND city=? AND alias_norm=? AND poi_id<>? AND status='confirmed'",
+            (now, device_id, city, norm, poi_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _ai_choose_place_candidate(raw: str, city: str, candidates: list[dict],
+                               *, context: str = "", global_hint: dict | None = None) -> dict:
+    """The model may select only from provider candidates; it can never invent coordinates."""
+    if len(candidates) == 1:
+        return {"index": 0, "confidence": 1.0, "reason": "唯一有效候选"}
+    compact = [{"index": i, "name": c.get("label"), "address": c.get("address")}
+               for i, c in enumerate(candidates)]
+    try:
+        completion = llm_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": (
+                    "你是地图地点候选判断器。只能从给定候选中选择，不得创造地点。"
+                    "判断用户地点简称最可能对应哪一项。global_hint只是其他用户的常见解释，不是答案；"
+                    "必须结合本轮原话判断，不能因为存在global_hint就直接选择。"
+                    "若简称可能合理指向多个候选，confidence必须低于0.90。"
+                    "只输出JSON：{\"index\":整数或-1,\"confidence\":0到1,\"reason\":\"简短理由\"}。"
+                )},
+                {"role": "user", "content": json.dumps({"query": raw, "city": city,
+                    "context": str(context or "")[:500], "global_hint": global_hint,
+                    "candidates": compact}, ensure_ascii=False)},
+            ], response_format={"type": "json_object"}, temperature=0, stream=False,
+        )
+        parsed = json.loads(completion.choices[0].message.content or "{}")
+        idx = int(parsed.get("index", -1)); confidence = float(parsed.get("confidence", 0))
+        if not 0 <= idx < len(candidates): idx = -1
+        return {"index": idx, "confidence": max(0.0, min(1.0, confidence)),
+                "reason": str(parsed.get("reason") or "")[:240]}
+    except Exception as exc:
+        app.logger.warning("[place-candidate] selector failed: %s", exc)
+        return {"index": -1, "confidence": 0.0, "reason": "候选判断不可用"}
+
+
+def _resolve_place_candidates(place_name: str, target_city: str, device_id: str = "",
+                              context: str = "") -> dict:
+    """Candidate-first resolution shared with human address search semantics."""
+    raw = str(place_name or "").strip()
+    city = _extract_city(target_city or "") or str(target_city or "").removesuffix("市")
+    if _place_norm(raw) in {_place_norm(x) for x in _PERSONAL_PLACE_REFERENCES}:
+        return {"success": False, "status": "personal_reference_unresolved",
+                "error": f"“{raw}”是个人关系地点，但你的会面档案中还没有对应位置；请告诉我具体地点",
+                "query": raw, "provider": "profile_only"}
+    mapping = _place_alias_mapping(device_id, raw, city) if device_id else None
+    tips_result = amap_input_tips(raw, city=city or None, limit=6)
+    candidates = []
+    for tip in tips_result.get("tips") or []:
+        candidates.append({
+            "id": tip.get("id") or uuid.uuid4().hex[:8],
+            "label": tip.get("name") or raw,
+            "address": " ".join(x for x in (tip.get("district"), tip.get("address")) if x).strip() or "地址未提供",
+            "lng": tip.get("lng"), "lat": tip.get("lat"),
+            "source": "amap_inputtips",
+        })
+    chosen = None; resolution_reason = ""; confidence = 0.0
+    if mapping and mapping.get("scope") == "personal":
+        chosen = next((c for c in candidates if str(c.get("id")) == str(mapping.get("poi_id"))), None)
+        if not chosen:
+            chosen = {"id": mapping["poi_id"], "label": mapping["canonical_name"],
+                      "address": mapping.get("address") or "", "lng": mapping["lng"], "lat": mapping["lat"],
+                      "source": f"{mapping['scope']}_alias_mapping"}
+        resolution_reason = f"命中{mapping['scope']}地点映射"; confidence = 1.0
+    else:
+        global_hint = None
+        if mapping and mapping.get("scope") == "global":
+            hinted = next((c for c in candidates if str(c.get("id")) == str(mapping.get("poi_id"))), None)
+            if hinted:
+                global_hint = {
+                    "candidate_index": candidates.index(hinted), "poi_id": mapping.get("poi_id"),
+                    "name": mapping.get("canonical_name"), "independent_users": mapping.get("users"),
+                    "agreement": mapping.get("agreement"),
+                }
+        selection = _ai_choose_place_candidate(
+            raw, city, candidates, context=context, global_hint=global_hint
+        ) if candidates else {"index": -1, "confidence": 0}
+        confidence = float(selection.get("confidence") or 0)
+        resolution_reason = selection.get("reason") or ""
+        if selection.get("index", -1) >= 0 and confidence >= 0.90:
+            chosen = candidates[int(selection["index"])]
+    if chosen:
+        return {"success": True, "status": "resolved", "candidate": chosen,
+                "query": raw, "provider": "amap_inputtips", "candidate_count": len(candidates),
+                "confidence": confidence, "reason": resolution_reason,
+                "mapping_scope": "personal" if mapping and mapping.get("scope") == "personal" else None,
+                "global_hint_used": bool(global_hint) if 'global_hint' in locals() else False}
+    if candidates:
+        return {"success": True, "status": "ambiguous", "candidates": candidates,
+                "query": raw, "provider": "amap_inputtips", "candidate_count": len(candidates),
+                "confidence": confidence, "reason": resolution_reason,
+                "global_hint_used": bool(global_hint) if 'global_hint' in locals() else False}
+    # InputTips occasionally returns no coordinate-bearing tips. Keep geocode as
+    # a fallback, retrying the provider's transient engine error once.
+    geo = None
+    for attempt in range(2):
+        geo = _validated_place_geocode(raw, city)
+        if geo.get("success") or geo.get("error") != "ENGINE_RESPONSE_DATA_ERROR":
+            break
+        time.sleep(0.25 * (attempt + 1))
+    if geo and geo.get("success"):
+        return {"success": True, "status": "resolved", "candidate": {
+            "id": uuid.uuid4().hex[:8], "label": raw,
+            "address": geo.get("formatted_address") or raw,
+            "lng": geo["lng"], "lat": geo["lat"], "source": "amap_geocode",
+        }, "query": raw,
+            "provider": "amap_geocode", "candidate_count": 1}
+    return {"success": False, "status": "provider_error" if (tips_result.get("error") or (geo or {}).get("error")) else "not_found",
+            "error": (geo or {}).get("error") or tips_result.get("error") or f"没有找到“{raw}”",
+            "query": raw,
+            "provider": tips_result.get("provider") or "amap", "infocode": (geo or {}).get("infocode") or tips_result.get("infocode") or ""}
 
 
 def _infer_assistant_city(message: str, bootstrap: dict, current: dict | None = None) -> str:
@@ -3992,25 +4369,65 @@ def _parse_meeting_utterance(message: str, participants: list[dict], me_index: i
     """整句先解析一次，避免逐工具理解把人物、地点和噪声粘连。"""
     system = """你是会面规划的整句语义解析器。只抽取用户明确表达的事实，输出JSON：
 {"intent":"meeting|location_update|other","activity":"","city_context":"","locations":[{"owner":"我或人物名","participant_index":1,"expression":"","kind":"area|address|named_place","area_hint":"","raw_entity":"","canonical_candidates":[],"needs_disambiguation":false}],"ignored_text":[]}。
+expression 是直接交给地图候选搜索的纯地点实体，不是原句片段。必须由你完成语义提取：去掉人物、位置关系、出发/到达等动作和句末语气，但保留真实地名中有意义的组成部分，例如“清华大学东门”的“东门”不能删除。后端不会替你裁剪中文。
 规则：先绑定人物再绑定地点；同一人物最多一个位置；范围宽泛不等于歧义，杭州市/西湖/文三路可直接接受；俗名、简称、多门店品牌才需消歧并给正式名称候选；网络梗或无关尾巴放 ignored_text，不得拼进位置。输入若同时含选择回答与“用户原文（若与选择冲突，以此为准）”，冲突事实必须采用用户原文。
 city_context 表示这些地点最可信的城市。可根据中国常识解析明确地标或行政区，例如“西湖旁边”是杭州、“外滩”是上海；确实无法判断才留空。不得沿用调用方默认城市。
+地点实体示例：“我从清华出发”→expression=清华；“Lisa 在国贸”→expression=国贸；“我住在望京SOHO附近”→expression=望京SOHO；“我从清华大学东门出发”→expression=清华大学东门。
 例：“我要和阿杰吃烧烤。我在西湖边的v我50，阿杰在浙大紫金港”→我=西湖边(false)，阿杰=浙大紫金港(false)，activity=烧烤，ignored_text=[v我50]。
 “我在西湖旁边的麦麦”→city_context=杭州，我，area_hint=西湖，raw_entity=麦麦，候选=[麦当劳,McDonald's]，true。
-“我在文三路这边的星爸爸”→city_context=杭州，我，area_hint=文三路，raw_entity=星爸爸，候选=[星巴克,Starbucks]，true。只输出JSON。"""
+“我在文三路这边的星爸爸”→city_context=杭州，我，area_hint=文三路，raw_entity=星爸爸，候选=[星巴克,Starbucks]，true。
+输出前逐项自检 expression 能否原样作为地图检索词。不要输出解释，只输出JSON。"""
+    request_payload = {
+        "message": message,
+        "me_index": me_index,
+        "participants": [{"index": i + 1, "name": p.get("name")} for i, p in enumerate(participants)],
+    }
+    trace_meta = {"parser_request": {"model":"deepseek-chat", "system":system,
+                                      "input":request_payload, "temperature":0}}
     try:
+        started = time.time()
         completion = llm_client.chat.completions.create(
             model="deepseek-chat",
-            messages=[{"role":"system","content":system},{"role":"user","content":json.dumps({
-                "message": message,
-                "me_index": me_index,
-                "participants": [{"index":i+1,"name":p.get("name")} for i,p in enumerate(participants)],
-            }, ensure_ascii=False)}],
+            messages=[{"role":"system","content":system},
+                      {"role":"user","content":json.dumps(request_payload, ensure_ascii=False)}],
             response_format={"type":"json_object"}, temperature=0, stream=False,
         )
-        parsed = json.loads(completion.choices[0].message.content or "{}")
+        raw_response = completion.choices[0].message.content or "{}"
+        trace_meta.update({"parser_response": raw_response,
+                           "parser_duration_ms": int((time.time() - started) * 1000)})
+        parsed = json.loads(raw_response)
+
+        # 地点边界的复核仍由 AI 完成。代码仅验证 JSON 结构，不使用中文词表或
+        # 正则去猜“从、在、出发、附近”等词在当前句子里的语义。
+        if isinstance(parsed.get("locations"), list) and parsed["locations"]:
+            verify_system = """你是地点实体复核器。根据用户原文检查解析JSON，修正后输出完整JSON。
+每个 locations[].expression 必须是可原样提交给地图搜索的纯地点实体，不能包含人物、位置关系、出发/到达动作或语气；但必须保留真实地名的组成部分，例如“清华大学东门”不能变成“清华大学”。
+不得添加用户没说过的地点，不得把简称擅自改成某个候选POI。例：从清华出发→清华；Lisa在国贸→国贸；住在望京SOHO附近→望京SOHO。只输出JSON。"""
+            verify_payload = {"message": message, "parsed": parsed}
+            trace_meta["verifier_request"] = {"model":"deepseek-chat", "system":verify_system,
+                                               "input":verify_payload, "temperature":0}
+            try:
+                started = time.time()
+                checked = llm_client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[{"role":"system","content":verify_system},
+                              {"role":"user","content":json.dumps(verify_payload, ensure_ascii=False)}],
+                    response_format={"type":"json_object"}, temperature=0, stream=False,
+                )
+                verified_raw = checked.choices[0].message.content or "{}"
+                trace_meta.update({"verifier_response": verified_raw,
+                                   "verifier_duration_ms": int((time.time() - started) * 1000)})
+                verified = json.loads(verified_raw)
+                if isinstance(verified, dict) and isinstance(verified.get("locations"), list):
+                    parsed = verified
+            except Exception as verify_exc:
+                app.logger.warning("[utterance-parse] verifier failed, keeping initial parse: %s", verify_exc)
+                trace_meta["verifier_error"] = f"{type(verify_exc).__name__}: {verify_exc}"
     except Exception as exc:
         app.logger.warning("[utterance-parse] failed: %s", exc)
-        return {"intent":"other","activity":"","locations":[],"ignored_text":[]}
+        trace_meta["error"] = f"{type(exc).__name__}: {exc}"
+        return {"intent":"other","activity":"","locations":[],"ignored_text":[],
+                "_trace_meta":trace_meta}
     out = []; seen = set()
     for loc in parsed.get("locations") or []:
         try: idx = int(loc.get("participant_index") or 0)
@@ -4034,7 +4451,8 @@ city_context 表示这些地点最可信的城市。可根据中国常识解析�
     parsed_city = _extract_city(str(parsed.get("city_context") or ""))
     return {"intent":parsed.get("intent") or "other","activity":str(parsed.get("activity") or "").strip(),
             "city_context":parsed_city or _landmark_city(message) or "",
-            "locations":out,"ignored_text":[str(x) for x in (parsed.get("ignored_text") or [])][:8]}
+            "locations":out,"ignored_text":[str(x) for x in (parsed.get("ignored_text") or [])][:8],
+            "_trace_meta":trace_meta}
 
 
 def _zju_campus_choice(sid: str, participant_name: str) -> tuple[dict, dict]:
@@ -4156,30 +4574,52 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
             original_message = str(session_data.get("current_user_message") or "")
             semantics = parsed_location or _analyze_location_semantics(place_name, original_message)
             if parsed_location and parsed_location.get("expression"):
-                # 整句解析是本轮人物位置的事实源，覆盖主 Agent 可能粘入的噪声文本。
+                # 整句解析器负责语义提取；工具层只采用其结构化地点实体，不再
+                # 用中文硬规则二次裁剪。
                 place_name = str(parsed_location["expression"]).strip()
             if _is_bare_zju(place_name):
                 return _zju_campus_choice(sid, new_nickname or target.get("name", "这位参与者"))
-            if semantics.get("needs_disambiguation"):
-                clarify_args = {
-                    "index": parts.index(target) + 1,
-                    "keyword": semantics.get("raw_entity") or semantics.get("expression") or place_name,
-                    "near_hint": semantics.get("area_hint") or explicit_city or session_city,
-                    "aliases": semantics.get("canonical_candidates") or [],
-                    "radius_m": 8000,
-                }
-                result, patch = _tool_clarify_participant_location(sid, clarify_args)
-                if result.get("ok"):
-                    result["summary"] = f"“{place_name}”有多个可能地点，等待用户确认"
-                return result, patch
             detected = _extract_city(place_name)
             parsed_city = _extract_city(str(turn_parse.get("city_context") or ""))
             target_city = detected or parsed_city or _landmark_city(place_name) or explicit_city or session_city
-            geo = _validated_place_geocode(place_name, target_city)
-            if not geo.get("success"):
-                return {"ok": False, "error": geo.get("error", f"『{place_name}』无法定位")}, None
-            lng = geo["lng"]; lat = geo["lat"]
-            address = geo.get("formatted_address") or place_name
+            resolved = _resolve_place_candidates(
+                place_name, target_city, _memory_device_id(sid), context=original_message
+            )
+            if not resolved.get("success"):
+                return {"ok": False, "error": resolved.get("error", f"『{place_name}』无法定位"),
+                        "location_resolution": resolved}, None
+            if resolved.get("status") == "ambiguous":
+                candidates = resolved.get("candidates") or []
+                token = uuid.uuid4().hex[:12]
+                task = dict((session_get(sid) or {}).get("agent_task") or {})
+                display_name = new_nickname or target.get("name", "参与者")
+                task.update({
+                    "status": "waiting_location_choice",
+                    "waiting_for": f"确认{display_name}的位置",
+                    "location_choice_token": token,
+                    "location_target": {"index": parts.index(target) + 1, "id": target.get("id"),
+                                        "name": display_name, "new_nickname": new_nickname},
+                    "location_candidates": candidates,
+                    "location_city": target_city,
+                    "location_alias": place_name,
+                    "updated_at": int(time.time()),
+                })
+                session_update(sid, {"agent_task": task})
+                return {
+                    "ok": True, "summary": f"“{place_name}”有 {len(candidates)} 个可能地点，等待用户确认",
+                    "waiting_for_user": True, "location_resolution": {
+                        "query": resolved.get("query"),
+                        "provider": resolved.get("provider"), "candidate_count": len(candidates),
+                        "confidence": resolved.get("confidence"), "reason": resolved.get("reason"),
+                        "global_hint_used": resolved.get("global_hint_used", False),
+                    },
+                }, {
+                    "type": "location_choices", "question": f"{display_name}具体从哪个地点出发？",
+                    "token": token, "target_name": display_name, "options": candidates,
+                }
+            chosen = resolved["candidate"]
+            lng = chosen["lng"]; lat = chosen["lat"]
+            address = f"{chosen.get('label')} · {chosen.get('address')}".strip(" ·")
         else:
             address = place_name or f"{lat:.4f}, {lng:.4f}"
 
@@ -4198,6 +4638,12 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
     data: dict = {"participant_id": target.get("id")}
     if location_specified:
         data["lng"] = float(lng); data["lat"] = float(lat); data["address"] = address
+        if 'chosen' in locals() and chosen:
+            data["place_resolution"] = {
+                "alias": place_name, "city": target_city,
+                "id": chosen.get("id"), "label": chosen.get("label"),
+                "address": chosen.get("address"), "lng": chosen.get("lng"), "lat": chosen.get("lat"),
+            }
     if new_nickname:
         data["new_nickname"] = new_nickname
 
@@ -4207,7 +4653,13 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
     ) if new_nickname else f"提议把 {old_name} 的位置改为 {address}"
 
     return (
-        {"ok": True, "summary": summary},
+        {"ok": True, "summary": summary,
+         **({"location_resolution": {
+             "query": resolved.get("query"), "provider": resolved.get("provider"),
+             "candidate_count": resolved.get("candidate_count"), "confidence": resolved.get("confidence"),
+             "reason": resolved.get("reason"), "mapping_scope": resolved.get("mapping_scope"),
+             "global_hint_used": resolved.get("global_hint_used", False),
+         }} if location_specified and 'resolved' in locals() else {})},
         {
             "type": "draft", "kind": "set_participant_location", "label": label,
             "detail": detail,
@@ -5124,7 +5576,8 @@ def _candidate_rows(device_id: str) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT id,kind,entity_key,field_name,candidate_value,confidence,persistence_score,"
-            "evidence_count,independent_count,decision_reason,evidence_summary,status,"
+            "semantic_persistence_score,temporal_coverage_score,evidence_count,independent_count,"
+            "distinct_day_count,evidence_span_hours,decision_reason,evidence_summary,status,"
             "subject_entity_id,value_entity_id,value_type,resolution_confidence,resolution_status,"
             "source_conversation_id,source_from_seq,source_to_seq,created_at,updated_at "
             "FROM memory_candidates WHERE device_id=? "
@@ -5499,6 +5952,29 @@ def memory_audit_entity_duplicates(device_id: str) -> dict:
 MEMORY_AUTO_CONFIDENCE = 0.88
 MEMORY_AUTO_PERSISTENCE = 0.78
 MEMORY_AUTO_REPLACE_CONFIDENCE = 0.95
+MEMORY_MIN_TEMPORAL_SPAN_HOURS = 36
+
+
+def _memory_temporal_coverage(distinct_days: int, span_hours: float) -> float:
+    """时间覆盖单独计分；同日重复不会伪装成跨期稳定性。"""
+    if distinct_days >= 5 and span_hours >= 720:
+        return 1.0
+    if distinct_days >= 3 and span_hours >= 168:
+        return .85
+    if distinct_days >= 3 and span_hours >= 48:
+        return .72
+    if distinct_days >= 2 and span_hours >= 36:
+        return .55
+    if distinct_days >= 2 and span_hours >= 20:
+        return .45
+    return .25
+
+
+def _memory_long_term_score(semantic_score: float, temporal_score: float) -> float:
+    """长期措辞给基础分，跨日覆盖再补强；两者不再与事实可信度混算。"""
+    semantic = min(1.0, max(0.0, float(semantic_score)))
+    temporal = min(1.0, max(0.0, float(temporal_score)))
+    return min(.99, semantic + (1.0 - semantic) * temporal * .7)
 
 
 def _candidate_is_sensitive(kind: str, predicate: str) -> bool:
@@ -5507,6 +5983,27 @@ def _candidate_is_sensitive(kind: str, predicate: str) -> bool:
         (kind == "person" and predicate in ("usual_place", "workplace", "place_detail"))
         or predicate in ("place_detail", "workplace", "home_address", "realtime_location", "health")
     )
+
+
+def _memory_candidate_blockers(group: dict) -> list[str]:
+    """返回全部未达标项，供状态机和用户界面共同使用。"""
+    confidence=float(group.get("confidence") or 0)
+    persistence=float(group.get("persistence_score") or 0)
+    semantic=float(group.get("semantic_persistence_score") or .5)
+    days=int(group.get("distinct_day_count") or 1)
+    span=float(group.get("evidence_span_hours") or 0)
+    resolved=(group.get("resolution_status")=="resolved"
+              and float(group.get("resolution_confidence") or 0)>=.88)
+    firsthand=(group.get("kind")=="user" and confidence>=.90
+               and semantic>=.88 and resolved)
+    enough_time=days>=2 and span>=MEMORY_MIN_TEMPORAL_SPAN_HOURS
+    blockers=[]
+    if not resolved: blockers.append("实体或字段仍需消歧")
+    if bool(group.get("sensitive")): blockers.append("敏感事实需要本人确认")
+    if not (firsthand or enough_time): blockers.append("时间覆盖不足（需跨至少2个证据日且间隔36小时）")
+    if persistence<MEMORY_AUTO_PERSISTENCE: blockers.append("长期稳定性不足")
+    if confidence<MEMORY_AUTO_CONFIDENCE: blockers.append("事实可信度不足")
+    return blockers
 
 
 def _candidate_normalize_predicate(row: dict) -> str:
@@ -5564,7 +6061,7 @@ def _candidate_groups_from_rows(rows: list[dict]) -> list[dict]:
             text = _memory_clean_text(member.get("evidence_summary"), 100)
             if text and text not in evidence:
                 evidence.append(text)
-        out.append({
+        group_item = {
             "group_id": hashlib.sha256(f"{kind}|{entity}|{predicate}".encode()).hexdigest()[:16],
             "kind": kind, "kind_label": _CANDIDATE_KIND_LABELS.get(kind, "资料"),
             "entity_key": entity, "predicate": predicate,
@@ -5572,8 +6069,12 @@ def _candidate_groups_from_rows(rows: list[dict]) -> list[dict]:
             "value": value, "status": status,
             "confidence": max(float(x.get("confidence") or 0) for x in members),
             "persistence_score": max(float(x.get("persistence_score") or 0.5) for x in members),
+            "semantic_persistence_score": max(float(x.get("semantic_persistence_score") or 0.5) for x in members),
+            "temporal_coverage_score": max(float(x.get("temporal_coverage_score") or 0.25) for x in members),
             "evidence_count": sum(max(1, int(x.get("evidence_count") or 1)) for x in members),
             "independent_count": max(int(x.get("independent_count") or 1) for x in members),
+            "distinct_day_count": max(int(x.get("distinct_day_count") or 1) for x in members),
+            "evidence_span_hours": max(float(x.get("evidence_span_hours") or 0) for x in members),
             "subject_entity_id": next((x.get("subject_entity_id") for x in members if x.get("subject_entity_id")), None),
             "value_entity_id": next((x.get("value_entity_id") for x in members if x.get("value_entity_id")), None),
             "value_type": next((x.get("value_type") for x in members if x.get("value_type")), None),
@@ -5587,7 +6088,12 @@ def _candidate_groups_from_rows(rows: list[dict]) -> list[dict]:
                 for x in members
             }),
             "updated_at": max(int(x.get("updated_at") or 0) for x in members),
-        })
+        }
+        blockers=_memory_candidate_blockers(group_item)
+        group_item["decision_reason"]="；".join(
+            (["与当前正式记忆冲突"] if status=="conflict" else []) + blockers
+        ) or group_item.get("decision_reason")
+        out.append(group_item)
     out.sort(key=lambda x: x["updated_at"], reverse=True)
     return out
 
@@ -5806,6 +6312,9 @@ def _memory_clear_all(conn: sqlite3.Connection, device_id: str) -> int:
         conn.execute(f"SELECT COUNT(*) AS n FROM {table} WHERE device_id=?", (device_id,)).fetchone()["n"]
         for table in _MEMORY_KIND_TABLES.values()
     )
+    total += int(conn.execute(
+        "SELECT COUNT(*) AS n FROM place_alias_evidence WHERE device_id=?", (device_id,)
+    ).fetchone()["n"])
     # 隐私删除优先：来源与事实事件也一并物理清除。
     conn.execute("DELETE FROM memory_fact_events WHERE device_id=?", (device_id,))
     conn.execute("DELETE FROM memory_sources WHERE device_id=?", (device_id,))
@@ -5826,6 +6335,7 @@ def _memory_clear_all(conn: sqlite3.Connection, device_id: str) -> int:
         conn.execute(f"DELETE FROM memory_entity_aliases WHERE entity_id IN ({placeholders})", entity_ids)
     conn.execute("DELETE FROM memory_entity_merge_events WHERE device_id=?", (device_id,))
     conn.execute("DELETE FROM memory_entities WHERE device_id=?", (device_id,))
+    conn.execute("DELETE FROM place_alias_evidence WHERE device_id=?", (device_id,))
     for table in _MEMORY_KIND_TABLES.values():
         conn.execute(f"DELETE FROM {table} WHERE device_id=?", (device_id,))
     return int(total)
@@ -5865,6 +6375,23 @@ def _memory_validate_preference(category: str, key: str, value: str) -> str | No
     if category == "food" and (len(key) > 40 or len(value) > 40):
         return "饮食偏好请使用简短标签"
     return None
+
+
+_TRANSPORT_MEMORY_ALIASES = {
+    "公交": ("公交", "地铁", "公共交通", "轨道交通"),
+    "骑行": ("骑行", "骑车", "自行车"),
+    "驾车": ("驾车", "开车", "自驾"),
+    "步行": ("步行", "走路"),
+    "最快": ("最快", "不限方式", "自动选择"),
+}
+
+
+def _normalize_transport_memory(value: str) -> tuple[str, tuple[str, ...]]:
+    compact = _memory_clean_text(value, 40)
+    for canonical, aliases in _TRANSPORT_MEMORY_ALIASES.items():
+        if compact == canonical or compact in aliases:
+            return canonical, aliases
+    return compact, (compact,)
 
 
 def _apply_feedback_ranking(device_id: str, pois: list[dict]) -> list[dict]:
@@ -6039,10 +6566,11 @@ def _memory_candidate_add_evidence(
     confidence=float(item.get("confidence",.5)); persistence_score=float(item.get("persistence_score",.5))
     conn.execute(
         "INSERT INTO memory_candidates(device_id,kind,entity_key,field_name,candidate_value,confidence,"
-        "persistence_score,evidence_count,independent_count,evidence_summary,source_conversation_id,"
+        "persistence_score,semantic_persistence_score,temporal_coverage_score,evidence_count,"
+        "independent_count,distinct_day_count,evidence_span_hours,evidence_summary,source_conversation_id,"
         "source_from_seq,source_to_seq,status,created_at,updated_at,subject_entity_id,value_entity_id,"
         "value_type,resolution_confidence,resolution_status,decision_reason) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(device_id,kind,entity_key,field_name,candidate_value) DO UPDATE SET "
         "evidence_summary=excluded.evidence_summary,source_conversation_id=excluded.source_conversation_id,"
         "source_from_seq=excluded.source_from_seq,source_to_seq=excluded.source_to_seq,"
@@ -6053,7 +6581,8 @@ def _memory_candidate_add_evidence(
         "status=CASE WHEN memory_candidates.status='dismissed' THEN memory_candidates.status ELSE excluded.status END,"
         "updated_at=excluded.updated_at",
         (device_id,item["kind"],item["entity_key"],item["field_name"],item["candidate_value"],
-         confidence,persistence_score,1,1,item["evidence_summary"],conversation_id,
+         confidence,_memory_long_term_score(persistence_score,.25),persistence_score,.25,1,1,1,0,
+         item["evidence_summary"],conversation_id,
          from_seq,target_seq,item["status"],now,now,item.get("subject_entity_id"),item.get("value_entity_id"),
          item.get("value_type"),float(item.get("resolution_confidence",.5)),
          item.get("resolution_status","unresolved"),item.get("decision_reason")),
@@ -6071,26 +6600,35 @@ def _memory_candidate_add_evidence(
          item["evidence_summary"],now),
     )
     evidence=[dict(x) for x in conn.execute(
-        "SELECT confidence,persistence_score,conversation_id FROM memory_candidate_evidence "
+        "SELECT confidence,persistence_score,conversation_id,created_at FROM memory_candidate_evidence "
         "WHERE candidate_id=? ORDER BY created_at,id",(candidate_id,),
     ).fetchall()]
     if evidence:
         strongest=max(float(x["confidence"]) for x in evidence)
         independent=len({x.get("conversation_id") or f"local:{i}" for i,x in enumerate(evidence)})
-        confidence=min(.99,strongest+.04*max(0,independent-1))
-        persistence=sum(float(x["persistence_score"]) for x in evidence)/len(evidence)
+        distinct_days=len({(int(x["created_at"])+28800)//86400 for x in evidence})
+        span_hours=max(0.0,(max(int(x["created_at"]) for x in evidence)-min(int(x["created_at"]) for x in evidence))/3600.0)
+        # 同日的额外会话仅小幅增强“事实是真的”；跨日重复才是更强证据。
+        same_day_extra=max(0,independent-distinct_days)
+        confidence=min(.99,strongest+.01*same_day_extra+.04*max(0,distinct_days-1))
+        semantic_persistence=sum(float(x["persistence_score"]) for x in evidence)/len(evidence)
+        temporal_coverage=_memory_temporal_coverage(distinct_days,span_hours)
+        persistence=_memory_long_term_score(semantic_persistence,temporal_coverage)
         conn.execute(
-            "UPDATE memory_candidates SET confidence=?,persistence_score=?,evidence_count=?,"
-            "independent_count=?,updated_at=? WHERE id=?",
-            (confidence,persistence,len(evidence),independent,now,candidate_id),
+            "UPDATE memory_candidates SET confidence=?,persistence_score=?,semantic_persistence_score=?,"
+            "temporal_coverage_score=?,evidence_count=?,independent_count=?,distinct_day_count=?,"
+            "evidence_span_hours=?,updated_at=? WHERE id=?",
+            (confidence,persistence,semantic_persistence,temporal_coverage,len(evidence),independent,
+             distinct_days,span_hours,now,candidate_id),
         )
     return candidate_id
 
 
 def _memory_candidate_rows_in_tx(conn: sqlite3.Connection, device_id: str) -> list[dict]:
     return [dict(row) for row in conn.execute(
-        "SELECT id,kind,entity_key,field_name,candidate_value,confidence,persistence_score,evidence_count,"
-        "independent_count,decision_reason,evidence_summary,status,source_conversation_id,source_from_seq,"
+        "SELECT id,kind,entity_key,field_name,candidate_value,confidence,persistence_score,"
+        "semantic_persistence_score,temporal_coverage_score,evidence_count,independent_count,"
+        "distinct_day_count,evidence_span_hours,decision_reason,evidence_summary,status,source_conversation_id,source_from_seq,"
         "source_to_seq,created_at,updated_at,subject_entity_id,value_entity_id,value_type,"
         "resolution_confidence,resolution_status FROM memory_candidates WHERE device_id=? "
         "AND status IN ('candidate','conflict') ORDER BY updated_at DESC",(device_id,),
@@ -6103,17 +6641,22 @@ def _memory_reconcile_candidates(conn: sqlite3.Connection, device_id: str) -> di
     for group in _candidate_groups_from_rows(_memory_candidate_rows_in_tx(conn,device_id)):
         rows=[row for row in _memory_candidate_rows_in_tx(conn,device_id) if int(row["id"]) in group["candidate_ids"]]
         confidence=float(group["confidence"]); persistence=float(group["persistence_score"])
+        semantic_persistence=float(group.get("semantic_persistence_score") or .5)
         independent=int(group["independent_count"]); sensitive=bool(group["sensitive"])
+        distinct_days=int(group.get("distinct_day_count") or 1)
+        span_hours=float(group.get("evidence_span_hours") or 0)
         current=conn.execute(
             "SELECT * FROM memory_wiki_facts WHERE device_id=? AND subject_type=? AND subject_key=? AND predicate=?",
             (device_id,group["kind"],group["entity_key"],group["predicate"]),
         ).fetchone()
         same=bool(current and _memory_clean_text(current["value"],160)==_memory_clean_text(group["value"],160))
         resolved = group.get("resolution_status") == "resolved" and float(group.get("resolution_confidence") or 0) >= .88
-        # 当前用户对自己作出的明确、稳定、已通过类型校验的陈述，可由一条第一手证据晋升；
-        # 第三方资料仍要求至少两段独立对话，敏感事实始终不走自动晋升。
-        firsthand_self = group["kind"] == "user" and confidence >= .90 and resolved
-        enough_sources = independent >= 2 or firsthand_self
+        # 一次明确的本人长期陈述仍可直接成立；普通重复则必须真正跨日。
+        # “一天开很多对话”只轻微增强事实可信，不满足时间覆盖要求。
+        firsthand_self = (group["kind"] == "user" and confidence >= .90
+                          and semantic_persistence >= .88 and resolved)
+        enough_time = distinct_days >= 2 and span_hours >= MEMORY_MIN_TEMPORAL_SPAN_HOURS
+        enough_sources = firsthand_self or enough_time
         eligible=(confidence>=MEMORY_AUTO_CONFIDENCE and persistence>=MEMORY_AUTO_PERSISTENCE and enough_sources and not sensitive and resolved)
         if same:
             _confirm_candidate_group(conn,device_id,group,rows,group["value"],authority=.75,promotion_reason="evidence_reinforced")
@@ -6125,7 +6668,7 @@ def _memory_reconcile_candidates(conn: sqlite3.Connection, device_id: str) -> di
                 f"WHERE id IN ({','.join('?' for _ in rows)})",
                 (_now(),*(int(row["id"]) for row in rows)),
             )
-            if confidence>=.80 and independent>=2 and current["status"]!="challenged":
+            if confidence>=.80 and enough_time and current["status"]!="challenged":
                 lowered=max(.45,float(current["confidence"])-.18*confidence)
                 conn.execute(
                     "UPDATE memory_wiki_facts SET confidence=?,status='challenged',promotion_reason='conflicting_evidence',updated_at=? WHERE id=?",
@@ -6134,7 +6677,8 @@ def _memory_reconcile_candidates(conn: sqlite3.Connection, device_id: str) -> di
                 if current["subject_type"]=="person" and current["predicate"]=="usual_place":
                     conn.execute("UPDATE memory_people SET expires_at=? WHERE device_id=? AND name=?",(_now(),device_id,current["subject_key"]))
                 result["challenged"]+=1
-            if eligible and confidence>=MEMORY_AUTO_REPLACE_CONFIDENCE and independent>=3:
+            if (eligible and confidence>=MEMORY_AUTO_REPLACE_CONFIDENCE
+                    and distinct_days>=3 and span_hours>=168):
                 _confirm_candidate_group(conn,device_id,group,rows,group["value"],authority=.8,promotion_reason="auto_conflict_replaced")
                 result["promoted"]+=1
             else:
@@ -6144,10 +6688,8 @@ def _memory_reconcile_candidates(conn: sqlite3.Connection, device_id: str) -> di
             _confirm_candidate_group(conn,device_id,group,rows,group["value"],authority=.7,promotion_reason="auto_high_confidence")
             result["promoted"]+=1
         else:
-            reason=("实体或字段仍需消歧" if not resolved else
-                    "敏感事实需要本人确认" if sensitive else
-                    "仍需独立对话证据" if independent<2 else
-                    "长期稳定性不足" if persistence<MEMORY_AUTO_PERSISTENCE else "事实置信度不足")
+            blockers=_memory_candidate_blockers(group)
+            reason="；".join(blockers) or "等待确认"
             conn.execute(
                 f"UPDATE memory_candidates SET decision_reason=? WHERE id IN ({','.join('?' for _ in rows)})",
                 (reason,*(int(row["id"]) for row in rows)),
@@ -6420,13 +6962,16 @@ def _tool_remember_preference(sid: str, args: dict) -> tuple[dict, dict | None]:
     category = _memory_clean_text(args.get("category"), 30)
     key = _memory_clean_text(args.get("key"), 60)
     value = _memory_clean_text(args.get("value"), 160)
+    grounding_values = (value,)
+    if category == "transport" and key == "default_mode":
+        value, grounding_values = _normalize_transport_memory(value)
     validation_error = _memory_validate_preference(category, key, value)
     if validation_error:
         return {"ok": False, "error": validation_error}, None
     raw_text = str((session_get(sid) or {}).get("current_user_message") or "")
     if not _memory_explicit_intent(sid, "preference", args, raw_text):
         return {"ok": False, "error": "只有你明确说“记住/以后默认”时，才能写入会面档案"}, None
-    if not _memory_grounded(raw_text, [value]):
+    if not any(_memory_grounded(raw_text, [candidate]) for candidate in grounding_values):
         return {"ok": False, "error": "模型提交的偏好与本轮可见原文不一致，已拒绝写入"}, None
     now = _now()
     conn = _db_connect()
@@ -6554,6 +7099,29 @@ def _tool_forget_memory(sid: str, args: dict) -> tuple[dict, dict | None]:
 @app.route("/api/v2/memories")
 def api_v2_memories():
     return jsonify(_memory_snapshot(g.device_id))
+
+
+@app.route("/api/v2/place-aliases")
+def api_v2_place_aliases():
+    rows = _db().execute(
+        "SELECT id,city,alias,poi_id,canonical_name,address,lng,lat,confirmation_count,status,source,created_at,updated_at "
+        "FROM place_alias_evidence WHERE device_id=? AND status='confirmed' "
+        "ORDER BY updated_at DESC", (g.device_id,)
+    ).fetchall()
+    return jsonify({"items": [dict(row) for row in rows]})
+
+
+@app.route("/api/v2/place-aliases/<int:alias_id>", methods=["DELETE"])
+def api_v2_place_alias_delete(alias_id: int):
+    conn = _db()
+    cur = conn.execute(
+        "UPDATE place_alias_evidence SET status='disabled',updated_at=? WHERE id=? AND device_id=?",
+        (_now(), alias_id, g.device_id),
+    )
+    conn.commit()
+    if not cur.rowcount:
+        return jsonify({"error": "地点映射不存在"}), 404
+    return jsonify({"ok": True})
 
 
 @app.route("/api/v2/memories", methods=["DELETE"])
@@ -7528,8 +8096,8 @@ _ASSISTANT_SYSTEM = """你叫「阿觅」，是中点 Middot 的 AI 会面助手
 
 ## 关键约定
 - **【本轮原文最高优先级】**：当前 user 消息和 `[本轮整句结构化解析]` 是本轮事实源。旧对话、旧选择卡或示例与本轮冲突时一律忽略；禁止声称用户“提到过”本轮原文及结构化解析里没有的地点。用户本轮已明确某人的位置时，直接设置，不得再为这个人编造其他地点二选一。
-- **【长期记忆有两条入口】**：① 用户明确说“记住/以后默认/以后别推荐”时，走即时高权重确认流程；② 普通对话会在闲置整理或夜间补扫时提取稳定事实，先进入待确认候选，累积独立证据后才可能自动晋升。禁止回答“只有说记住才会形成记忆”。“今天/这次/现在”只用于本轮；搜索、推荐、模型猜测、浏览器当前位置和实时轨迹不得成为长期事实。
-- **【候选与生效边界】**：待确认候选不会参与后续规划。当前用户对自己的明确、稳定、非敏感事实，在通过实体消歧和字段类型校验后可由一次第一手陈述自动晋升；第三方事实通常仍需至少两个独立对话。低置信、敏感位置和冲突内容继续待确认，由用户确认、修改或忽略。用户手动确认后的权威度为 100%，但后续出现可靠冲突证据时仍可被降级为受质疑。
+- **【长期记忆有两条入口】**：① 用户明确说“记住/以后默认/以后别推荐”时，走即时高权重确认流程；② 普通对话会在闲置整理或夜间补扫时提取稳定事实，先进入待确认候选；同日重复主要增强事实可信度，真正跨日的时间覆盖才增强长期稳定性。禁止回答“只有说记住才会形成记忆”。“今天/这次/现在”只用于本轮；搜索、推荐、模型猜测、浏览器当前位置和实时轨迹不得成为长期事实。
+- **【候选与生效边界】**：待确认候选不会参与后续规划。当前用户对自己的明确、稳定、非敏感事实，在通过实体消歧和字段类型校验后可由一次第一手长期陈述自动晋升；普通重复至少需跨2个证据日且相隔36小时。低置信、时间覆盖不足、敏感位置和冲突内容继续待确认，由用户确认、修改或忽略。用户手动确认后的权威度为 100%，但后续出现可靠冲突证据时仍可被降级为受质疑。
 - **【人物记忆草稿】**：人物记忆必须先形成可见确认卡，用户点“确认保存”后才落库。用户第一次已经说过“请记住”后，后续回答“紫金港/杭州”等是在补充同一草稿，禁止要求他重复“请记住”。学校有多校区时先自然追问；信息补齐后调用 `remember_person` 准备确认卡。确认卡出现后停止本轮，不要再口头声称已经记住。
 - 用户问“你记得我什么”时，综合列出个人偏好、人物、店铺反馈，并把旧的搜索数据明确叫作“规划记录（不等于去过）”；说“忘掉/删除”时执行删除。人物地点可以从普通对话形成待确认候选，但第三方位置属于敏感事实，未经用户确认不得自动晋升，也不能从一次规划或搜索结果中偷记。
 - 已确认记忆只属于“我”，不得复制给朋友。本轮明确表达永远优先于旧记忆。使用长期偏好影响规划时，要在最终回复中自然说明，例如“已按你平时的公交方式规划”，但不要暴露内部字段。
@@ -7868,6 +8436,8 @@ def _apply_location_choice(sid: str, choice: dict) -> tuple[bool, str, str]:
         "lng": float(selected["lng"]), "lat": float(selected["lat"]),
         "address": f"{selected.get('label')} · {selected.get('address')}",
     })
+    if target.get("new_nickname"):
+        row["name"] = target["new_nickname"]
     task.update({
         "status": "running",
         "answer": f"{target.get('name','参与者')}在{selected.get('label')}（{selected.get('address')}）",
@@ -7877,6 +8447,13 @@ def _apply_location_choice(sid: str, choice: dict) -> tuple[bool, str, str]:
         "updated_at": int(time.time()),
     })
     session_update(sid, {"participants": parts, "agent_task": task})
+    _record_place_alias_confirmation(
+        str(s.get("memory_did") or s.get("my_did") or ""),
+        str(task.get("location_alias") or ""),
+        str(task.get("location_city") or s.get("city") or ""),
+        selected,
+        source="user_candidate_choice",
+    )
     canonical_label = str(selected.get("label") or selected.get("address") or "所选位置").strip()
     return True, task["answer"], canonical_label
 
@@ -7955,6 +8532,13 @@ def api_v2_apply_drafts():
                             p["name"] = new_nickname
                         parts_dirty = True
                         break
+                resolution = body.get("place_resolution") if isinstance(body.get("place_resolution"), dict) else None
+                if resolution:
+                    _record_place_alias_confirmation(
+                        g.device_id, str(resolution.get("alias") or ""),
+                        str(resolution.get("city") or s.get("city") or ""), resolution,
+                        source="user_draft_apply",
+                    )
                 applied.append(kind)
         elif kind == "add_participant":
             nickname = (body.get("nickname") or "").strip()
@@ -8181,6 +8765,7 @@ def api_v2_assistant_stream():
     utterance_parse = _parse_meeting_utterance(
         raw_user_msg or semantic_user_msg, pre_state["participants"], pre_me_idx
     )
+    utterance_trace = utterance_parse.pop("_trace_meta", None)
     turn_city = utterance_parse.get("city_context") or inferred_city
     session_update(sid, {"current_user_message": visible_user_msg,
                          "current_memory_source_ref": f"chat:{sid}:{uuid.uuid4().hex}",
@@ -8193,6 +8778,30 @@ def api_v2_assistant_stream():
         visible_user_msg or raw_user_msg or semantic_user_msg,
         "choice" if not raw_user_msg else "message",
     )
+    trace_id = _trace_start(
+        conversation_id, caller_did, sid,
+        visible_user_msg or raw_user_msg or semantic_user_msg,
+    )
+    if utterance_trace:
+        _trace_step(trace_id, "llm_call", "整句语义解析 · 调用",
+                    summary="提取人物、纯地点实体与活动", payload=utterance_trace.get("parser_request"))
+        _trace_step(trace_id, "llm_response", "整句语义解析 · 返回",
+                    summary="AI 首次解析结果", payload={"raw": utterance_trace.get("parser_response")},
+                    duration_ms=utterance_trace.get("parser_duration_ms"))
+        if utterance_trace.get("verifier_request") is not None:
+            _trace_step(trace_id, "llm_call", "地点实体复核 · 调用",
+                        summary="由 AI 复核地点是否可原样用于地图搜索",
+                        payload=utterance_trace.get("verifier_request"))
+            _trace_step(trace_id, "llm_response", "地点实体复核 · 返回",
+                        summary="AI 复核后的完整解析结果",
+                        payload={"raw": utterance_trace.get("verifier_response")},
+                        duration_ms=utterance_trace.get("verifier_duration_ms"))
+        if utterance_trace.get("error"):
+            _trace_step(trace_id, "error", "整句语义解析失败",
+                        summary=utterance_trace["error"], payload=utterance_trace)
+        elif utterance_trace.get("verifier_error"):
+            _trace_step(trace_id, "error", "地点实体复核失败 · 已采用首次解析",
+                        summary=utterance_trace["verifier_error"], payload=utterance_trace)
 
     def generate():
         yield _sse({"type": "session", "session_id": sid})
@@ -8283,6 +8892,12 @@ def api_v2_assistant_stream():
             ]
         try:
             for it in range(MAX_ITERS):
+                llm_started_ms = int(time.time() * 1000)
+                _trace_step(trace_id, "llm_call", f"模型调用 · 第 {it + 1} 轮",
+                            summary="deepseek-chat",
+                            payload={"model": "deepseek-chat", "iteration": it + 1,
+                                     "message_count": len(messages), "tool_count": len(tools_for_turn),
+                                     "temperature": 0.4})
                 stream = llm_client.chat.completions.create(
                     model="deepseek-chat",
                     messages=messages,
@@ -8307,6 +8922,20 @@ def api_v2_assistant_stream():
                             if tc.function and tc.function.arguments:
                                 slot["arguments"] += tc.function.arguments
 
+                _trace_step(
+                    trace_id, "llm_response", f"模型原始返回 · 第 {it + 1} 轮",
+                    summary=(content_buf[:500] if content_buf else f"返回 {len(tc_buf)} 个工具调用"),
+                    payload={
+                        "content": content_buf,
+                        "tool_calls": [
+                            {"id": slot.get("id"), "name": slot.get("name"),
+                             "arguments": slot.get("arguments")}
+                            for _, slot in sorted(tc_buf.items())
+                        ],
+                    },
+                    duration_ms=int(time.time() * 1000) - llm_started_ms,
+                )
+
                 # 无工具调用 → 结束
                 if not tc_buf:
                     content_buf = _guard_assistant_location_claim(content_buf, me_has_location)
@@ -8318,6 +8947,8 @@ def api_v2_assistant_stream():
                         conversation_id, caller_did, "assistant", content_buf, "message"
                     )
                     _agent_task_finish(sid)
+                    _trace_step(trace_id, "assistant", "阿觅回复", summary=content_buf[:500], payload={"content": content_buf})
+                    _trace_finish(trace_id, "done")
                     # 只有确定本轮没有工具调用时才把正文交给前端。
                     # 带工具调用轮次中的文字通常是模型的执行计划/函数说明，折叠步骤区已展示，正文不应重复。
                     if content_buf:
@@ -8377,6 +9008,8 @@ def api_v2_assistant_stream():
                         }
                         messages.append(tool_msg)
                         _assistant_append_history(sid, tool_msg)
+                        _trace_step(trace_id, "tool_result", f"{name} · 已去重", tool_name=name,
+                                    summary=duplicate["summary"], payload=duplicate)
                         continue
                     if name == "set_participant_location":
                         target_key: int | str = args.get("index") or str(args.get("participant_name") or "")
@@ -8406,6 +9039,8 @@ def api_v2_assistant_stream():
                         "type": "tool_call",
                         "id": tc["id"], "name": name, "args": args,
                     })
+                    tool_started_ms = int(time.time() * 1000)
+                    _trace_step(trace_id, "tool_call", f"调用 {name}", tool_name=name, payload=args)
                     handler = TOOL_HANDLERS.get(name)
                     if not handler:
                         tool_result = {"ok": False, "error": f"未知工具: {name}"}
@@ -8424,6 +9059,13 @@ def api_v2_assistant_stream():
                                 prefer_changed_this_batch = True
 
                     _agent_task_record(sid, name, tool_result)
+                    tool_duration_ms = int(time.time() * 1000) - tool_started_ms
+                    _trace_step(
+                        trace_id, "tool_result", f"{name} · {'成功' if tool_result.get('ok') else '失败'}",
+                        tool_name=name,
+                        summary=tool_result.get("summary") or tool_result.get("error") or "",
+                        payload=tool_result, duration_ms=tool_duration_ms,
+                    )
 
                     yield _sse({
                         "type": "tool_result",
@@ -8434,6 +9076,8 @@ def api_v2_assistant_stream():
                     })
                     if state_patch:
                         yield _sse({"type": "state_patch", "patch": state_patch})
+                        _trace_step(trace_id, "state_patch", "界面状态更新",
+                                    tool_name=name, summary=str(state_patch.get("type") or ""), payload=state_patch)
                         if state_patch.get("type") == "location_choices":
                             waiting_for_location_choice = True
                         elif state_patch.get("type") == "choices":
@@ -8449,10 +9093,14 @@ def api_v2_assistant_stream():
                     _assistant_append_history(sid, tool_msg)
 
                 if waiting_for_location_choice:
+                    _trace_step(trace_id, "waiting", "等待位置确认", summary="用户需要选择具体地点")
+                    _trace_finish(trace_id, "waiting")
                     yield _sse({"type": "waiting", "kind": "location_choice", "label": "等待你选择"})
                     yield _sse({"type": "done"})
                     return
                 if waiting_for_offer_choice:
+                    _trace_step(trace_id, "waiting", "等待用户选择", summary="用户需要完成选择题")
+                    _trace_finish(trace_id, "waiting")
                     yield _sse({"type": "waiting", "kind": "choice", "label": "等待你选择"})
                     yield _sse({"type": "done"})
                     return
@@ -8464,8 +9112,13 @@ def api_v2_assistant_stream():
                     cur = _assistant_get_state(sid)
                     if cur.get("pois"):
                         auto_id = f"auto_recompute_{it}"
+                        auto_started_ms = int(time.time() * 1000)
+                        _trace_step(trace_id, "tool_call", "自动调用 recompute_routes", tool_name="recompute_routes", payload={})
                         yield _sse({"type":"tool_call","id":auto_id,"name":"recompute_routes","args":{}})
                         auto_result, auto_patch = _tool_recompute_routes(sid, {})
+                        _trace_step(trace_id, "tool_result", "recompute_routes · 自动重算", tool_name="recompute_routes",
+                                    summary=auto_result.get("summary") or auto_result.get("error") or "",
+                                    payload=auto_result, duration_ms=int(time.time() * 1000)-auto_started_ms)
                         yield _sse({
                             "type":"tool_result","id":auto_id,"name":"recompute_routes",
                             "ok":bool(auto_result.get("ok")),
@@ -8474,6 +9127,8 @@ def api_v2_assistant_stream():
                         })
                         if auto_patch:
                             yield _sse({"type":"state_patch","patch":auto_patch})
+                            _trace_step(trace_id, "state_patch", "界面状态更新", tool_name="recompute_routes",
+                                        summary=str(auto_patch.get("type") or ""), payload=auto_patch)
                         routes_recomputed_after_prefer = bool(auto_result.get("ok"))
                         _agent_task_record(sid, "recompute_routes", auto_result)
 
@@ -8496,9 +9151,13 @@ def api_v2_assistant_stream():
                 continue
 
             # 达到最大轮数
+            _trace_step(trace_id, "error", "达到工具调用上限", summary=f"最多 {MAX_ITERS} 轮")
+            _trace_finish(trace_id, "failed", error=f"达到工具调用上限 ({MAX_ITERS})")
             yield _sse({"type": "error", "msg": f"达到工具调用上限 ({MAX_ITERS})"})
             yield _sse({"type": "done"})
         except Exception as e:
+            _trace_step(trace_id, "error", "执行异常", summary=f"{type(e).__name__}: {e}")
+            _trace_finish(trace_id, "failed", error=f"{type(e).__name__}: {e}")
             yield _sse({"type": "error", "msg": f"{type(e).__name__}: {e}"})
             yield _sse({"type": "done"})
 

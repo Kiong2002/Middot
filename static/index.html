@@ -2535,6 +2535,13 @@
     .assist-choice-card.answered button { cursor:default; }
     .assist-choice-card.answered button:not(.selected) { opacity:.72; }
     .assist-choice-card.answered .assist-choice:hover { border-color:var(--line-2); color:var(--text-2); }
+    .assist-choice-card.answered .assist-choice-question { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .assist-choice-expand { flex:0 0 auto; border:0; padding:3px 7px; border-radius:7px; background:var(--panel-2); color:var(--brand); font-size:11px; cursor:pointer !important; }
+    .assist-choice-card.submitted-collapsed:not(.expanded) .assist-choice:not(.selected),
+    .assist-choice-card.submitted-collapsed:not(.expanded) .assist-location-option:not(.selected) { display:none; }
+    .assist-choice-card.submitted-collapsed:not(.expanded) .assist-choice-hint { display:none; }
+    .assist-choice-card.submitted-collapsed:not(.expanded) .assist-location-list { padding-bottom:10px; }
+    .assist-choice-card.submitted-collapsed:not(.expanded) .assist-choice-options { flex-wrap:nowrap; overflow:hidden; }
     .assist-choice-hint { margin-top:8px; font-size:11px; color:var(--text-3); }
     .assist-location-card { width:min(100%,520px); max-width:96%; padding:0; overflow:hidden; }
     .assist-location-card .assist-choice-question { padding:14px 16px 10px; margin:0; font-size:14px; }
@@ -3171,7 +3178,7 @@
         <div class="modal-body memory-body">
           <div class="memory-intro">
             <i data-lucide="git-merge"></i>
-            <span>阿觅会累积独立对话证据；高可信、适合长期且非敏感的事实可自动入档。冲突与敏感线索仍由你确认。搜索和推荐不等于你选了或去过。</span>
+            <span>阿觅会分别判断事实可信度与长期稳定性；同日重复主要增强可信度，跨日出现才增强长期性。冲突与敏感线索仍由你确认。搜索和推荐不等于你选了或去过。</span>
           </div>
           <div class="memory-tabs" id="memoryTabs" role="tablist">
             <button class="memory-tab is-active" type="button" data-memory-view="profile">档案</button>
@@ -6902,7 +6909,7 @@
     function assistDeactivateChoiceCards() {
       document.querySelectorAll('.assist-choice-card.active').forEach(card=>{
         card.classList.remove('active'); card.classList.add('answered');
-        card.querySelectorAll('button').forEach(btn=>{btn.disabled=true;});
+        card.querySelectorAll('button:not(.assist-choice-expand)').forEach(btn=>{btn.disabled=true;});
       });
       ASSIST_STATE.activeChoiceToken=null;
       ASSIST_STATE.selectedChoices=[];
@@ -6912,16 +6919,53 @@
     function assistMarkChoiceCardsSubmitted({locationChoice, choiceAnswers, memoryChoiceLabel}) {
       document.querySelectorAll('.assist-choice-card.active').forEach(card => {
         const strip = card.closest('.assist-turn')?.querySelector('.assist-tool-strip');
-        if (!strip) return;
         let label = '已提交选择';
         if (locationChoice) label = '已选择位置';
         else if (memoryChoiceLabel === '确认保存') label = '已确认保存';
         else if (memoryChoiceLabel === '这次不记') label = '已选择不保存';
         else if (memoryChoiceLabel === '修改') label = '已选择修改';
         else if ((choiceAnswers || []).length > 1) label = `已提交 ${choiceAnswers.length} 项选择`;
-        _atsSetStripStatus(strip, 'ok');
-        _atsSetLabel(strip, label);
+
+        // 上一轮已经结束，内存里的 strip items 已释放；此处必须直接收尾旧 DOM，
+        // 否则外框虽已完成，明细仍会保留旋转中的 wait 图标。
+        if (strip) {
+          strip.querySelectorAll('.ats-item.wait').forEach(item => {
+            item.classList.remove('wait'); item.classList.add('ok');
+            const icon = item.querySelector('.ic');
+            if (icon) {
+              const doneIcon = document.createElement('i');
+              doneIcon.className = 'ic';
+              doneIcon.setAttribute('data-lucide', 'check');
+              icon.replaceWith(doneIcon);
+            }
+            const text = item.querySelector('.lbl');
+            if (text) text.textContent = locationChoice
+              ? `已确认位置：${locationChoice.label || '所选地点'}`
+              : label;
+          });
+          _atsSetStripStatus(strip, 'ok');
+          _atsSetLabel(strip, label);
+        }
+
+        // 提交后默认只预览已选项，仍可展开查看当时的全部候选。
+        card.classList.add('submitted-collapsed');
+        const question = card.querySelector('.assist-choice-question');
+        if (question && !question.querySelector('.assist-choice-expand')) {
+          const toggle = document.createElement('button');
+          toggle.type = 'button';
+          toggle.className = 'assist-choice-expand';
+          toggle.textContent = '展开全部';
+          toggle.setAttribute('aria-expanded', 'false');
+          toggle.addEventListener('click', event => {
+            event.stopPropagation();
+            const expanded = card.classList.toggle('expanded');
+            toggle.textContent = expanded ? '收起' : '展开全部';
+            toggle.setAttribute('aria-expanded', String(expanded));
+          });
+          question.appendChild(toggle);
+        }
       });
+      refreshIcons();
     }
     function assistRenderChoices(patch) {
       assistDeactivateChoiceCards();
@@ -7150,14 +7194,17 @@
       }
       if (!target) return;
       target.ok = !!patch.ok;
-      target.status = patch.ok ? 'ok' : 'err';
+      const waitingForUser = !!patch.data?.waiting_for_user;
+      target.status = waitingForUser ? 'wait' : (patch.ok ? 'ok' : 'err');
       target.summary = patch.summary || '';
       if (name === 'remember_person' && patch.data?.waiting_for_detail) {
         ASSIST_STATE.pendingMemoryDetail = true;
       } else if (name === 'remember_person' && patch.data?.waiting_for_user) {
         ASSIST_STATE.pendingMemoryDetail = false;
       }
-      target.label = patch.ok
+      target.label = waitingForUser
+        ? `等待确认「${String(target.args?.place_name || target.args?.keyword || '候选').slice(0,12)}」的具体位置`
+        : patch.ok
         ? toolDoneLabel(name, target.args)
         : (['remember_person','remember_preference','remember_feedback','forget_memory'].includes(name)
             ? toolNaturalLabel(name, target.args).replace(/^正在/, '') + ' · 未保存'
@@ -8622,17 +8669,25 @@
       if (!items.length) return '';
       return `<section class="memory-section"><div class="memory-section-head"><span>${escapeHtml(label)}</span><span>${items.length} 项</span></div>${items.map(x => memoryItemHtml(kind, x)).join('')}</section>`;
     }
+    function memoryEvidenceSpan(hours) {
+      const value=Number(hours||0);
+      if(value<1) return '同日';
+      if(value<24) return `覆盖 ${Math.round(value)} 小时`;
+      const days=value/24;
+      return `覆盖 ${days<10?days.toFixed(1):Math.round(days)} 天`;
+    }
     function memoryCandidateSection(items) {
       if (!items.length) return '';
       return `<section class="memory-section"><div class="memory-section-head"><span>待确认记忆</span><span>${items.length} 组</span></div>
-        <div class="modal-hint" style="margin-bottom:8px;">这里仅保留尚未达到自动晋升条件、敏感或存在冲突的线索。系统会继续累积独立证据；你也可以现在确认入档。</div>
+        <div class="modal-hint" style="margin-bottom:8px;">这里保留尚未达到自动晋升条件、敏感或存在冲突的线索。同日重复主要提高事实可信度，跨日证据才提高长期稳定性；你也可以现在确认入档。</div>
         ${items.map(item => `<article class="memory-item memory-candidate${item.status === 'conflict' ? ' is-conflict' : ''}" data-candidate-group="${escapeHtml(item.group_id)}" data-candidate-ids="${(item.candidate_ids || []).map(Number).join(',')}">
           <div class="memory-item-main">
             <div class="memory-item-title">${escapeHtml(item.entity_key)} · ${escapeHtml(item.predicate_label)}</div>
             <div class="memory-item-detail">${escapeHtml(item.value)}${item.status === 'conflict' ? ' · 与当前档案可能冲突' : ''}</div>
-            <div class="memory-source"><i data-lucide="git-merge"></i><span>${Number(item.evidence_count || item.candidate_ids?.length || 0)} 条证据 · ${Number(item.independent_count || 1)} 个独立对话${item.sensitive ? ' · 敏感事实' : ''}</span></div>
+            <div class="memory-source"><i data-lucide="git-merge"></i><span>${Number(item.evidence_count || item.candidate_ids?.length || 0)} 条证据 · ${Number(item.independent_count || 1)} 次对话 · ${Number(item.distinct_day_count || 1)} 个证据日 · ${memoryEvidenceSpan(item.evidence_span_hours)}${item.sensitive ? ' · 敏感事实' : ''}</span></div>
             <div class="memory-confidence"><span>事实可信</span><span class="memory-confidence-track"><span class="memory-confidence-fill" style="width:${Math.round(Number(item.confidence || 0) * 100)}%"></span></span><strong>${Math.round(Number(item.confidence || 0) * 100)}%</strong></div>
             <div class="memory-confidence persistence"><span>适合长期</span><span class="memory-confidence-track"><span class="memory-confidence-fill" style="width:${Math.round(Number(item.persistence_score || 0) * 100)}%"></span></span><strong>${Math.round(Number(item.persistence_score || 0) * 100)}%</strong></div>
+            <div class="memory-source"><i data-lucide="calendar-range"></i><span>语义稳定 ${Math.round(Number(item.semantic_persistence_score || 0) * 100)}% · 时间覆盖 ${Math.round(Number(item.temporal_coverage_score || 0) * 100)}%</span></div>
             ${item.decision_reason ? `<div class="memory-decision-reason">${escapeHtml(item.decision_reason)}</div>` : ''}
             ${(item.evidence || []).map(text => `<div class="memory-source-quote">${escapeHtml(text)}</div>`).join('')}
           </div>
@@ -8975,7 +9030,7 @@
       } else if (MEMORY_UI.view === 'graph') {
         list.innerHTML = memoryGraphHtml(data.graph || {});
       } else {
-        const pages=data.wiki_pages||[],preferences=data.preferences||[],people=data.people||[],feedback=data.feedback||[],episodes=data.episodes||[];
+        const pages=data.wiki_pages||[],preferences=data.preferences||[],people=data.people||[],feedback=data.feedback||[],episodes=data.episodes||[],placeAliases=data.place_aliases||[];
         const aboutPages=memoryGeneralWikiPages(pages,['user','preference']);
         const personPages=memoryGeneralWikiPages(pages,['person']);
         const placePages=memoryGeneralWikiPages(pages,['place','poi','brand','organization','school']);
@@ -8983,11 +9038,12 @@
         const representedPeople=new Set(people.map(x=>x.name));
         const peopleCount=new Set([...people.map(x=>x.name),...personPages.map(page=>page.title)]).size;
         const peopleBody=`${people.map(x=>memoryItemHtml('person',x,(personPages.find(page=>page.title===x.name)||{}).facts||[])).join('')}${memoryWikiCards(personPages.filter(page=>!representedPeople.has(page.title)))}`;
-        const placeBody=`${feedback.map(x=>memoryItemHtml('feedback',x)).join('')}${memoryWikiCards(placePages)}`;
+        const aliasBody=placeAliases.length?`<div class="memory-subsection-title"><span>地点简称</span><span>${placeAliases.length}</span></div>${placeAliases.map(x=>`<div class="memory-item"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(x.alias)} → ${escapeHtml(x.canonical_name)}</div><div class="memory-item-detail">${escapeHtml(x.city)} · ${escapeHtml(x.address||'地址未提供')} · 已确认 ${Number(x.confirmation_count||1)} 次</div></div><button class="memory-item-btn" type="button" data-place-alias-delete="${Number(x.id)}" title="删除地点简称"><i data-lucide="trash-2"></i></button></div>`).join('')}`:'';
+        const placeBody=`${aliasBody}${feedback.map(x=>memoryItemHtml('feedback',x)).join('')}${memoryWikiCards(placePages)}`;
         list.innerHTML = [
           memoryProfileSection('user-round','关于我',preferences.length+aboutPages.length,'条',aboutBody,'暂时还不了解你的长期资料。'),
           memoryProfileSection('users-round','常约的人',peopleCount,'人',peopleBody,'还没有常约的人或人物资料。'),
-          memoryProfileSection('map-pin','地点与店铺',feedback.length+placePages.length,'个',placeBody,'还没有确认过的地点资料或店铺反馈。'),
+          memoryProfileSection('map-pin','地点与店铺',placeAliases.length+feedback.length+placePages.length,'个',placeBody,'还没有确认过的地点资料、简称或店铺反馈。'),
           memoryProfileSection('calendar-check','规划记录',episodes.length,'条',episodes.map(x=>memoryItemHtml('episode',x)).join(''),'还没有规划记录；搜索和推荐不会被当成已经去过。'),
         ].join('');
       }
@@ -9025,8 +9081,12 @@
       list.innerHTML = '<div class="memory-empty"><i data-lucide="loader-2" class="spin"></i>正在编译会面档案…</div>';
       refreshIcons();
       try {
-        const data = await memoryFetchJson('/api/v2/memories', {signal: controller.signal});
+        const [data,aliases] = await Promise.all([
+          memoryFetchJson('/api/v2/memories', {signal: controller.signal}),
+          memoryFetchJson('/api/v2/place-aliases', {signal: controller.signal}),
+        ]);
         if (seq !== MEMORY_UI.requestSeq) return;
+        data.place_aliases = aliases.items || [];
         MEMORY_UI.data = data;
         memoryRender();
       } catch (e) {
@@ -9303,6 +9363,15 @@
         else if (e.key === 'Tab') memoryTrapFocus(e, modal);
       });
       document.getElementById('memoryList')?.addEventListener('click', e => {
+        const aliasDelete = e.target.closest('[data-place-alias-delete]');
+        if (aliasDelete) {
+          if (confirm('删除这个地点简称？以后遇到相同说法时会重新选择。')) {
+            memoryFetchJson(`/api/v2/place-aliases/${aliasDelete.dataset.placeAliasDelete}`, {method:'DELETE'})
+              .then(()=>{toast('已删除地点简称');return memoryLoad()})
+              .catch(err=>toast(err.message||'删除失败',true));
+          }
+          return;
+        }
         const candidate = e.target.closest('[data-candidate-group]');
         if (candidate) {
           const action = e.target.closest('[data-candidate-action]')?.dataset.candidateAction;
