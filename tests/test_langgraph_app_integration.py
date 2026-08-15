@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from types import SimpleNamespace
 
 
 def _load_app(monkeypatch, tmp_path):
@@ -171,3 +172,136 @@ def test_legacy_flag_keeps_original_location_path(monkeypatch, tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM agent_interrupts").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+def test_assistant_stream_uses_main_langgraph_orchestrator(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    module.MIDDOT_AGENT_ORCHESTRATOR = "langgraph"
+    monkeypatch.setattr(
+        module,
+        "_parse_meeting_utterance",
+        lambda *args, **kwargs: {
+            "city_context": "北京",
+            "locations": [],
+            "ignored_text": [],
+        },
+    )
+    monkeypatch.setattr(module, "_memory_context", lambda *args, **kwargs: "[记忆] 无")
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            assert kwargs["stream"] is True
+            delta = SimpleNamespace(content="已经准备好了。", tool_calls=None)
+            return [SimpleNamespace(choices=[SimpleNamespace(delta=delta)])]
+
+    module.llm_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=FakeCompletions())
+    )
+    client = module.app.test_client()
+    response = client.post(
+        "/api/v2/assistant/stream",
+        json={
+            "message": "帮我找咖啡馆",
+            "bootstrap": {
+                "city": "北京",
+                "participants": [
+                    {
+                        "id": "me",
+                        "name": "我",
+                        "lng": 116.3,
+                        "lat": 39.9,
+                        "address": "北京市",
+                    }
+                ],
+                "pois": [],
+                "query": "咖啡馆",
+            },
+        },
+    )
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert '"type": "session"' in body
+    assert '"type": "token"' in body
+    assert "已经准备好了。" in body
+    assert '"type": "done"' in body
+
+    conn = module._db_connect()
+    try:
+        row = conn.execute(
+            "SELECT payload_json FROM agent_trace_steps WHERE step_type='llm_call' "
+            "ORDER BY created_at_ms DESC LIMIT 1"
+        ).fetchone()
+        assert row is not None
+        assert '"runtime": "langgraph"' in row["payload_json"]
+        assert '"node": "planner"' in row["payload_json"]
+    finally:
+        conn.close()
+
+
+def test_normal_choice_survives_session_and_runtime_restart(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [],
+            "memory_did": "device-a",
+            "my_did": "device-a",
+            "agent_task": {
+                "id": "task-choice",
+                "status": "running",
+                "completed": [],
+                "failures": [],
+            },
+        }
+    )
+    result, patch = module._tool_offer_choices(
+        sid,
+        {
+            "question": "你想怎么过去？",
+            "mode": "single",
+            "options": [{"label": "坐地铁"}, {"label": "打车"}],
+        },
+    )
+    assert result["ok"] is True
+    token = patch["token"]
+
+    module._sessions.clear()
+    wrong_sid = module.session_create(
+        {
+            "participants": [],
+            "memory_did": "device-b",
+            "my_did": "device-b",
+        }
+    )
+    assert module._consume_offer_choice_answers(
+        wrong_sid, [{"token": token, "label": "坐地铁"}]
+    ) == ("", [])
+
+    resumed_sid = module.session_create(
+        {
+            "participants": [],
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    question, labels = module._consume_offer_choice_answers(
+        resumed_sid,
+        [{"token": token, "label": "坐地铁"}],
+    )
+
+    assert question == "你想怎么过去？"
+    assert labels == ["坐地铁"]
+    assert module.session_get(resumed_sid)["agent_task"]["id"] == "task-choice"
+    conn = module._db_connect()
+    try:
+        status = conn.execute(
+            "SELECT status FROM agent_choice_interrupts WHERE interrupt_id=?",
+            (token,),
+        ).fetchone()[0]
+        assert status == "consumed"
+    finally:
+        conn.close()
+
+    assert module._consume_offer_choice_answers(
+        resumed_sid, [{"token": token, "label": "坐地铁"}]
+    ) == ("", [])

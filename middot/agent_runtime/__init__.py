@@ -4,11 +4,15 @@
 """
 
 from .location_graph import LocationResolutionRuntime, build_location_graph
+from .main_graph import MainAgentHooks, MainAgentRuntime, build_main_agent_graph
 from .runtime import RuntimeSettings, load_runtime_settings
 
 __all__ = [
     "LocationResolutionRuntime",
+    "MainAgentHooks",
+    "MainAgentRuntime",
     "RuntimeSettings",
     "build_location_graph",
+    "build_main_agent_graph",
     "load_runtime_settings",
 ]

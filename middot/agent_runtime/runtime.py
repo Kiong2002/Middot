@@ -12,6 +12,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class RuntimeSettings:
     agent_runtime: str = "legacy"
+    agent_orchestrator: str = "legacy"
     langsmith_tracing: bool = False
     langsmith_project: str = "middot-staging"
     langsmith_sample_rate: float = 0.0
@@ -20,6 +21,10 @@ class RuntimeSettings:
     @property
     def use_langgraph(self) -> bool:
         return self.agent_runtime == "langgraph"
+
+    @property
+    def use_langgraph_orchestrator(self) -> bool:
+        return self.agent_orchestrator == "langgraph"
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -41,8 +46,12 @@ def load_runtime_settings() -> RuntimeSettings:
     runtime = os.getenv("MIDDOT_AGENT_RUNTIME", "legacy").strip().lower()
     if runtime not in {"legacy", "langgraph"}:
         runtime = "legacy"
+    orchestrator = os.getenv("MIDDOT_AGENT_ORCHESTRATOR", "legacy").strip().lower()
+    if orchestrator not in {"legacy", "langgraph"}:
+        orchestrator = "legacy"
     return RuntimeSettings(
         agent_runtime=runtime,
+        agent_orchestrator=orchestrator,
         langsmith_tracing=_env_bool("MIDDOT_LANGSMITH_TRACING"),
         langsmith_project=os.getenv(
             "MIDDOT_LANGSMITH_PROJECT", "middot-staging"

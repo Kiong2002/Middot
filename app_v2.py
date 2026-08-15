@@ -103,6 +103,9 @@ def _session_cleanup():
 
 MIDDOT_DB_PATH = os.getenv("MIDDOT_DB_PATH", os.path.join(os.path.dirname(__file__), "middot.db"))
 MIDDOT_AGENT_RUNTIME = os.getenv("MIDDOT_AGENT_RUNTIME", "legacy").strip().lower()
+MIDDOT_AGENT_ORCHESTRATOR = os.getenv(
+    "MIDDOT_AGENT_ORCHESTRATOR", "legacy"
+).strip().lower()
 MIDDOT_LANGGRAPH_DB_PATH = os.getenv(
     "MIDDOT_LANGGRAPH_DB_PATH",
     os.path.join(os.path.dirname(__file__), "middot-agent-checkpoints.db"),
@@ -398,6 +401,22 @@ def init_middot_db():
         );
         CREATE INDEX IF NOT EXISTS idx_agent_interrupts_thread
           ON agent_interrupts(thread_id, status);
+        CREATE TABLE IF NOT EXISTS agent_choice_interrupts (
+          interrupt_id TEXT PRIMARY KEY,
+          device_id    TEXT NOT NULL,
+          session_id   TEXT NOT NULL,
+          task_id      TEXT,
+          question     TEXT NOT NULL,
+          choice_mode  TEXT NOT NULL DEFAULT 'single',
+          options_json TEXT NOT NULL,
+          purpose      TEXT,
+          payload_json TEXT,
+          status       TEXT NOT NULL DEFAULT 'waiting',
+          created_at   INTEGER NOT NULL,
+          consumed_at  INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_choice_interrupts_device
+          ON agent_choice_interrupts(device_id, status, created_at DESC);
         CREATE TABLE IF NOT EXISTS place_alias_evidence (
           id                 INTEGER PRIMARY KEY AUTOINCREMENT,
           device_id          TEXT NOT NULL,
@@ -4504,6 +4523,7 @@ def _zju_campus_choice(sid: str, participant_name: str) -> tuple[dict, dict]:
         "updated_at": int(time.time()),
     })
     session_update(sid, {"agent_task": task, "city": "杭州"})
+    _register_choice_interrupt(sid, task)
     return {
         "ok": True, "summary": "浙江大学有多个校区，等待用户确认",
         "waiting_for_user": True,
@@ -7832,6 +7852,7 @@ def _tool_remember_person(sid: str, args: dict) -> tuple[dict, dict | None]:
         "updated_at": _now(),
     })
     session_update(sid, {"agent_task": task, "pending_person_memory_seed": None})
+    _register_choice_interrupt(sid, task)
     return {
         "ok": True, "summary": "人物档案草稿已准备好，等待你确认",
         "waiting_for_user": True,
@@ -8012,6 +8033,7 @@ def _tool_offer_choices(sid: str, args: dict) -> tuple[dict, dict | None]:
         "updated_at": int(time.time()),
     })
     session_update(sid, {"agent_task": task})
+    _register_choice_interrupt(sid, task)
     return {"ok":True,"summary":"已给出可选答案"},{"type":"choices","token":token,"question":question,"mode":mode,"options":options}
 
 
@@ -8481,10 +8503,95 @@ def _agent_task_context(sid: str) -> str:
     return "[当前任务状态] " + json.dumps(task, ensure_ascii=False)
 
 
+def _register_choice_interrupt(sid: str, task: dict) -> None:
+    """把普通选择卡落库，避免部署或进程重启后按钮永远失效。"""
+    token = str(task.get("choice_token") or "")
+    if not token:
+        return
+    session = session_get(sid) or {}
+    device_id = str(session.get("memory_did") or session.get("my_did") or "")
+    if not device_id:
+        return
+    payload = {
+        "memory_draft": task.get("memory_draft"),
+    }
+    conn = _db_connect()
+    try:
+        conn.execute(
+            "INSERT INTO agent_choice_interrupts("
+            "interrupt_id,device_id,session_id,task_id,question,choice_mode,options_json,"
+            "purpose,payload_json,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,'waiting',?) "
+            "ON CONFLICT(interrupt_id) DO UPDATE SET device_id=excluded.device_id,"
+            "session_id=excluded.session_id,task_id=excluded.task_id,question=excluded.question,"
+            "choice_mode=excluded.choice_mode,options_json=excluded.options_json,"
+            "purpose=excluded.purpose,payload_json=excluded.payload_json,status='waiting',"
+            "consumed_at=NULL",
+            (
+                token,
+                device_id,
+                sid,
+                str(task.get("id") or ""),
+                str(task.get("waiting_for") or "请选择"),
+                str(task.get("choice_mode") or "single"),
+                json.dumps(task.get("choices") or [], ensure_ascii=False),
+                str(task.get("choice_purpose") or ""),
+                json.dumps(payload, ensure_ascii=False),
+                _now(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _consume_offer_choice_answers(sid: str, submitted: list) -> tuple[str, list[str]]:
     """校验并一次性消费当前选择卡，只接受服务端下发过的可见标签。"""
-    task = dict((session_get(sid) or {}).get("agent_task") or {})
+    session = session_get(sid) or {}
+    current_device = str(session.get("memory_did") or session.get("my_did") or "")
+    task = dict(session.get("agent_task") or {})
+    submitted_token = ""
+    if submitted and isinstance(submitted[0], dict):
+        submitted_token = str(submitted[0].get("token") or "")
     token = str(task.get("choice_token") or "")
+    persisted = None
+    if submitted_token and (
+        task.get("status") != "waiting_user"
+        or not token
+        or not secrets.compare_digest(submitted_token, token)
+    ):
+        conn = _db_connect()
+        try:
+            persisted = conn.execute(
+                "SELECT * FROM agent_choice_interrupts "
+                "WHERE interrupt_id=? AND status='waiting'",
+                (submitted_token,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not persisted or not current_device or not secrets.compare_digest(
+            str(persisted["device_id"] or ""), current_device
+        ):
+            return "", []
+        try:
+            options = json.loads(persisted["options_json"] or "[]")
+            payload = json.loads(persisted["payload_json"] or "{}")
+        except json.JSONDecodeError:
+            return "", []
+        task = {
+            "id": str(persisted["task_id"] or uuid.uuid4().hex[:10]),
+            "status": "waiting_user",
+            "waiting_for": str(persisted["question"] or "请选择"),
+            "choices": options,
+            "choice_mode": str(persisted["choice_mode"] or "single"),
+            "choice_token": submitted_token,
+            "choice_purpose": str(persisted["purpose"] or ""),
+            "memory_draft": (payload or {}).get("memory_draft"),
+            "completed": [],
+            "failures": [],
+            "updated_at": _now(),
+        }
+        session_update(sid, {"agent_task": task})
+        token = submitted_token
     if task.get("status") != "waiting_user" or not token:
         return "", []
     allowed = {
@@ -8504,6 +8611,31 @@ def _consume_offer_choice_answers(sid: str, submitted: list) -> tuple[str, list[
         return "", []
     if not labels:
         return "", []
+    # 持久化卡片用事务原子消费；两个并发请求最多只有一个能继续执行。
+    if submitted_token:
+        conn = _db_connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT device_id,status FROM agent_choice_interrupts WHERE interrupt_id=?",
+                (submitted_token,),
+            ).fetchone()
+            if row and (
+                row["status"] != "waiting"
+                or not current_device
+                or not secrets.compare_digest(str(row["device_id"] or ""), current_device)
+            ):
+                conn.rollback()
+                return "", []
+            if row:
+                conn.execute(
+                    "UPDATE agent_choice_interrupts SET status='consumed',consumed_at=? "
+                    "WHERE interrupt_id=? AND status='waiting'",
+                    (_now(), submitted_token),
+                )
+            conn.commit()
+        finally:
+            conn.close()
     # token 用过即失效；保留 waiting_user 到 _agent_task_begin，确保任务按原链路续接。
     task.update({"choice_token": "", "choices": [], "updated_at": int(time.time())})
     session_update(sid, {"agent_task": task})
@@ -8912,6 +9044,262 @@ def _verify_agent_outcome(sid: str, called_names: set[str]) -> list[str]:
             if issues:
                 break
     return issues
+
+
+_main_agent_graph_runtime = None
+_main_agent_graph_conn = None
+_main_agent_graph_lock = threading.Lock()
+
+
+def _main_agent_graph_enabled() -> bool:
+    return MIDDOT_AGENT_ORCHESTRATOR == "langgraph"
+
+
+def _main_graph_call_model(state: dict) -> dict:
+    iteration = int(state.get("iteration") or 1)
+    started_ms = int(time.time() * 1000)
+    _trace_step(
+        state["trace_id"],
+        "llm_call",
+        f"模型调用 · 第 {iteration} 轮",
+        summary="deepseek-chat · LangGraph planner",
+        payload={
+            "runtime": "langgraph",
+            "node": "planner",
+            "model": "deepseek-chat",
+            "iteration": iteration,
+            "message_count": len(state.get("messages") or []),
+            "tool_count": len(state.get("tools") or []),
+            "temperature": 0.4,
+        },
+    )
+    stream = llm_client.chat.completions.create(
+        model="deepseek-chat",
+        messages=state.get("messages") or [],
+        tools=state.get("tools") or [],
+        stream=True,
+        temperature=0.4,
+    )
+    content = ""
+    call_buffer: dict[int, dict] = {}
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+        if delta.content:
+            content += delta.content
+        if delta.tool_calls:
+            for tool_call in delta.tool_calls:
+                slot = call_buffer.setdefault(
+                    tool_call.index,
+                    {"id": None, "name": None, "arguments": ""},
+                )
+                if tool_call.id:
+                    slot["id"] = tool_call.id
+                if tool_call.function and tool_call.function.name:
+                    slot["name"] = tool_call.function.name
+                if tool_call.function and tool_call.function.arguments:
+                    slot["arguments"] += tool_call.function.arguments
+
+    _trace_step(
+        state["trace_id"],
+        "llm_response",
+        f"模型原始返回 · 第 {iteration} 轮",
+        summary=content[:500] if content else f"返回 {len(call_buffer)} 个工具调用",
+        payload={
+            "runtime": "langgraph",
+            "node": "planner",
+            "content": content,
+            "tool_calls": [
+                {
+                    "id": slot.get("id"),
+                    "name": slot.get("name"),
+                    "arguments": slot.get("arguments"),
+                }
+                for _, slot in sorted(call_buffer.items())
+            ],
+        },
+        duration_ms=int(time.time() * 1000) - started_ms,
+    )
+    serialized = []
+    for index, slot in sorted(call_buffer.items()):
+        name = str(slot.get("name") or "")
+        serialized.append(
+            {
+                "id": slot.get("id") or f"call_{iteration}_{index}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": _sanitize_tool_arguments_for_history(
+                        name, slot.get("arguments") or "{}"
+                    ),
+                },
+            }
+        )
+    return {"content": content, "tool_calls": serialized}
+
+
+def _main_graph_execute_tool(state: dict, name: str, args: dict) -> tuple[dict, dict | None]:
+    started_ms = int(time.time() * 1000)
+    _trace_step(
+        state["trace_id"],
+        "tool_call",
+        f"调用 {name}",
+        tool_name=name,
+        payload={"runtime": "langgraph", "node": "execute_tools", "arguments": args},
+    )
+    handler = TOOL_HANDLERS.get(name)
+    if not handler:
+        result, patch = {"ok": False, "error": f"未知工具: {name}"}, None
+    else:
+        try:
+            result, patch = handler(state["session_id"], args)
+        except Exception as exc:
+            result, patch = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, None
+    _agent_task_record(state["session_id"], name, result)
+    _trace_step(
+        state["trace_id"],
+        "tool_result",
+        f"{name} · {'成功' if result.get('ok') else '失败'}",
+        tool_name=name,
+        summary=result.get("summary") or result.get("error") or "",
+        payload={"runtime": "langgraph", "node": "execute_tools", "result": result},
+        duration_ms=int(time.time() * 1000) - started_ms,
+    )
+    if patch:
+        _trace_step(
+            state["trace_id"],
+            "state_patch",
+            "界面状态更新",
+            tool_name=name,
+            summary=str(patch.get("type") or ""),
+            payload={"runtime": "langgraph", "node": "execute_tools", "patch": patch},
+        )
+    return result, patch
+
+
+def _main_graph_has_pois(sid: str) -> bool:
+    return bool(_assistant_get_state(sid).get("pois"))
+
+
+def _main_graph_auto_recompute(state: dict) -> tuple[dict, dict | None]:
+    started_ms = int(time.time() * 1000)
+    _trace_step(
+        state["trace_id"],
+        "tool_call",
+        "自动调用 recompute_routes",
+        tool_name="recompute_routes",
+        payload={"runtime": "langgraph", "node": "deterministic_compensation"},
+    )
+    result, patch = _tool_recompute_routes(state["session_id"], {})
+    _agent_task_record(state["session_id"], "recompute_routes", result)
+    _trace_step(
+        state["trace_id"],
+        "tool_result",
+        "recompute_routes · 自动重算",
+        tool_name="recompute_routes",
+        summary=result.get("summary") or result.get("error") or "",
+        payload={"runtime": "langgraph", "node": "deterministic_compensation", "result": result},
+        duration_ms=int(time.time() * 1000) - started_ms,
+    )
+    if patch:
+        _trace_step(
+            state["trace_id"],
+            "state_patch",
+            "界面状态更新",
+            tool_name="recompute_routes",
+            summary=str(patch.get("type") or ""),
+            payload={"runtime": "langgraph", "node": "deterministic_compensation", "patch": patch},
+        )
+    return result, patch
+
+
+def _main_graph_finalize(state: dict, content: str) -> str:
+    content = _guard_assistant_location_claim(content, bool(state.get("me_has_location")))
+    final_issues = _verify_agent_outcome(state["session_id"], set())
+    if final_issues:
+        content = (content + "\n\n" if content else "") + "当前状态仍需处理：" + "；".join(final_issues)
+    _assistant_append_history(state["session_id"], {"role": "assistant", "content": content})
+    _conversation_append_event(
+        state["conversation_id"],
+        state["caller_device_id"],
+        "assistant",
+        content,
+        "message",
+    )
+    _agent_task_finish(state["session_id"])
+    _trace_step(
+        state["trace_id"],
+        "assistant",
+        "阿觅回复",
+        summary=content[:500],
+        payload={"runtime": "langgraph", "node": "finalize", "content": content},
+    )
+    _trace_finish(state["trace_id"], "done")
+    return content
+
+
+def _main_graph_mark_waiting(state: dict, kind: str) -> None:
+    is_location = kind == "location_choice"
+    _trace_step(
+        state["trace_id"],
+        "waiting",
+        "等待位置确认" if is_location else "等待用户选择",
+        summary="用户需要选择具体地点" if is_location else "用户需要完成选择题",
+        payload={"runtime": "langgraph", "node": "wait", "kind": kind},
+    )
+    _trace_finish(state["trace_id"], "waiting")
+
+
+def _main_graph_mark_failed(state: dict, error: str) -> None:
+    _trace_step(
+        state["trace_id"],
+        "error",
+        "LangGraph 执行失败",
+        summary=error,
+        payload={"runtime": "langgraph", "node": "fail"},
+    )
+    _trace_finish(state["trace_id"], "failed", error=error)
+
+
+def _get_main_agent_graph_runtime():
+    global _main_agent_graph_runtime, _main_agent_graph_conn
+    if _main_agent_graph_runtime is not None:
+        return _main_agent_graph_runtime
+    with _main_agent_graph_lock:
+        if _main_agent_graph_runtime is not None:
+            return _main_agent_graph_runtime
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        from middot.agent_runtime.main_graph import (
+            MainAgentHooks,
+            MainAgentRuntime,
+            build_main_agent_graph,
+        )
+        from middot.agent_runtime.runtime import load_runtime_settings
+        from middot.agent_runtime.trace import build_trace_sink
+
+        _main_agent_graph_conn = sqlite3.connect(
+            MIDDOT_LANGGRAPH_DB_PATH, timeout=5.0, check_same_thread=False
+        )
+        _main_agent_graph_conn.execute("PRAGMA journal_mode=WAL")
+        _main_agent_graph_conn.execute("PRAGMA busy_timeout=3000")
+        saver = SqliteSaver(_main_agent_graph_conn)
+        hooks = MainAgentHooks(
+            call_model=_main_graph_call_model,
+            execute_tool=_main_graph_execute_tool,
+            append_history=_assistant_append_history,
+            verify=_verify_agent_outcome,
+            has_pois=_main_graph_has_pois,
+            auto_recompute_routes=_main_graph_auto_recompute,
+            finalize=_main_graph_finalize,
+            mark_waiting=_main_graph_mark_waiting,
+            mark_failed=_main_graph_mark_failed,
+        )
+        graph = build_main_agent_graph(
+            hooks=hooks,
+            checkpointer=saver,
+            trace_sink=build_trace_sink(load_runtime_settings()),
+        )
+        _main_agent_graph_runtime = MainAgentRuntime(graph)
+        return _main_agent_graph_runtime
 
 
 @app.route("/api/v2/session/apply-drafts", methods=["POST"])
@@ -9329,6 +9717,42 @@ def api_v2_assistant_stream():
             tool for tool in ASSISTANT_TOOLS
             if (tool.get("function") or {}).get("name") not in excluded_tools
         ]
+        if _main_agent_graph_enabled():
+            graph_thread_id = f"agent:{conversation_id}:{trace_id}"
+            graph_state = {
+                "request_id": trace_id,
+                "thread_id": graph_thread_id,
+                "session_id": sid,
+                "trace_id": trace_id,
+                "conversation_id": conversation_id,
+                "caller_device_id": caller_did,
+                "messages": messages,
+                "tools": tools_for_turn,
+                "iteration": 0,
+                "max_iterations": MAX_ITERS,
+                "successful_tool_signatures": [],
+                "routes_recomputed_after_prefer": False,
+                "me_has_location": me_has_location,
+                "status": "planning",
+            }
+            try:
+                for event in _get_main_agent_graph_runtime().stream(
+                    graph_state, thread_id=graph_thread_id
+                ):
+                    yield _sse(event)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                _trace_step(
+                    trace_id,
+                    "error",
+                    "LangGraph 执行异常",
+                    summary=error,
+                    payload={"runtime": "langgraph", "node": "unhandled"},
+                )
+                _trace_finish(trace_id, "failed", error=error)
+                yield _sse({"type": "error", "msg": error})
+                yield _sse({"type": "done"})
+            return
         try:
             for it in range(MAX_ITERS):
                 llm_started_ms = int(time.time() * 1000)
