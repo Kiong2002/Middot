@@ -41,6 +41,14 @@ assert.equal(first.meta.branchByNode['place:guomao'], 'person:lisa');
 assert.equal(first.meta.branchByNode['place:nanjing'], 'place:xhs');
 assert.equal(first.meta.branchByNode['place:henan'], 'person:ajie');
 
+const nestedEdgeLengths = edges
+  .filter(edge => edge.source !== 'user:me')
+  .map(edge => Math.hypot(
+    first.positions[edge.source].x - first.positions[edge.target].x,
+    first.positions[edge.source].y - first.positions[edge.target].y,
+  ));
+assert.ok(Math.max(...nestedEdgeLengths) < 250, 'related nodes should remain visually compact');
+
 for (let i = 0; i < nodes.length; i += 1) {
   for (let j = i + 1; j < nodes.length; j += 1) {
     const a = nodes[i];

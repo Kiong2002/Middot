@@ -93,8 +93,8 @@
           const a = positions[aNode.id];
           const b = positions[bNode.id];
           if (!a || !b) continue;
-          const overlapX = textHalfWidth(aNode) + textHalfWidth(bNode) + 20 - Math.abs(a.x - b.x);
-          const overlapY = 76 - Math.abs(a.y - b.y);
+          const overlapX = textHalfWidth(aNode) + textHalfWidth(bNode) + 14 - Math.abs(a.x - b.x);
+          const overlapY = 70 - Math.abs(a.y - b.y);
           if (overlapX <= 0 || overlapY <= 0) continue;
           const aFixed = aNode.id === rootId || aNode.type === 'user';
           const bFixed = bNode.id === rootId || bNode.type === 'user';
@@ -144,13 +144,16 @@
       const angle = (start + end) / 2;
       const ownSize = sizes.get(id) || 1;
       const radius = level === 1
-        ? 178 + Math.min(34, Math.sqrt(ownSize) * 9)
-        : 178 + level * 142 + Math.min(24, children.length * 5);
+        ? 162 + Math.min(28, Math.sqrt(ownSize) * 7)
+        : 162 + level * 112 + Math.min(20, children.length * 4);
       positions[id] = { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
       anchors[id] = { ...positions[id] };
       if (!children.length) return;
-      const usableStart = start + (end - start) * 0.08;
-      const usableEnd = end - (end - start) * 0.08;
+      const availableSpan = (end - start) * 0.84;
+      const compactFan = 0.62 + Math.min(1.25, children.length * 0.32);
+      const usableSpan = Math.min(availableSpan, compactFan);
+      const usableStart = angle - usableSpan / 2;
+      const usableEnd = angle + usableSpan / 2;
       const childWeights = children.map(child => Math.max(1, Math.sqrt(sizes.get(child) || 1)));
       const childTotal = childWeights.reduce((sum, value) => sum + value, 0) || 1;
       let childCursor = usableStart;
