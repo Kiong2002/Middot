@@ -107,7 +107,13 @@ class LangSmithTraceSink:
             return
         try:
             from langsmith import trace
+            from langsmith.run_helpers import tracing_context
 
+            tracing_manager = tracing_context(
+                enabled=True,
+                project_name=self._settings.langsmith_project,
+            )
+            tracing_manager.__enter__()
             manager = trace(
                 name,
                 run_type="chain",
@@ -124,6 +130,11 @@ class LangSmithTraceSink:
             run_tree = manager.__enter__()
         except Exception:
             logger.debug("LangSmith span setup failed", exc_info=True)
+            if "tracing_manager" in locals():
+                try:
+                    tracing_manager.__exit__(None, None, None)
+                except Exception:
+                    logger.debug("LangSmith tracing context teardown failed", exc_info=True)
             yield _NullSpan()
             return
 
@@ -134,6 +145,10 @@ class LangSmithTraceSink:
                 manager.__exit__(type(exc), exc, exc.__traceback__)
             except Exception:
                 logger.debug("LangSmith span teardown failed", exc_info=True)
+            try:
+                tracing_manager.__exit__(type(exc), exc, exc.__traceback__)
+            except Exception:
+                logger.debug("LangSmith tracing context teardown failed", exc_info=True)
             raise
         else:
             try:
@@ -141,6 +156,10 @@ class LangSmithTraceSink:
             except Exception:
                 # Trace 是旁路能力，任何配置、网络或 SDK 故障都不能影响 Agent。
                 logger.debug("LangSmith span teardown failed", exc_info=True)
+            try:
+                tracing_manager.__exit__(None, None, None)
+            except Exception:
+                logger.debug("LangSmith tracing context teardown failed", exc_info=True)
 
 
 def build_trace_sink(settings: RuntimeSettings) -> TraceSink:
