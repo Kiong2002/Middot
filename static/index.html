@@ -8318,6 +8318,51 @@
       refreshIcons();
     }
 
+    function conversationRestoreMeetingState(snapshot, sessionId) {
+      if (!snapshot || typeof snapshot !== 'object') return;
+      state.anchor = snapshot.anchor || null;
+      state.participants = Array.isArray(snapshot.participants)
+        ? snapshot.participants.map(item => ({...item}))
+        : [];
+      state.currentCity = snapshot.city || state.currentCity || '北京';
+      const query = String(snapshot.query || '');
+      const queryInput = document.getElementById('queryInput');
+      if (queryInput) {
+        queryInput.value = query;
+        queryInput.dispatchEvent(new Event('input'));
+      }
+      if (state.anchor?.radius_m) {
+        state.anchorRadiusIdx = RADIUS_STEPS.reduce((best, value, index) =>
+          Math.abs(value-state.anchor.radius_m)<Math.abs(RADIUS_STEPS[best]-state.anchor.radius_m)?index:best, 0);
+      }
+      renderAnchorPanel && renderAnchorPanel();
+      renderAnchorOnMap && renderAnchorOnMap();
+      renderParticipantList && renderParticipantList();
+      refreshMapMarkers && refreshMapMarkers();
+      renderMapContextPill && renderMapContextPill();
+      clearPaths && clearPaths();
+      const pois = Array.isArray(snapshot.pois) ? snapshot.pois : [];
+      if (pois.length) {
+        state.resultData = {
+          success: true,
+          session_id: sessionId,
+          summary: '',
+          plan: snapshot.plan || {},
+          participants: state.participants,
+          center: snapshot.center || null,
+          search_radius_m: snapshot.search_radius_m || state.anchor?.radius_m || 3000,
+          anchor: state.anchor,
+          pois,
+        };
+        state.selectedPoiIdx = null;
+        renderResults && renderResults(state.resultData);
+        recenterMapWithPois && recenterMapWithPois();
+      } else {
+        state.resultData = null;
+        state.viewPois = null;
+      }
+    }
+
     async function conversationContinue(id) {
       try {
         const [detail, resumed] = await Promise.all([
@@ -8326,6 +8371,9 @@
         ]);
         if (detail.error || resumed.error) throw new Error(detail.error || resumed.error);
         state.sessionId = resumed.session_id;
+        conversationRestoreMeetingState(resumed.state || {}, resumed.session_id);
+        assistTurnEnd();
+        assistDeactivateChoiceCards();
         if (ASSIST_STATE.msgsEl) {
           ASSIST_STATE.msgsEl.innerHTML = '';
           (detail.events || []).forEach(event => {
@@ -8340,8 +8388,11 @@
         }
         conversationHistoryClose();
         assistOpen();
+        const pendingPatch = resumed.pending_interaction?.patch;
+        if (pendingPatch?.type === 'choices') assistRenderChoices(pendingPatch);
+        else if (pendingPatch?.type === 'location_choices') assistRenderLocationChoices(pendingPatch);
         assistScroll();
-        toast('已继续这段对话');
+        toast(pendingPatch ? '已恢复对话和待处理选择' : '已恢复这段对话的会面状态');
       } catch (e) {
         toast('打开对话失败：' + (e.message || e), true);
       }

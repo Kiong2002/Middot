@@ -4,6 +4,8 @@ import importlib
 import sys
 from types import SimpleNamespace
 
+from flask import g
+
 
 def _load_app(monkeypatch, tmp_path):
     monkeypatch.setenv("MIDDOT_DB_PATH", str(tmp_path / "middot-test.db"))
@@ -312,6 +314,84 @@ def test_normal_choice_survives_session_and_runtime_restart(monkeypatch, tmp_pat
     assert module._consume_offer_choice_answers(
         resumed_sid, [{"token": token, "label": "坐地铁"}]
     ) == ("", [])
+
+
+def test_history_continue_restores_state_summary_operations_and_pending_choice(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    module.MIDDOT_AGENT_ORCHESTRATOR = "langgraph"
+    conversation_id = module._conversation_create("device-a", "继续规划")
+    sid = module.session_create(
+        {
+            "conversation_id": conversation_id,
+            "participants": [
+                {
+                    "id": "me",
+                    "name": "我",
+                    "lng": 116.3,
+                    "lat": 39.9,
+                    "address": "国贸",
+                    "prefer": "transit",
+                }
+            ],
+            "anchor": {"name": "国贸", "lng": 116.3, "lat": 39.9, "radius_m": 3000},
+            "last_pois": [{"id": "poi-1", "name": "安静咖啡馆", "legs": []}],
+            "query": "安静咖啡馆",
+            "city": "北京",
+            "memory_did": "device-a",
+            "my_did": "device-a",
+            "agent_task": {
+                "id": "task-recovery",
+                "status": "running",
+                "completed": [],
+                "failures": [],
+            },
+        }
+    )
+    module._conversation_append_event(conversation_id, "device-a", "user", "继续规划")
+    module._conversation_append_event(conversation_id, "device-a", "assistant", "可以")
+    module._conversation_save_summary(sid, "用户正在规划国贸附近的安静咖啡馆。")
+    module._conversation_save_state(sid)
+    module._conversation_record_operation(
+        sid, "set_keyword", {"ok": True, "summary": "关键词已改为安静咖啡馆"}
+    )
+    _, patch = module._tool_offer_choices(
+        sid,
+        {
+            "question": "你想怎么过去？",
+            "mode": "single",
+            "options": [{"label": "坐地铁"}, {"label": "打车"}],
+        },
+    )
+
+    module._sessions.clear()
+    module._choice_graph_conn.close()
+    module._choice_graph_runtime = None
+    module._choice_graph_conn = None
+    with module.app.test_request_context():
+        g.device_id = "device-a"
+        response = module.api_conversation_continue(conversation_id).get_json()
+
+    assert response["state"]["query"] == "安静咖啡馆"
+    assert response["state"]["participants"][0]["address"] == "国贸"
+    assert response["has_summary"] is True
+    assert "关键词已改为安静咖啡馆" in response["operation_summaries"][0]
+    assert response["pending_interaction"]["patch"]["token"] == patch["token"]
+
+    resumed_sid = response["session_id"]
+    question, labels = module._consume_offer_choice_answers(
+        resumed_sid, [{"token": patch["token"], "label": "坐地铁"}]
+    )
+    assert question == "你想怎么过去？"
+    assert labels == ["坐地铁"]
+    conn = module._db_connect()
+    try:
+        recovery = conn.execute(
+            "SELECT pending_interrupt_id FROM conversation_recovery WHERE conversation_id=?",
+            (conversation_id,),
+        ).fetchone()
+        assert recovery["pending_interrupt_id"] is None
+    finally:
+        conn.close()
 
 
 def test_apply_drafts_does_not_reference_assistant_message(monkeypatch, tmp_path):

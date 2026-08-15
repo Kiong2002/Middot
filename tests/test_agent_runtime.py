@@ -5,6 +5,7 @@ from collections import Counter
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from middot.agent_runtime.choice_graph import ChoiceResolutionRuntime, build_choice_graph
 from middot.agent_runtime.location_graph import (
     LocationResolutionRuntime,
     build_location_graph,
@@ -32,6 +33,30 @@ CANDIDATES = [
         "lat": 39.999,
     },
 ]
+
+
+def test_normal_choice_interrupt_resumes_from_checkpoint():
+    saver = InMemorySaver()
+    first = ChoiceResolutionRuntime(build_choice_graph(checkpointer=saver))
+    waiting = first.start(
+        thread_id="choice-thread",
+        request_id="choice-request",
+        question="你想怎么过去？",
+        mode="single",
+        options=[{"label": "坐地铁"}, {"label": "打车"}],
+    )
+    assert waiting.status == "waiting_user"
+    assert waiting.prompt["options"] == [{"label": "坐地铁"}, {"label": "打车"}]
+
+    # 新 runtime 复用 checkpointer，模拟进程恢复。
+    resumed = ChoiceResolutionRuntime(build_choice_graph(checkpointer=saver))
+    completed = resumed.resume(
+        thread_id="choice-thread",
+        interrupt_id=waiting.interrupt_id,
+        labels=["坐地铁"],
+    )
+    assert completed.status == "completed"
+    assert completed.result["labels"] == ["坐地铁"]
 
 
 class FakeDependencies:
