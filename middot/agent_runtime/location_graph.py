@@ -55,7 +55,7 @@ def build_location_graph(
             inputs={"query": state["query"], "city": state.get("city", "")},
             metadata={"request_id": state["request_id"]},
         ) as span:
-            candidates = list(resolver(state["query"], state.get("city", "")))
+            candidates = list(resolver(state))
             if not candidates:
                 raise ValueError("no location candidates")
             if len({item["id"] for item in candidates}) != len(candidates):
@@ -65,9 +65,17 @@ def build_location_graph(
 
     def auto_select(state: LocationGraphState) -> Mapping[str, Any]:
         candidates = state["candidates"]
-        decision: AutoSelection = selector(
-            state["query"], state.get("city", ""), candidates
-        ) or {"candidate_id": "", "confidence": 0.0, "reason": "uncertain"}
+        with sink.span(
+            "location.auto_select",
+            inputs={"query": state["query"], "candidates": candidates},
+            metadata={"request_id": state["request_id"]},
+        ) as span:
+            decision: AutoSelection = selector(state, candidates) or {
+                "candidate_id": "",
+                "confidence": 0.0,
+                "reason": "uncertain",
+            }
+            span.set_outputs({"decision": decision})
         candidate = _candidate_by_id(candidates, decision.get("candidate_id", ""))
         confident = (
             candidate is not None
@@ -99,16 +107,22 @@ def build_location_graph(
             }
         )
         candidate_id = str((answer or {}).get("candidate_id", ""))
+        metadata = {
+            **dict(state.get("metadata") or {}),
+            **dict((answer or {}).get("metadata") or {}),
+        }
         if _candidate_by_id(state["candidates"], candidate_id) is None:
             return {
                 "selected_candidate_id": "",
                 "selection_source": "",
                 "choice_error": "invalid_candidate",
+                "metadata": metadata,
             }
         return {
             "selected_candidate_id": candidate_id,
             "selection_source": "user",
             "choice_error": "",
+            "metadata": metadata,
         }
 
     def route_after_choice(state: LocationGraphState) -> str:
@@ -141,6 +155,7 @@ def build_location_graph(
                     participant_id=state["participant_id"],
                     candidate=candidate,
                     selection_source=state["selection_source"],
+                    state=state,
                 )
             )
             span.set_outputs({"operation_id": operation_id, "result": result})
@@ -207,6 +222,7 @@ class LocationResolutionRuntime:
         participant_id: str,
         query: str,
         city: str = "",
+        metadata: Mapping[str, Any] | None = None,
     ) -> LocationRunOutcome:
         state: LocationGraphState = {
             "thread_id": thread_id,
@@ -214,12 +230,18 @@ class LocationResolutionRuntime:
             "participant_id": participant_id,
             "query": query,
             "city": city,
+            "metadata": dict(metadata or {}),
         }
         result = self._graph.invoke(state, config=self._config(thread_id))
         return self._outcome(result)
 
     def resume(
-        self, *, thread_id: str, interrupt_id: str, candidate_id: str
+        self,
+        *,
+        thread_id: str,
+        interrupt_id: str,
+        candidate_id: str,
+        metadata: Mapping[str, Any] | None = None,
     ) -> LocationRunOutcome:
         config = self._config(thread_id)
         snapshot = self._graph.get_state(config)
@@ -229,7 +251,9 @@ class LocationResolutionRuntime:
         if current_interrupts[0].id != interrupt_id:
             raise ValueError("stale or mismatched interrupt id")
         result = self._graph.invoke(
-            Command(resume={"candidate_id": candidate_id}),
+            Command(
+                resume={"candidate_id": candidate_id, "metadata": dict(metadata or {})}
+            ),
             config=config,
         )
         return self._outcome(result)

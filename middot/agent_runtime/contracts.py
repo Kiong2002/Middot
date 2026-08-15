@@ -9,10 +9,10 @@ from typing import Any, Protocol, TypedDict
 
 class LocationCandidate(TypedDict):
     id: str
-    name: str
+    label: str
     address: str
-    longitude: float
-    latitude: float
+    lng: float
+    lat: float
 
 
 class AutoSelection(TypedDict):
@@ -27,6 +27,7 @@ class LocationGraphState(TypedDict, total=False):
     participant_id: str
     query: str
     city: str
+    metadata: dict[str, Any]
     candidates: list[LocationCandidate]
     auto_selection: AutoSelection
     selected_candidate_id: str
@@ -37,14 +38,13 @@ class LocationGraphState(TypedDict, total=False):
 
 
 class CandidateResolver(Protocol):
-    def __call__(self, query: str, city: str) -> Sequence[LocationCandidate]: ...
+    def __call__(self, state: LocationGraphState) -> Sequence[LocationCandidate]: ...
 
 
 class CandidateSelector(Protocol):
     def __call__(
         self,
-        query: str,
-        city: str,
+        state: LocationGraphState,
         candidates: Sequence[LocationCandidate],
     ) -> AutoSelection | None: ...
 
@@ -58,6 +58,7 @@ class LocationCommitter(Protocol):
         participant_id: str,
         candidate: LocationCandidate,
         selection_source: str,
+        state: LocationGraphState,
     ) -> Mapping[str, Any]: ...
 
 

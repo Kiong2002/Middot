@@ -1,6 +1,7 @@
 # LangGraph / LangSmith 纵切试验
 
-本试验只验证地点消歧的人机中断链路，不替换现有主 Agent，也不改变前端 SSE 协议。
+当前纵切已经接入现有地点工具、高德候选、AI 判断、数据库写入和前端 SSE 协议；主
+Agent 的其余 planner/tool 循环仍保留原实现。
 
 ## 安全边界
 
@@ -9,7 +10,8 @@
 - `interrupt` 节点没有外部副作用；恢复时不会重复查询候选或重复执行 AI 判断。
 - 写入使用由 `thread_id + request_id + participant_id + candidate_id` 生成的稳定
   `operation_id`。接入真实数据库时，必须给该字段增加唯一约束并返回已有结果。
-- 测试使用 `InMemorySaver`；生产不得使用它。正式接入前需实现持久 checkpointer。
+- 单元测试使用 `InMemorySaver`；应用接入使用独立 SQLite checkpoint，单机重启后可以
+  恢复。未来多实例部署时必须换成 PostgresSaver。
 - LangSmith 默认关闭且采样率为 0。即使启用，默认也只上传字符串长度与哈希，不上传
   用户原文、地点名和地址；Trace 失败不影响业务。
 
@@ -30,5 +32,12 @@
 ```
 
 测试覆盖默认回退、自动选择、等待后恢复、模拟重建、伪造候选拒绝、幂等写入与
-Trace 脱敏。下一阶段才会把现有高德查询、AI selector、数据库写入和 SSE 事件适配到
-这些接口，并通过 feature flag 做内部小流量验证。
+Trace 脱敏。集成测试还覆盖真实工具在清空内存 session、重建 Graph runtime 后继续
+恢复，并验证候选查询不重放、操作和地点映射证据均只写一次。
+
+## 启用与回退
+
+- 启用：`MIDDOT_AGENT_RUNTIME=langgraph`
+- 立即回退：`MIDDOT_AGENT_RUNTIME=legacy` 后重启应用
+- LangSmith 独立控制：`MIDDOT_LANGSMITH_TRACING=true` 且配置采样率和 API key；关闭
+  LangSmith 不影响 LangGraph，也不影响本地 `agent_traces`。

@@ -19,17 +19,17 @@ from middot.agent_runtime.trace import (
 CANDIDATES = [
     {
         "id": "tsinghua-main",
-        "name": "清华大学",
+        "label": "清华大学",
         "address": "北京市海淀区双清路30号",
-        "longitude": 116.326,
-        "latitude": 40.003,
+        "lng": 116.326,
+        "lat": 40.003,
     },
     {
         "id": "tsinghua-garden",
-        "name": "清华园",
+        "label": "清华园",
         "address": "北京市海淀区成府路",
-        "longitude": 116.333,
-        "latitude": 39.999,
+        "lng": 116.333,
+        "lat": 39.999,
     },
 ]
 
@@ -40,13 +40,13 @@ class FakeDependencies:
         self.confidence = confidence
         self.commits = {}
 
-    def resolve(self, query, city):
+    def resolve(self, state):
         self.calls["resolve"] += 1
-        assert query == "清华"
-        assert city == "北京"
+        assert state["query"] == "清华"
+        assert state["city"] == "北京"
         return CANDIDATES
 
-    def select(self, query, city, candidates):
+    def select(self, state, candidates):
         self.calls["select"] += 1
         return {
             "candidate_id": candidates[0]["id"],
@@ -139,7 +139,7 @@ def test_confident_ai_selection_skips_interrupt():
 def test_single_candidate_still_needs_selector_confidence():
     deps = FakeDependencies(confidence=0.20)
 
-    def resolve_one(query, city):
+    def resolve_one(state):
         deps.calls["resolve"] += 1
         return CANDIDATES[:1]
 

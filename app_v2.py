@@ -102,6 +102,11 @@ def _session_cleanup():
 # favorites 收藏的地点/POI；rooms/room_members 房间协作。所有跨会话数据的家。
 
 MIDDOT_DB_PATH = os.getenv("MIDDOT_DB_PATH", os.path.join(os.path.dirname(__file__), "middot.db"))
+MIDDOT_AGENT_RUNTIME = os.getenv("MIDDOT_AGENT_RUNTIME", "legacy").strip().lower()
+MIDDOT_LANGGRAPH_DB_PATH = os.getenv(
+    "MIDDOT_LANGGRAPH_DB_PATH",
+    os.path.join(os.path.dirname(__file__), "middot-agent-checkpoints.db"),
+)
 DEVICE_COOKIE = "middot_did"
 DEVICE_COOKIE_MAX_AGE = 60 * 60 * 24 * 365  # 1 年
 LEGACY_DEVICE_CLAIM_TTL_S = 10
@@ -373,6 +378,26 @@ def init_middot_db():
         );
         CREATE INDEX IF NOT EXISTS idx_agent_trace_steps
           ON agent_trace_steps(trace_id, seq);
+        CREATE TABLE IF NOT EXISTS agent_operations (
+          operation_id   TEXT PRIMARY KEY,
+          operation_type TEXT NOT NULL,
+          request_id     TEXT NOT NULL,
+          status         TEXT NOT NULL,
+          result_json    TEXT,
+          created_at     INTEGER NOT NULL,
+          updated_at     INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS agent_interrupts (
+          interrupt_id TEXT PRIMARY KEY,
+          thread_id    TEXT NOT NULL,
+          request_id   TEXT NOT NULL,
+          device_id    TEXT NOT NULL,
+          status       TEXT NOT NULL DEFAULT 'waiting',
+          created_at   INTEGER NOT NULL,
+          consumed_at  INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_interrupts_thread
+          ON agent_interrupts(thread_id, status);
         CREATE TABLE IF NOT EXISTS place_alias_evidence (
           id                 INTEGER PRIMARY KEY AUTOINCREMENT,
           device_id          TEXT NOT NULL,
@@ -4161,31 +4186,45 @@ def _place_alias_mapping(device_id: str, alias: str, city: str) -> dict | None:
         conn.close()
 
 
-def _record_place_alias_confirmation(device_id: str, alias: str, city: str, candidate: dict,
-                                     source: str = "user_location_confirmation") -> None:
+def _record_place_alias_confirmation_conn(
+    conn: sqlite3.Connection,
+    device_id: str,
+    alias: str,
+    city: str,
+    candidate: dict,
+    source: str = "user_location_confirmation",
+) -> None:
     if not device_id or not alias or _place_norm(alias) in {_place_norm(x) for x in _PERSONAL_PLACE_REFERENCES}:
         return
     poi_id = str(candidate.get("id") or "").strip()
     if not poi_id or candidate.get("lng") is None or candidate.get("lat") is None:
         return
     now = _now(); norm = _place_norm(alias)
+    conn.execute(
+        "INSERT INTO place_alias_evidence(device_id,city,alias,alias_norm,poi_id,canonical_name,address,lng,lat,"
+        "confirmation_count,status,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,'confirmed',?,?,?) "
+        "ON CONFLICT(device_id,city,alias_norm,poi_id) DO UPDATE SET "
+        "confirmation_count=confirmation_count+1,canonical_name=excluded.canonical_name,address=excluded.address,"
+        "lng=excluded.lng,lat=excluded.lat,status='confirmed',source=excluded.source,updated_at=excluded.updated_at",
+        (device_id, city, alias, norm, poi_id, str(candidate.get("label") or "")[:160],
+         str(candidate.get("address") or "")[:300], float(candidate["lng"]), float(candidate["lat"]),
+         source, now, now),
+    )
+    # A new confirmation for the same alias supersedes the user's older target.
+    conn.execute(
+        "UPDATE place_alias_evidence SET status='superseded',updated_at=? "
+        "WHERE device_id=? AND city=? AND alias_norm=? AND poi_id<>? AND status='confirmed'",
+        (now, device_id, city, norm, poi_id),
+    )
+
+
+def _record_place_alias_confirmation(device_id: str, alias: str, city: str, candidate: dict,
+                                     source: str = "user_location_confirmation") -> None:
     conn = _db_connect()
     try:
-        conn.execute(
-            "INSERT INTO place_alias_evidence(device_id,city,alias,alias_norm,poi_id,canonical_name,address,lng,lat,"
-            "confirmation_count,status,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,'confirmed',?,?,?) "
-            "ON CONFLICT(device_id,city,alias_norm,poi_id) DO UPDATE SET "
-            "confirmation_count=confirmation_count+1,canonical_name=excluded.canonical_name,address=excluded.address,"
-            "lng=excluded.lng,lat=excluded.lat,status='confirmed',source=excluded.source,updated_at=excluded.updated_at",
-            (device_id, city, alias, norm, poi_id, str(candidate.get("label") or "")[:160],
-             str(candidate.get("address") or "")[:300], float(candidate["lng"]), float(candidate["lat"]),
-             source, now, now),
-        )
-        # A new confirmation for the same alias supersedes the user's older target.
-        conn.execute(
-            "UPDATE place_alias_evidence SET status='superseded',updated_at=? "
-            "WHERE device_id=? AND city=? AND alias_norm=? AND poi_id<>? AND status='confirmed'",
-            (now, device_id, city, norm, poi_id),
+        conn.execute("BEGIN IMMEDIATE")
+        _record_place_alias_confirmation_conn(
+            conn, device_id, alias, city, candidate, source=source
         )
         conn.commit()
     finally:
@@ -4195,8 +4234,6 @@ def _record_place_alias_confirmation(device_id: str, alias: str, city: str, cand
 def _ai_choose_place_candidate(raw: str, city: str, candidates: list[dict],
                                *, context: str = "", global_hint: dict | None = None) -> dict:
     """The model may select only from provider candidates; it can never invent coordinates."""
-    if len(candidates) == 1:
-        return {"index": 0, "confidence": 1.0, "reason": "唯一有效候选"}
     compact = [{"index": i, "name": c.get("label"), "address": c.get("address")}
                for i, c in enumerate(candidates)]
     try:
@@ -4582,9 +4619,79 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
             detected = _extract_city(place_name)
             parsed_city = _extract_city(str(turn_parse.get("city_context") or ""))
             target_city = detected or parsed_city or _landmark_city(place_name) or explicit_city or session_city
-            resolved = _resolve_place_candidates(
-                place_name, target_city, _memory_device_id(sid), context=original_message
-            )
+            graph_outcome = None
+            display_name = new_nickname or target.get("name", "参与者")
+            target_payload = {
+                "index": parts.index(target) + 1,
+                "id": target.get("id"),
+                "name": display_name,
+                "new_nickname": new_nickname,
+            }
+            if _location_graph_enabled():
+                try:
+                    graph_outcome = _start_location_graph(
+                        sid,
+                        place_name,
+                        target_city,
+                        target_payload,
+                        context=original_message,
+                    )
+                except (RuntimeError, ValueError) as exc:
+                    return {"ok": False, "error": str(exc), "runtime": "langgraph"}, None
+                if graph_outcome.status == "waiting_user":
+                    candidates = [
+                        {key: value for key, value in item.items() if not str(key).startswith("_")}
+                        for item in (graph_outcome.prompt or {}).get("candidates", [])
+                    ]
+                    task = dict((session_get(sid) or {}).get("agent_task") or {})
+                    task.update({
+                        "status": "waiting_location_choice",
+                        "waiting_for": f"确认{display_name}的位置",
+                        "location_choice_token": graph_outcome.interrupt_id,
+                        "location_graph_thread_id": graph_outcome.thread_id,
+                        "location_graph_interrupt_id": graph_outcome.interrupt_id,
+                        "location_target": target_payload,
+                        "location_candidates": candidates,
+                        "location_city": target_city,
+                        "location_alias": place_name,
+                        "updated_at": int(time.time()),
+                    })
+                    session_update(sid, {"agent_task": task})
+                    return {
+                        "ok": True,
+                        "summary": f"“{place_name}”有 {len(candidates)} 个可能地点，等待用户确认",
+                        "waiting_for_user": True,
+                        "runtime": "langgraph",
+                        "location_resolution": {
+                            "query": place_name,
+                            "provider": "amap_inputtips",
+                            "candidate_count": len(candidates),
+                        },
+                    }, {
+                        "type": "location_choices",
+                        "question": f"{display_name}具体从哪个地点出发？",
+                        "token": graph_outcome.interrupt_id,
+                        "target_name": display_name,
+                        "options": candidates,
+                    }
+                commit_result = dict((graph_outcome.result or {}).get("commit_result") or {})
+                chosen = dict(commit_result.get("candidate") or {})
+                if not chosen:
+                    return {"ok": False, "error": "地点图没有返回已选候选", "runtime": "langgraph"}, None
+                resolved = {
+                    "success": True,
+                    "status": "resolved",
+                    "candidate": chosen,
+                    "query": place_name,
+                    "provider": chosen.get("source") or "amap",
+                    "candidate_count": 1,
+                    "confidence": 1.0,
+                    "reason": "LangGraph 候选判断完成",
+                }
+            else:
+                resolved = _resolve_place_candidates(
+                    place_name, target_city, _memory_device_id(sid), context=original_message
+                )
             if not resolved.get("success"):
                 return {"ok": False, "error": resolved.get("error", f"『{place_name}』无法定位"),
                         "location_resolution": resolved}, None
@@ -4592,13 +4699,11 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
                 candidates = resolved.get("candidates") or []
                 token = uuid.uuid4().hex[:12]
                 task = dict((session_get(sid) or {}).get("agent_task") or {})
-                display_name = new_nickname or target.get("name", "参与者")
                 task.update({
                     "status": "waiting_location_choice",
                     "waiting_for": f"确认{display_name}的位置",
                     "location_choice_token": token,
-                    "location_target": {"index": parts.index(target) + 1, "id": target.get("id"),
-                                        "name": display_name, "new_nickname": new_nickname},
+                    "location_target": target_payload,
                     "location_candidates": candidates,
                     "location_city": target_city,
                     "location_alias": place_name,
@@ -8026,15 +8131,43 @@ def _tool_clarify_participant_location(sid: str, args: dict) -> tuple[dict, dict
         })
     if not candidates:
         return {"ok": False, "error": f"附近没有找到“{keyword}”"}, None
-    token = uuid.uuid4().hex[:12]
+    graph_outcome = None
+    target_payload = {"index": idx, "id": target.get("id"), "name": target.get("name")}
+    if _location_graph_enabled():
+        try:
+            graph_outcome = _start_location_graph(
+                sid,
+                keyword,
+                (session_get(sid) or {}).get("city") or "",
+                target_payload,
+                context=str((session_get(sid) or {}).get("current_user_message") or ""),
+                force_user_choice=True,
+                prefetched_candidates=candidates,
+            )
+        except (RuntimeError, ValueError) as exc:
+            return {"ok": False, "error": str(exc), "runtime": "langgraph"}, None
+        if graph_outcome.status != "waiting_user":
+            return {"ok": False, "error": "地点消歧图未进入等待状态", "runtime": "langgraph"}, None
+        token = graph_outcome.interrupt_id
+        candidates = [
+            {key: value for key, value in item.items() if not str(key).startswith("_")}
+            for item in (graph_outcome.prompt or {}).get("candidates", [])
+        ]
+    else:
+        token = uuid.uuid4().hex[:12]
     task = dict((session_get(sid) or {}).get("agent_task") or {})
     task.update({
         "status": "waiting_location_choice",
         "waiting_for": f"确认{target.get('name','参与者')}的位置",
         "location_choice_token": token,
-        "location_target": {"index": idx, "id": target.get("id"), "name": target.get("name")},
+        "location_target": target_payload,
         "location_candidates": candidates,
         "location_city": (session_get(sid) or {}).get("city") or "",
+        "location_alias": keyword,
+        **({
+            "location_graph_thread_id": graph_outcome.thread_id,
+            "location_graph_interrupt_id": graph_outcome.interrupt_id,
+        } if graph_outcome else {}),
         "updated_at": int(time.time()),
     })
     session_update(sid, {"agent_task": task})
@@ -8044,6 +8177,7 @@ def _tool_clarify_participant_location(sid: str, args: dict) -> tuple[dict, dict
         "count": len(candidates),
         "waiting_for_user": True,
         "matched_as": aliases[0],
+        "runtime": "langgraph" if graph_outcome else "legacy",
     }, {
         "type": "location_choices",
         "question": f"你指的是哪一个{keyword}？",
@@ -8410,7 +8544,306 @@ def _apply_memory_confirmation_choice(sid: str, device_id: str, labels: list[str
     return result
 
 
+_location_graph_runtime = None
+_location_graph_conn = None
+_location_graph_lock = threading.Lock()
+
+
+def _location_graph_enabled() -> bool:
+    return MIDDOT_AGENT_RUNTIME == "langgraph"
+
+
+def _location_graph_resolver(state: dict) -> list[dict]:
+    metadata = dict(state.get("metadata") or {})
+    prefetched = list(metadata.get("prefetched_candidates") or [])
+    if prefetched:
+        return [
+            {
+                "id": str(item.get("id") or uuid.uuid4().hex[:8]),
+                "label": str(item.get("label") or state.get("query") or "地点"),
+                "address": str(item.get("address") or "地址未提供"),
+                "lng": float(item["lng"]),
+                "lat": float(item["lat"]),
+                **({"distance_m": item.get("distance_m")} if item.get("distance_m") is not None else {}),
+                "source": item.get("source") or "amap_nearby",
+            }
+            for item in prefetched
+            if item.get("lng") is not None and item.get("lat") is not None
+        ]
+    resolved = _resolve_place_candidates(
+        state.get("query") or "",
+        state.get("city") or "",
+        metadata.get("device_id") or "",
+        context=metadata.get("context") or "",
+    )
+    if not resolved.get("success"):
+        raise RuntimeError(resolved.get("error") or "地点候选搜索失败")
+    source = (
+        [resolved["candidate"]]
+        if resolved.get("status") == "resolved"
+        else list(resolved.get("candidates") or [])
+    )
+    candidates = []
+    for raw in source:
+        if raw.get("lng") is None or raw.get("lat") is None:
+            continue
+        candidate = {
+            "id": str(raw.get("id") or uuid.uuid4().hex[:8]),
+            "label": str(raw.get("label") or state.get("query") or "地点"),
+            "address": str(raw.get("address") or "地址未提供"),
+            "lng": float(raw["lng"]),
+            "lat": float(raw["lat"]),
+            "source": raw.get("source") or resolved.get("provider") or "amap",
+        }
+        if resolved.get("status") == "resolved":
+            candidate["_auto_selected"] = True
+            candidate["_auto_confidence"] = max(
+                0.90, float(resolved.get("confidence") or 1.0)
+            )
+            candidate["_auto_reason"] = resolved.get("reason") or "候选已确定"
+        candidates.append(candidate)
+    if not candidates:
+        raise RuntimeError("地图服务没有返回带坐标的候选")
+    return candidates
+
+
+def _location_graph_selector(state: dict, candidates: list[dict]) -> dict:
+    if (state.get("metadata") or {}).get("force_user_choice"):
+        return {"candidate_id": "", "confidence": 0.0, "reason": "需要用户确认"}
+    chosen = next((item for item in candidates if item.get("_auto_selected")), None)
+    if not chosen:
+        return {"candidate_id": "", "confidence": 0.0, "reason": "候选不够确定"}
+    return {
+        "candidate_id": chosen["id"],
+        "confidence": float(chosen.get("_auto_confidence") or 0),
+        "reason": str(chosen.get("_auto_reason") or "")[:240],
+    }
+
+
+def _project_location_selection(sid: str, target: dict, selected: dict) -> tuple[str, str]:
+    s = session_get(sid) or {}
+    parts = [dict(p) for p in (s.get("participants") or [])]
+    row = next((p for p in parts if p.get("id") == target.get("id")), None)
+    if row is None and isinstance(target.get("index"), int) and 1 <= target["index"] <= len(parts):
+        row = parts[target["index"] - 1]
+    if row is None:
+        raise RuntimeError("要设置位置的参与者已不存在")
+    row.update({
+        "lng": float(selected["lng"]),
+        "lat": float(selected["lat"]),
+        "address": f"{selected.get('label')} · {selected.get('address')}",
+    })
+    if target.get("new_nickname"):
+        row["name"] = target["new_nickname"]
+    answer = f"{target.get('name','参与者')}在{selected.get('label')}（{selected.get('address')}）"
+    task = dict(s.get("agent_task") or {})
+    task.update({
+        "status": "running",
+        "answer": answer,
+        "waiting_for": "",
+        "location_candidates": [],
+        "location_choice_token": "",
+        "location_graph_interrupt_id": "",
+        "updated_at": int(time.time()),
+    })
+    session_update(sid, {"participants": parts, "agent_task": task})
+    canonical = str(selected.get("label") or selected.get("address") or "所选位置").strip()
+    return answer, canonical
+
+
+def _location_graph_committer(**payload) -> dict:
+    state = payload["state"]
+    selected = dict(payload["candidate"])
+    metadata = dict(state.get("metadata") or {})
+    if payload.get("selection_source") == "auto":
+        return {"ok": True, "committed": False, "candidate": selected}
+
+    sid = str(metadata.get("session_id") or "")
+    target = dict(metadata.get("target") or {})
+    if not sid or not session_get(sid):
+        raise RuntimeError("会话已失效，无法应用所选位置")
+    # 先验证当前投影目标存在；实际写入在 durable operation 落库后可安全重放。
+    parts = (session_get(sid) or {}).get("participants") or []
+    if not any(p.get("id") == target.get("id") for p in parts) and not (
+        isinstance(target.get("index"), int) and 1 <= target["index"] <= len(parts)
+    ):
+        raise RuntimeError("要设置位置的参与者已不存在")
+
+    operation_id = payload["operation_id"]
+    result = {
+        "ok": True,
+        "committed": True,
+        "candidate": selected,
+        "selection_source": payload.get("selection_source"),
+    }
+    conn = _db_connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT result_json FROM agent_operations WHERE operation_id=? AND status='completed'",
+            (operation_id,),
+        ).fetchone()
+        if existing:
+            result = json.loads(existing["result_json"] or "{}") or result
+        else:
+            _record_place_alias_confirmation_conn(
+                conn,
+                str(metadata.get("device_id") or ""),
+                str(metadata.get("location_alias") or state.get("query") or ""),
+                str(state.get("city") or ""),
+                selected,
+                source="user_candidate_choice",
+            )
+            now = _now()
+            conn.execute(
+                "INSERT INTO agent_operations(operation_id,operation_type,request_id,status,result_json,created_at,updated_at) "
+                "VALUES(?, 'set_participant_location', ?, 'completed', ?, ?, ?) "
+                "ON CONFLICT(operation_id) DO UPDATE SET status='completed',result_json=excluded.result_json,updated_at=excluded.updated_at",
+                (operation_id, payload["request_id"], json.dumps(result, ensure_ascii=False), now, now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    answer, canonical = _project_location_selection(sid, target, selected)
+    return {**result, "answer": answer, "canonical_label": canonical}
+
+
+def _get_location_graph_runtime():
+    global _location_graph_runtime, _location_graph_conn
+    if _location_graph_runtime is not None:
+        return _location_graph_runtime
+    with _location_graph_lock:
+        if _location_graph_runtime is not None:
+            return _location_graph_runtime
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        from middot.agent_runtime.location_graph import LocationResolutionRuntime, build_location_graph
+        from middot.agent_runtime.runtime import load_runtime_settings
+        from middot.agent_runtime.trace import build_trace_sink
+
+        _location_graph_conn = sqlite3.connect(
+            MIDDOT_LANGGRAPH_DB_PATH, timeout=5.0, check_same_thread=False
+        )
+        _location_graph_conn.execute("PRAGMA journal_mode=WAL")
+        _location_graph_conn.execute("PRAGMA busy_timeout=3000")
+        saver = SqliteSaver(_location_graph_conn)
+        graph = build_location_graph(
+            resolver=_location_graph_resolver,
+            selector=_location_graph_selector,
+            committer=_location_graph_committer,
+            checkpointer=saver,
+            trace_sink=build_trace_sink(load_runtime_settings()),
+        )
+        _location_graph_runtime = LocationResolutionRuntime(graph)
+        return _location_graph_runtime
+
+
+def _register_location_interrupt(outcome, device_id: str) -> None:
+    conn = _db_connect()
+    try:
+        now = _now()
+        conn.execute(
+            "INSERT INTO agent_interrupts(interrupt_id,thread_id,request_id,device_id,status,created_at) "
+            "VALUES(?,?,?,?, 'waiting',?) "
+            "ON CONFLICT(interrupt_id) DO UPDATE SET thread_id=excluded.thread_id,request_id=excluded.request_id,"
+            "device_id=excluded.device_id,status='waiting',consumed_at=NULL",
+            (outcome.interrupt_id, outcome.thread_id, outcome.request_id, device_id, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _start_location_graph(sid: str, place_name: str, target_city: str, target: dict,
+                          *, context: str = "", force_user_choice: bool = False,
+                          prefetched_candidates: list[dict] | None = None):
+    s = session_get(sid) or {}
+    task = dict(s.get("agent_task") or {})
+    request_id = ":".join((
+        str(task.get("id") or uuid.uuid4().hex[:10]),
+        str(target.get("id") or target.get("index") or "participant"),
+        hashlib.sha256(place_name.encode("utf-8")).hexdigest()[:10],
+    ))
+    thread_id = f"location:{sid}:{request_id}"
+    outcome = _get_location_graph_runtime().start(
+        thread_id=thread_id,
+        request_id=request_id,
+        participant_id=str(target.get("id") or target.get("index") or "participant"),
+        query=place_name,
+        city=target_city,
+        metadata={
+            "session_id": sid,
+            "device_id": str(s.get("memory_did") or s.get("my_did") or ""),
+            "context": context,
+            "target": target,
+            "location_alias": place_name,
+            "force_user_choice": force_user_choice,
+            "prefetched_candidates": list(prefetched_candidates or []),
+        },
+    )
+    if outcome.status == "waiting_user":
+        _register_location_interrupt(outcome, str(s.get("memory_did") or s.get("my_did") or ""))
+    return outcome
+
+
+def _resume_location_graph(sid: str, choice: dict):
+    interrupt_id = str(choice.get("token") or "")
+    conn = _db_connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM agent_interrupts WHERE interrupt_id=? AND status='waiting'",
+            (interrupt_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise ValueError("位置选项已过期，请重新选择")
+    s = session_get(sid) or {}
+    current_device = str(s.get("memory_did") or s.get("my_did") or "")
+    if row["device_id"] and (
+        not current_device or not secrets.compare_digest(row["device_id"], current_device)
+    ):
+        raise ValueError("这个位置选项不属于当前用户")
+    outcome = _get_location_graph_runtime().resume(
+        thread_id=row["thread_id"],
+        interrupt_id=interrupt_id,
+        candidate_id=str(choice.get("candidate_id") or ""),
+        metadata={"session_id": sid, "device_id": current_device},
+    )
+    if outcome.status == "completed":
+        conn = _db_connect()
+        try:
+            conn.execute(
+                "UPDATE agent_interrupts SET status='consumed',consumed_at=? WHERE interrupt_id=?",
+                (_now(), interrupt_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    elif outcome.interrupt_id != interrupt_id:
+        _register_location_interrupt(outcome, current_device)
+        conn = _db_connect()
+        try:
+            conn.execute(
+                "UPDATE agent_interrupts SET status='rejected',consumed_at=? WHERE interrupt_id=?",
+                (_now(), interrupt_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return outcome
+
+
 def _apply_location_choice(sid: str, choice: dict) -> tuple[bool, str, str]:
+    if _location_graph_enabled():
+        try:
+            outcome = _resume_location_graph(sid, choice)
+        except (RuntimeError, ValueError) as exc:
+            return False, str(exc), ""
+        if outcome.status != "completed":
+            return False, "找不到所选地点，请根据最新候选重新选择", ""
+        result = dict((outcome.result or {}).get("commit_result") or {})
+        return True, str(result.get("answer") or "位置已确认"), str(result.get("canonical_label") or "")
+
     s = session_get(sid) or {}
     task = dict(s.get("agent_task") or {})
     if task.get("status") != "waiting_location_choice":
@@ -8689,6 +9122,8 @@ def api_v2_assistant_stream():
             "query":        bootstrap.get("query", ""),
             "city":         initial_city,
             "chat_history": [],
+            "my_did": g.device_id,
+            "memory_did": g.device_id,
         })
     else:
         # 用最新的 bootstrap 覆盖动态字段（前端能保证是最新的）
@@ -8879,17 +9314,21 @@ def api_v2_assistant_stream():
         # 7 = 单轮最多 7 次 tool_call 循环。原来 5 太紧：
         # "add 3 人 + set keyword + auto search" 就 5 次，一旦某个 add 定位错要 set 修正就爆表。
         MAX_ITERS = 7
-        tools_for_turn = ASSISTANT_TOOLS
+        excluded_tools: set[str] = set()
+        if location_choice:
+            # 位置选择已经由服务端校验并通过 Graph 幂等提交。本轮只让模型继续
+            # 搜索/总结，不能再次创建同一人的位置草稿或第二张消歧卡。
+            excluded_tools.update({"set_participant_location", "clarify_participant_location"})
         if memory_confirmation_result:
             # 记忆确认已经由服务端按一次性 token 确定性处理。本轮不再把写入工具
             # 暴露给模型，避免模型重复调用后出现“已保存”与“未保存”并存的假失败。
-            memory_write_tools = {
+            excluded_tools.update({
                 "remember_person", "remember_preference", "remember_feedback",
-            }
-            tools_for_turn = [
-                tool for tool in ASSISTANT_TOOLS
-                if (tool.get("function") or {}).get("name") not in memory_write_tools
-            ]
+            })
+        tools_for_turn = [
+            tool for tool in ASSISTANT_TOOLS
+            if (tool.get("function") or {}).get("name") not in excluded_tools
+        ]
         try:
             for it in range(MAX_ITERS):
                 llm_started_ms = int(time.time() * 1000)
