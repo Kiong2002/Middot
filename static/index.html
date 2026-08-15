@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>中点 Middot · 每次约都刚好在中间</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='b' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%234CA5FF'/><stop offset='1' stop-color='%230057D9'/></linearGradient><radialGradient id='h' cx='28%25' cy='22%25' r='70%25'><stop offset='0' stop-color='%23FFFFFF' stop-opacity='0.22'/><stop offset='1' stop-color='%23FFFFFF' stop-opacity='0'/></radialGradient><linearGradient id='l' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23FFB067'/><stop offset='1' stop-color='%23F76B15'/></linearGradient><radialGradient id='d' cx='40%25' cy='35%25' r='70%25'><stop offset='0' stop-color='%23FFF6E0'/><stop offset='1' stop-color='%23FFCB70'/></radialGradient></defs><rect width='32' height='32' rx='10' fill='url(%23b)'/><rect width='32' height='32' rx='10' fill='url(%23h)'/><path d='M6 8 C 6 20, 26 12, 26 24' stroke='url(%23l)' stroke-width='2.6' fill='none' stroke-linecap='round'/><circle cx='16' cy='16' r='3.8' fill='url(%23d)'/></svg>"/>
+  <link rel="icon" type="image/svg+xml" href="/static/middot-mark.svg?v=5"/>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -155,9 +155,9 @@
       overflow: hidden;
       display: flex; align-items: center; justify-content: center;
       flex-shrink: 0;
-      box-shadow: 0 1px 2px rgba(0,68,153,.18), 0 5px 14px rgba(0,112,243,.16);
+      box-shadow: 0 1px 2px rgba(4,15,28,.22), 0 7px 18px rgba(11,23,38,.16);
     }
-    .brand-icon svg { width: 34px; height: 34px; display: block; }
+    .brand-icon img { width: 34px; height: 34px; display: block; }
     .brand-name { font-weight: 680; font-size: 16px; letter-spacing: -0.025em; }
     .brand-sub  { font-size: 13px; color: var(--text-3); margin-left: 8px; }
 
@@ -211,6 +211,12 @@
     .results-panel {
       padding: 0 16px 16px;
       overflow-y: auto;
+      overflow-x: hidden;
+      min-height: 0;
+      max-height: 100%;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
       background: var(--bg);
       border-right: 1px solid var(--line);
       display: none;
@@ -283,7 +289,7 @@
       display: flex; flex-direction: column; gap: 4px;
     }
 
-    /* ─── 搜索时的品牌 hero 动效：呼应 logo "S 形曲线 · 会面于中点" ─── */
+    /* ─── 搜索时的品牌 hero 动效：中点主标的立体动态版本 ─── */
     .progress-hero {
       display: flex; flex-direction: column; align-items: center;
       gap: 6px; padding: 6px 0 10px;
@@ -317,9 +323,89 @@
       60%           { opacity: 0.55; }
       75%           { opacity: 0; }
     }
+    #resultsCard { position: relative; overflow: visible; }
+    #resultsCard > :not(.recalc-state) {
+      transition: opacity .24s var(--ease-standard),
+                  filter .24s var(--ease-standard),
+                  transform .24s var(--ease-standard);
+    }
+    #resultsCard.is-recalculating > :not(.recalc-state) {
+      opacity: .22;
+      filter: blur(1.5px) saturate(.7);
+      transform: scale(.994);
+      pointer-events: none;
+    }
+    .recalc-state {
+      position: absolute;
+      inset: 0;
+      z-index: 8;
+      min-height: 270px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 24px;
+      background: color-mix(in oklch, var(--panel) 82%, transparent);
+      backdrop-filter: blur(5px);
+      -webkit-backdrop-filter: blur(5px);
+      animation: recalcStateIn .22s var(--ease-emphasized);
+    }
+    .recalc-state[hidden] { display: none; }
+    .recalc-mark {
+      position: relative;
+      width: 48px;
+      height: 48px;
+      flex: 0 0 48px;
+    }
+    .recalc-mark::before {
+      content: '';
+      position: absolute;
+      inset: -7px;
+      border: 2px solid transparent;
+      border-top-color: #4A9FFF;
+      border-right-color: rgba(74,159,255,.2);
+      border-radius: 50%;
+      animation: recalcOrbit 1.05s linear infinite;
+    }
+    .recalc-mark::after {
+      content: '';
+      position: absolute;
+      inset: 8px;
+      border-radius: 14px;
+      background: rgba(74,159,255,.18);
+      filter: blur(8px);
+      animation: recalcGlow 1.6s ease-in-out infinite;
+    }
+    .recalc-mark img {
+      position: relative;
+      z-index: 1;
+      display: block;
+      width: 48px;
+      height: 48px;
+      filter: drop-shadow(0 7px 12px rgba(8,25,45,.22));
+      animation: recalcMarkBreathe 1.6s ease-in-out infinite;
+    }
+    .recalc-copy { display: flex; flex-direction: column; gap: 3px; }
+    .recalc-copy strong { font-size: 14px; color: var(--text-1); }
+    .recalc-copy span { font-size: 12px; color: var(--text-3); }
+    #recalcBtn.is-recalculating {
+      color: var(--brand);
+      background: var(--brand-tint);
+      box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--brand) 24%, transparent);
+    }
+    #recalcBtn.is-recalculating [data-lucide] { animation: recalcOrbit .85s linear infinite; }
+    @keyframes recalcStateIn { from { opacity: 0; transform: scale(.985); } }
+    @keyframes recalcOrbit { to { transform: rotate(360deg); } }
+    @keyframes recalcGlow { 50% { transform: scale(1.28); opacity: .48; } }
+    @keyframes recalcMarkBreathe { 50% { transform: scale(1.045); } }
     @media (prefers-reduced-motion: reduce) {
       .progress-hero-svg * { animation-duration: 0.001s !important; }
       .progress-hero-label { animation: none; color: var(--text-2); }
+      .recalc-state,
+      .recalc-mark::before,
+      .recalc-mark::after,
+      .recalc-mark img,
+      #recalcBtn.is-recalculating [data-lucide] { animation: none !important; }
     }
     .progress-step {
       display: flex; align-items: flex-start; gap: 10px;
@@ -558,9 +644,56 @@
     .btn-primary { background: var(--brand); color: #fff; }
     .btn-primary:hover { background: var(--brand-2); }
     .btn-primary:disabled { background: var(--line-2); color: var(--text-3); cursor: not-allowed; }
+    #searchBtn .search-route-icon { width: 22px; height: 22px; overflow: visible; }
+    #searchBtn .search-route-base,
+    #searchBtn .search-route-flow {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+    }
+    #searchBtn .search-route-base { opacity: .42; }
+    #searchBtn .search-route-flow { stroke-dasharray: 4 22; opacity: .96; }
+    #searchBtn .search-route-end { fill: currentColor; opacity: .94; }
+    #searchBtn .search-route-mid { fill: #B9E1FF; transform-origin: 12px 12px; }
+    #searchBtn:not(.is-searching):hover .search-route-mid { animation: searchMidHello .7s var(--ease-spring); }
+    #searchBtn.is-searching:disabled {
+      color: #fff;
+      background: linear-gradient(105deg, var(--brand-2), var(--brand), #2A8EF0);
+      background-size: 180% 100%;
+      cursor: wait;
+      animation: searchButtonLight 2.2s ease-in-out infinite;
+    }
+    #searchBtn.is-searching .search-route-flow { animation: searchRouteFlow 1.25s linear infinite; }
+    #searchBtn.is-searching .search-route-end-a { animation: searchEndpointA 1.25s var(--ease-emphasized) infinite; }
+    #searchBtn.is-searching .search-route-end-b { animation: searchEndpointB 1.25s var(--ease-emphasized) infinite; }
+    #searchBtn.is-searching .search-route-mid { animation: searchMidMeet 1.25s ease-in-out infinite; }
+    @keyframes searchRouteFlow { to { stroke-dashoffset: -26; } }
+    @keyframes searchEndpointA {
+      0%, 12% { transform: translate(0,0); opacity: .9; }
+      55%, 72% { transform: translate(7.1px,5.7px); opacity: .25; }
+      100% { transform: translate(0,0); opacity: .9; }
+    }
+    @keyframes searchEndpointB {
+      0%, 12% { transform: translate(0,0); opacity: .9; }
+      55%, 72% { transform: translate(-7.1px,-5.7px); opacity: .25; }
+      100% { transform: translate(0,0); opacity: .9; }
+    }
+    @keyframes searchMidMeet {
+      0%, 35%, 100% { transform: scale(.82); opacity: .65; }
+      58%, 72% { transform: scale(1.38); opacity: 1; filter: drop-shadow(0 0 3px rgba(255,255,255,.8)); }
+    }
+    @keyframes searchMidHello { 50% { transform: scale(1.5); } }
+    @keyframes searchButtonLight { 50% { background-position: 100% 0; } }
     .btn-ghost { background: var(--panel-2); color: var(--text-1); }
     .btn-ghost:hover { background: rgba(0,0,0,.06); }
     .btn-sm { height: 30px; padding: 0 10px; font-size: 13px; border-radius: 8px; }
+    @media (prefers-reduced-motion: reduce) {
+      #searchBtn,
+      #searchBtn .search-route-flow,
+      #searchBtn .search-route-end,
+      #searchBtn .search-route-mid { animation: none !important; }
+    }
 
     .icon-btn {
       width: 30px; height: 30px;
@@ -1402,9 +1535,14 @@
     .hist-empty { color: var(--text-3); font-size: 13px; text-align: center; padding: 20px 12px; }
 
     /* ── 我的会面档案：来源 → 编译档案 ─────────────── */
-    .memory-modal-panel { max-width: 560px; overflow: hidden; transform-origin: center center; }
+    .memory-modal-panel {
+      display: flex; flex-direction: column;
+      max-width: 560px; max-height: calc(100dvh - 32px);
+      overflow: hidden; transform-origin: center center;
+    }
+    .memory-modal-panel.is-profile-view { max-width: min(760px, calc(100vw - 28px)); }
     .memory-modal-panel.is-graph-view { max-width: min(940px, calc(100vw - 28px)); }
-    .memory-modal-panel.is-graph-view .memory-body { max-height: min(80vh, 760px); }
+    .memory-modal-panel.is-graph-view .memory-body { max-height: none; }
     .memory-modal-panel.is-graph-view .memory-intro,
     .memory-modal-panel.is-graph-view .memory-stats { display: none; }
     .memory-modal-panel.is-view-transitioning { pointer-events: none; }
@@ -1413,7 +1551,7 @@
     }
     .memory-modal-panel .modal-head { margin-bottom: 10px; }
     .memory-body {
-      max-height: min(72vh, 720px); overflow-y: auto;
+      flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto;
       padding-right: 3px; overscroll-behavior: contain;
     }
     .memory-intro {
@@ -1434,13 +1572,63 @@
     }
     .memory-stat strong { display: block; color: var(--text-1); font-size: 16px; line-height: 1.2; }
     .memory-stat span { display: block; color: var(--text-3); font-size: 10.5px; margin-top: 2px; }
+    .memory-stats.is-profile-summary {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 2px 2px 0;
+    }
+    .memory-profile-summary-copy { color: var(--text-2); font-size: 12px; }
+    .memory-profile-summary-copy strong { display: inline; margin-right: 4px; color: var(--text-1); font-size: 17px; }
+    .memory-profile-pending {
+      min-height: 30px; padding: 5px 10px; border-radius: 999px;
+      color: var(--brand); background: var(--brand-tint);
+      border: 1px solid color-mix(in oklch, var(--brand) 24%, var(--line));
+      font-size: 11px; font-weight: 650;
+    }
+    .memory-profile-pending:hover { border-color: var(--brand); }
+    .memory-list { display: flex; flex-direction: column; gap: 12px; }
+    .memory-list.memory-profile-grid {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px; align-items: start;
+    }
     .memory-section { display: flex; flex-direction: column; gap: 7px; }
     .memory-section-head {
       display: flex; align-items: center; justify-content: space-between;
       color: var(--text-2); font-size: 12px; font-weight: 650;
       padding: 2px 2px 0;
     }
-    .memory-section-head span:last-child { color: var(--text-3); font-weight: 500; }
+    .memory-section-head > span:last-child { color: var(--text-3); font-weight: 500; }
+    .memory-profile-card {
+      min-width: 0; min-height: 150px; padding: 14px;
+      border: 1px solid var(--line); border-radius: 16px;
+      background: var(--panel-2);
+    }
+    .memory-profile-card .memory-section-head { padding: 0 1px 5px; }
+    .memory-profile-card-title {
+      display: inline-flex; align-items: center; gap: 8px;
+      color: var(--text-1); font-size: 14px; font-weight: 700;
+    }
+    .memory-profile-card-icon {
+      width: 32px; height: 32px; flex: 0 0 32px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 10px; color: var(--brand);
+      background: color-mix(in oklch, var(--brand) 10%, var(--panel));
+    }
+    .memory-profile-card-icon [data-lucide] {
+      width: 20px; height: 20px; stroke-width: 1.8;
+    }
+    .memory-profile-card .memory-item {
+      padding: 10px; border-radius: 11px; background: var(--panel);
+    }
+    .memory-profile-card .memory-empty-compact { background: var(--panel); }
+    .memory-subsection-title {
+      display: flex; align-items: center; justify-content: space-between;
+      margin: 3px 2px 0; color: var(--text-3); font-size: 10.5px; font-weight: 650;
+    }
+    .memory-empty-compact {
+      padding: 11px 12px; border: 1px dashed var(--line); border-radius: 12px;
+      color: var(--text-3); background: color-mix(in oklch, var(--panel-2) 72%, transparent);
+      font-size: 11px; line-height: 1.45;
+    }
     .memory-item {
       display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px;
       padding: 12px; border: 1px solid var(--line); border-radius: 13px;
@@ -1588,7 +1776,11 @@
       border-radius: 14px; color: var(--text-3); font-size: 12px; line-height: 1.6;
     }
     .memory-empty [data-lucide] { display: block; width: 24px; height: 24px; margin: 0 auto 7px; color: var(--brand); }
-    .memory-footer { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .memory-footer {
+      flex: 0 0 auto; display: grid; grid-template-columns: 1fr auto; gap: 8px;
+      padding-top: 12px; margin-top: 10px; border-top: 1px solid var(--line);
+      background: var(--panel);
+    }
     .memory-chat-btn {
       display: inline-flex; align-items: center; justify-content: center; gap: 6px;
       min-height: 38px; padding: 8px 12px; border-radius: 10px;
@@ -1758,6 +1950,17 @@
     .map-wrap.picking, .map-wrap.picking #map { cursor: crosshair; }
 
     /* 浮动上下文胶囊：显示当前锚点/半径/参与者数 */
+    .map-floating-draggable {
+      touch-action: none; user-select: none; -webkit-user-select: none;
+      will-change: left, top; cursor: grab;
+    }
+    .map-floating-draggable.is-dragging {
+      cursor: grabbing !important;
+      transition: none !important;
+      z-index: 40 !important;
+      box-shadow: 0 16px 38px rgba(0,0,0,.18), 0 4px 12px rgba(0,0,0,.10);
+    }
+    .map-floating-draggable.is-dragging * { cursor: grabbing !important; }
     .map-context-pill {
       position: absolute; top: 16px; left: 50%;
       transform: translateX(-50%);
@@ -1774,6 +1977,12 @@
       animation: mctx-in .32s var(--ease-spring);
       max-width: calc(100% - 32px);
     }
+    .mctx-drag-handle {
+      width: 20px; flex: 0 0 20px;
+      display: inline-flex; align-items: center; justify-content: center;
+      color: var(--text-3); opacity: .6;
+    }
+    .mctx-drag-handle [data-lucide] { width: 13px; height: 13px; }
     @keyframes mctx-in {
       from { opacity: 0; transform: translate(-50%, -6px) scale(.96); }
       to   { opacity: 1; transform: translate(-50%, 0) scale(1); }
@@ -1823,6 +2032,8 @@
         max-width: calc(100% - 20px);
       }
       .mctx-item { padding: 0 7px; max-width: 96px; gap: 4px; }
+      .mctx-drag-handle { width: 15px; flex-basis: 15px; }
+      .mctx-drag-handle [data-lucide] { width: 11px; height: 11px; }
       .mctx-icon { width: 18px; height: 18px; }
       .mctx-icon [data-lucide] { width: 10px; height: 10px; }
       .mctx-avatars .mctx-av {
@@ -1831,9 +2042,9 @@
       }
       .mctx-divider { margin: 6px 0; }
 
-      /* 移动端仍放在小 Mid 上方，保留短文字避免图标含义不清。 */
+      /* 移动端仍放在阿觅上方，保留短文字避免图标含义不清。 */
       .map-here-fab {
-        top: auto; left: auto; right: 12px; bottom: 78px;
+        top: auto; left: auto; right: 12px; bottom: calc(76px + env(safe-area-inset-bottom));
         padding: 7px 10px;
         width: auto; height: 34px;
         border-radius: 17px;
@@ -1901,10 +2112,10 @@
     .search-input-wrap .input-here-btn [data-lucide] { width: 14px; height: 14px; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* 地图右下角常驻定位按钮，位于小 Mid 上方；选点模式下复用为填点。 */
+    /* 地图右下角常驻定位按钮，位于阿觅上方；选点模式下复用为填点。 */
     .map-here-fab {
       position: absolute; z-index: 12;
-      top: auto; left: auto; right: 20px; bottom: 86px;
+      top: auto; left: auto; right: 20px; bottom: 88px;
       display: inline-flex;
       align-items: center; gap: 6px;
       padding: 8px 12px;
@@ -1923,7 +2134,7 @@
     .map-here-fab.loading [data-lucide="locate-fixed"] { animation: spin 1s linear infinite; }
     @media (max-width: 820px) {
       .map-here-fab {
-        top: auto; left: auto; right: 12px; bottom: 78px;
+        top: auto; left: auto; right: 12px; bottom: calc(76px + env(safe-area-inset-bottom));
         padding: 7px 10px;
         width: auto; height: 34px;
         border-radius: 17px;
@@ -2085,50 +2296,76 @@
     }
     .assist-fab:active { transform: scale(.96); }
     .assist-fab.hidden { display: none; }
-    .mid-orb {
-      position: relative;
-      display: inline-flex;
-      width: 36px; height: 36px;
-      align-items: center; justify-content: center;
-      border-radius: 50%;
-      background:
-        radial-gradient(circle at 31% 24%, rgba(255,255,255,.95) 0 5%, rgba(255,255,255,.42) 6%, transparent 27%),
-        radial-gradient(circle at 60% 68%, #0077ED 0, #168FF8 48%, #5FC3FF 78%, #BDE8FF 100%);
-      box-shadow:
-        inset -4px -5px 9px rgba(0,55,145,.30),
-        inset 3px 3px 7px rgba(255,255,255,.52),
-        0 5px 12px rgba(0,112,243,.28);
-      transform-origin: center 60%;
-      animation: fabWiggle 3.6s ease-in-out infinite;
-    }
-    .mid-orb::after {
+    .assist-fab::before {
       content: '';
-      position: absolute; inset: 2px;
-      border: 1px solid rgba(255,255,255,.38);
-      border-radius: 50%;
-    }
-    .mid-orb-ring {
-      width: 21px; height: 13px;
-      border: 1.7px solid rgba(255,255,255,.9);
-      border-left-color: transparent;
-      border-radius: 50%;
-      transform: rotate(-22deg);
-      filter: drop-shadow(0 1px 1px rgba(0,65,150,.28));
-    }
-    .mid-orb-dot {
       position: absolute;
-      width: 5px; height: 5px;
+      inset: 5px;
       border-radius: 50%;
-      background: #fff;
-      box-shadow: 0 0 0 3px rgba(255,255,255,.18), 0 1px 3px rgba(0,60,140,.35);
+      background: conic-gradient(from 20deg,
+        rgba(20,140,255,.04), rgba(118,103,255,.32),
+        rgba(116,227,195,.2), rgba(20,140,255,.04));
+      filter: blur(5px);
+      opacity: .24;
+      transform: rotate(0deg) scale(.94);
+      transition: opacity .28s var(--ease-standard), transform .7s var(--ease-emphasized);
+      pointer-events: none;
     }
-    .assist-avatar .mid-orb { width: 27px; height: 27px; animation: none; }
-    .assist-avatar .mid-orb-ring { width: 16px; height: 10px; border-width: 1.3px; }
-    .assist-avatar .mid-orb-dot { width: 4px; height: 4px; }
-    @keyframes fabWiggle {
-      0%, 88%, 100% { transform: rotate(0deg); }
-      92%           { transform: rotate(-14deg); }
-      96%           { transform: rotate(12deg); }
+    .ami-mark {
+      position: relative;
+      z-index: 1;
+      display: block;
+      width: 38px; height: 38px;
+      filter: drop-shadow(0 5px 9px rgba(37,74,160,.16));
+      overflow: visible;
+      transition: transform .54s var(--ease-spring), filter .3s var(--ease-standard);
+    }
+    .assist-avatar .ami-mark { width: 28px; height: 28px; filter: none; }
+    .ami-voice-left,
+    .ami-voice-right,
+    .ami-spark {
+      transform-box: fill-box;
+      transform-origin: center;
+      transition: transform .64s cubic-bezier(.2,.82,.2,1), opacity .3s ease;
+    }
+    .assist-fab:hover::before,
+    .assist-avatar:hover::before {
+      opacity: .72;
+      animation: amiHaloDrift 3.8s linear infinite;
+    }
+    .assist-fab:hover .ami-mark,
+    .assist-fab:focus-visible .ami-mark,
+    .assist-avatar:hover .ami-mark {
+      transform: translateY(-1px) scale(1.045);
+      filter: drop-shadow(0 7px 12px rgba(37,74,160,.23));
+    }
+    .assist-fab:hover .ami-voice-left,
+    .assist-fab:focus-visible .ami-voice-left,
+    .assist-avatar:hover .ami-voice-left { transform: translate(2px,-1.5px) rotate(-1deg); }
+    .assist-fab:hover .ami-voice-right,
+    .assist-fab:focus-visible .ami-voice-right,
+    .assist-avatar:hover .ami-voice-right { transform: translate(-2px,1.5px) rotate(1deg); }
+    .assist-fab:hover .ami-spark,
+    .assist-fab:focus-visible .ami-spark,
+    .assist-avatar:hover .ami-spark { animation: amiConsensusSpark .9s cubic-bezier(.2,.82,.2,1) both; }
+    @keyframes amiConsensusSpark {
+      0% { opacity: .72; transform: scale(.76) rotate(0deg); }
+      52% { opacity: 1; transform: scale(1.34) rotate(18deg); }
+      100% { opacity: .96; transform: scale(1.08) rotate(9deg); }
+    }
+    @keyframes amiHaloDrift { to { transform: rotate(360deg); } }
+    @keyframes amiListening {
+      0%, 100% { transform: scale(.98) rotate(-2deg); filter: drop-shadow(0 4px 8px rgba(20,140,255,.18)); }
+      35% { transform: scale(1.06) rotate(2deg); filter: drop-shadow(0 6px 13px rgba(118,103,255,.3)); }
+      68% { transform: scale(1.015) rotate(-1deg); filter: drop-shadow(0 5px 11px rgba(116,227,195,.28)); }
+    }
+    .assist-fab.is-thinking::before,
+    .assist-panel.is-thinking .assist-avatar::before {
+      opacity: .9;
+      animation: amiHaloDrift 2.2s linear infinite;
+    }
+    .assist-fab.is-thinking .ami-mark,
+    .assist-panel.is-thinking .assist-avatar .ami-mark {
+      animation: amiListening 1.9s cubic-bezier(.45,0,.2,1) infinite;
     }
     .assist-fab .fab-badge {
       position: absolute;
@@ -2170,6 +2407,7 @@
     }
     .assist-title { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; overflow: hidden; }
     .assist-avatar {
+      position: relative;
       width: 34px; height: 34px; border-radius: 50%;
       background: color-mix(in oklch, var(--brand) 10%, var(--panel));
       border: 1px solid color-mix(in oklch, var(--brand) 25%, var(--line));
@@ -2177,7 +2415,31 @@
       flex-shrink: 0;
       font-size: 18px; line-height: 1;
     }
+    .assist-avatar::before {
+      content: '';
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      background: conic-gradient(from 40deg,
+        rgba(20,140,255,.08), rgba(118,103,255,.3),
+        rgba(116,227,195,.22), rgba(20,140,255,.08));
+      filter: blur(4px);
+      opacity: .28;
+      transform: rotate(0deg) scale(.94);
+      transition: opacity .28s var(--ease-standard), transform .7s var(--ease-emphasized);
+      pointer-events: none;
+    }
     .assist-avatar [data-lucide] { width: 16px; height: 16px; }
+    @media (prefers-reduced-motion: reduce) {
+      .ami-mark,
+      .ami-voice-left,
+      .ami-voice-right,
+      .ami-spark,
+      .assist-fab::before,
+      .assist-avatar::before,
+      .assist-fab.is-thinking .ami-mark,
+      .assist-panel.is-thinking .assist-avatar .ami-mark { animation: none !important; }
+    }
     .assist-name { font-weight: 600; font-size: 14px; color: var(--text-1); line-height: 1.1; }
     .assist-sub  { font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
 
@@ -2273,6 +2535,13 @@
     .assist-choice-card.answered button { cursor:default; }
     .assist-choice-card.answered button:not(.selected) { opacity:.72; }
     .assist-choice-card.answered .assist-choice:hover { border-color:var(--line-2); color:var(--text-2); }
+    .assist-choice-card.answered .assist-choice-question { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .assist-choice-expand { flex:0 0 auto; border:0; padding:3px 7px; border-radius:7px; background:var(--panel-2); color:var(--brand); font-size:11px; cursor:pointer !important; }
+    .assist-choice-card.submitted-collapsed:not(.expanded) .assist-choice:not(.selected),
+    .assist-choice-card.submitted-collapsed:not(.expanded) .assist-location-option:not(.selected) { display:none; }
+    .assist-choice-card.submitted-collapsed:not(.expanded) .assist-choice-hint { display:none; }
+    .assist-choice-card.submitted-collapsed:not(.expanded) .assist-location-list { padding-bottom:10px; }
+    .assist-choice-card.submitted-collapsed:not(.expanded) .assist-choice-options { flex-wrap:nowrap; overflow:hidden; }
     .assist-choice-hint { margin-top:8px; font-size:11px; color:var(--text-3); }
     .assist-location-card { width:min(100%,520px); max-width:96%; padding:0; overflow:hidden; }
     .assist-location-card .assist-choice-question { padding:14px 16px 10px; margin:0; font-size:14px; }
@@ -2434,7 +2703,7 @@
     .ats-item .lbl { color: var(--text-1); font-weight: 500; word-break: break-word; }
     .ats-item .sub { color: var(--text-3); font-size: 11px; margin-top: 2px; word-break: break-word; }
 
-    /* ── 草稿卡：小 Mid 想帮你这样填 ─────────────────────────── */
+    /* ── 草稿卡：阿觅想帮你这样填 ─────────────────────────── */
     .assist-draft-card {
       align-self: stretch;
       border: 1px solid var(--brand);
@@ -2680,7 +2949,7 @@
     .assist-send [data-lucide] { width: 16px; height: 16px; }
 
     @media (max-width: 820px) {
-      .assist-fab { right: 16px; bottom: 84px; width: 48px; height: 48px; }
+      .assist-fab { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); width: 48px; height: 48px; }
       .assist-fab [data-lucide] { width: 20px; height: 20px; }
       .assist-panel {
         right: 0; bottom: 0; left: 0;
@@ -2710,7 +2979,8 @@
 
     @media (max-width: 820px) {
       .modal-overlay.bottom-sheet .memory-modal-panel { max-height: 88dvh; }
-      .memory-body { max-height: calc(88dvh - 82px); }
+      .memory-body { max-height: none; }
+      .memory-list.memory-profile-grid { grid-template-columns: 1fr; }
       .memory-editor-grid { grid-template-columns: 1fr; }
       .memory-footer { grid-template-columns: 1fr; }
       .memory-item-btn { width: 40px; height: 40px; }
@@ -2797,48 +3067,7 @@
         <button class="icon-btn mobile-only" id="mobileMenuBtn" title="打开侧栏" aria-label="打开侧栏">
           <i data-lucide="menu"></i>
         </button>
-        <div class="brand-icon" title="中点 · 一条路线穿过会面点">
-          <svg viewBox="0 0 34 34" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="中点 logo">
-            <defs>
-              <linearGradient id="midBgGrad" x1="4" y1="2" x2="30" y2="33" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#66B8FF"/>
-                <stop offset="0.48" stop-color="#1688F8"/>
-                <stop offset="1" stop-color="#0062D6"/>
-              </linearGradient>
-              <radialGradient id="midBgHi" cx="0" cy="0" r="1" gradientTransform="translate(10 7) rotate(51) scale(30)">
-                <stop stop-color="#FFFFFF" stop-opacity="0.34"/>
-                <stop offset="0.62" stop-color="#FFFFFF" stop-opacity="0"/>
-              </radialGradient>
-              <linearGradient id="midRope" x1="5" y1="0" x2="29" y2="0" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#87E7D0"/>
-                <stop offset="0.5" stop-color="#EAF8FF"/>
-                <stop offset="1" stop-color="#FFAD83"/>
-              </linearGradient>
-              <linearGradient id="midPick" x1="12" y1="9" x2="22" y2="27" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#FFFFFF"/>
-                <stop offset="0.58" stop-color="#EAF5FF"/>
-                <stop offset="1" stop-color="#C8E4FF"/>
-              </linearGradient>
-              <filter id="midPickShadow" x="6" y="5" width="23" height="25" filterUnits="userSpaceOnUse">
-                <feDropShadow dx="0" dy="1.5" stdDeviation="1.2" flood-color="#004FAD" flood-opacity="0.38"/>
-              </filter>
-            </defs>
-            <rect x="0.5" y="0.5" width="33" height="33" rx="10.5" fill="url(#midBgGrad)"/>
-            <rect x="0.5" y="0.5" width="33" height="33" rx="10.5" fill="url(#midBgHi)"/>
-            <rect x="1" y="1" width="32" height="32" rx="10" fill="none" stroke="#FFFFFF" stroke-opacity="0.24"/>
-            <!-- 绳索后段先从拨片背后经过 -->
-            <path d="M5 15.2C10 11.5 12.5 20.4 17 17C21.2 13.8 24 18.5 29 15.5" fill="none" stroke="#0059BC" stroke-opacity="0.34" stroke-width="3.6" stroke-linecap="round"/>
-            <path d="M5 14.4C10 10.8 12.5 19.7 17 16.3C21.2 13.1 24 17.8 29 14.8" fill="none" stroke="url(#midRope)" stroke-width="2.45" stroke-linecap="round"/>
-            <!-- 圆润拨片兼具地图定位针轮廓 -->
-            <path d="M17 7.7C22.8 7.7 25.8 11.2 23.9 16.8C22.2 21.6 17 27 17 27S11.8 21.6 10.1 16.8C8.2 11.2 11.2 7.7 17 7.7Z" fill="url(#midPick)" filter="url(#midPickShadow)"/>
-            <path d="M17 8.6C21.9 8.6 24.4 11.5 22.8 16.2" fill="none" stroke="#FFFFFF" stroke-opacity="0.78" stroke-width="1.1" stroke-linecap="round"/>
-            <!-- 绳索穿过拨片中央的短通道，制造前后层次 -->
-            <path d="M13.1 16.5C14.4 18 15.7 17.3 17 16.3C18.3 15.3 19.5 15.2 20.9 16" fill="none" stroke="#91BDE8" stroke-width="3.5" stroke-linecap="round"/>
-            <path d="M13.1 15.8C14.4 17.3 15.7 16.6 17 15.6C18.3 14.6 19.5 14.5 20.9 15.3" fill="none" stroke="url(#midRope)" stroke-width="2.25" stroke-linecap="round"/>
-            <circle cx="5" cy="14.4" r="1.8" fill="#87E7D0"/>
-            <circle cx="29" cy="14.8" r="1.8" fill="#FFAD83"/>
-          </svg>
-        </div>
+        <div class="brand-icon" title="中点 · 约在正中间"><img src="/static/middot-mark.svg?v=5" alt="中点 logo"></div>
         <div>
           <span class="brand-name">中点</span>
           <span class="brand-sub">Middot · 约在正中间</span>
@@ -2941,7 +3170,7 @@
     </div>
 
     <div class="modal-overlay bottom-sheet" id="memoryModal" role="dialog" aria-modal="true" aria-labelledby="memoryModalTitle" hidden>
-      <div class="modal-panel memory-modal-panel">
+      <div class="modal-panel memory-modal-panel is-profile-view">
         <div class="modal-head">
           <div class="modal-title"><i data-lucide="brain"></i><span id="memoryModalTitle">我的会面档案</span></div>
           <button class="modal-close" id="memoryModalClose" aria-label="关闭"><i data-lucide="x"></i></button>
@@ -2949,7 +3178,7 @@
         <div class="modal-body memory-body">
           <div class="memory-intro">
             <i data-lucide="git-merge"></i>
-            <span>小 Mid 会累积独立对话证据；高可信、适合长期且非敏感的事实可自动入档。冲突与敏感线索仍由你确认。搜索和推荐不等于你选了或去过。</span>
+            <span>阿觅会分别判断事实可信度与长期稳定性；同日重复主要增强可信度，跨日出现才增强长期性。冲突与敏感线索仍由你确认。搜索和推荐不等于你选了或去过。</span>
           </div>
           <div class="memory-tabs" id="memoryTabs" role="tablist">
             <button class="memory-tab is-active" type="button" data-memory-view="profile">档案</button>
@@ -2957,12 +3186,12 @@
             <button class="memory-tab" type="button" data-memory-view="graph">图谱</button>
           </div>
           <div class="memory-stats" id="memoryStats" hidden></div>
-          <div id="memoryList" style="display:flex;flex-direction:column;gap:12px;"></div>
+          <div class="memory-list" id="memoryList"></div>
           <form class="memory-editor" id="memoryEditor" hidden></form>
-          <div class="memory-footer" id="memoryFooter">
-            <button class="memory-chat-btn" id="memoryTellMidBtn" type="button"><i data-lucide="message-circle"></i>告诉小 Mid 要记住什么</button>
-            <button class="room-danger" id="memoryClearBtn" type="button">清空会面档案</button>
-          </div>
+        </div>
+        <div class="memory-footer" id="memoryFooter">
+          <button class="memory-chat-btn" id="memoryTellMidBtn" type="button"><i data-lucide="message-circle"></i>告诉阿觅要记住什么</button>
+          <button class="room-danger" id="memoryClearBtn" type="button">清空会面档案</button>
         </div>
       </div>
     </div>
@@ -3068,7 +3297,13 @@
             </div>
           </div>
           <button class="btn btn-primary" id="searchBtn">
-            <i data-lucide="search"></i>
+            <svg class="search-route-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path class="search-route-base" d="M4.9 6.4C9.2 6.4 8.4 12 12 12C15.6 12 14.8 17.6 19.1 17.6"/>
+              <path class="search-route-flow" d="M4.9 6.4C9.2 6.4 8.4 12 12 12C15.6 12 14.8 17.6 19.1 17.6"/>
+              <circle class="search-route-end search-route-end-a" cx="4.9" cy="6.4" r="1.45"/>
+              <circle class="search-route-end search-route-end-b" cx="19.1" cy="17.6" r="1.45"/>
+              <circle class="search-route-mid" cx="12" cy="12" r="2.15"/>
+            </svg>
             <span>开始搜索</span>
           </button>
         </section>
@@ -3098,29 +3333,32 @@
           <div class="progress-hero" aria-hidden="true">
             <svg class="progress-hero-svg" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="搜索中动效">
               <defs>
-                <linearGradient id="pha-bg" x1="0" y1="0" x2="1" y2="1">
-                  <stop offset="0%"   stop-color="#4CA5FF"/>
-                  <stop offset="100%" stop-color="#0057D9"/>
+                <linearGradient id="pha-bg" x1="3" y1="2" x2="29" y2="31" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%"   stop-color="#1A314A"/>
+                  <stop offset="52%"  stop-color="#0B1726"/>
+                  <stop offset="100%" stop-color="#050C15"/>
                 </linearGradient>
                 <radialGradient id="pha-bg-hi" cx="28%" cy="22%" r="70%">
                   <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.22"/>
                   <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
                 </radialGradient>
-                <linearGradient id="pha-line" x1="0" y1="0" x2="1" y2="1">
-                  <stop offset="0%"   stop-color="#FFB067"/>
-                  <stop offset="100%" stop-color="#F76B15"/>
+                <linearGradient id="pha-line" x1="6" y1="8" x2="26" y2="24" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%"   stop-color="#FFFFFF"/>
+                  <stop offset="100%" stop-color="#DCE8F4"/>
                 </linearGradient>
                 <radialGradient id="pha-dot" cx="40%" cy="35%" r="70%">
-                  <stop offset="0%"   stop-color="#FFF6E0"/>
-                  <stop offset="100%" stop-color="#FFCB70"/>
+                  <stop offset="0%"   stop-color="#E8F5FF"/>
+                  <stop offset="42%"  stop-color="#72B7FF"/>
+                  <stop offset="100%" stop-color="#2586EF"/>
                 </radialGradient>
               </defs>
-              <!-- 蓝底 + 高光（与 logo 同款） -->
+              <!-- 深海军蓝底 + 玻璃高光：与中点主标一致，保留立体质感 -->
               <rect width="32" height="32" rx="10" fill="url(#pha-bg)"/>
               <rect width="32" height="32" rx="10" fill="url(#pha-bg-hi)"/>
+              <rect x=".4" y=".4" width="31.2" height="31.2" rx="9.6" fill="none" stroke="#29405A" stroke-width=".8"/>
 
               <!-- S 曲线：先画出来，然后循环 -->
-              <path d="M 6 8 C 6 20, 26 12, 26 24"
+              <path d="M 6.5 8.5 C 12.25 8.5, 11.25 16, 16 16 C 20.75 16, 19.75 23.5, 25.5 23.5"
                     stroke="url(#pha-line)" stroke-width="2.6"
                     stroke-linecap="round" fill="none"
                     pathLength="100"
@@ -3132,15 +3370,15 @@
               </path>
 
               <!-- 曲线柔光（呼应汇合的瞬间） -->
-              <path class="s-curve-glow" d="M 6 8 C 6 20, 26 12, 26 24"
-                    stroke="#FFCB70" stroke-width="4.5"
+              <path class="s-curve-glow" d="M 6.5 8.5 C 12.25 8.5, 11.25 16, 16 16 C 20.75 16, 19.75 23.5, 25.5 23.5"
+                    stroke="#8CC6FF" stroke-width="4.5"
                     stroke-linecap="round" fill="none"
                     opacity="0"/>
 
-              <!-- 蓝色小圆（正向）：从 6,8 出发，中点相遇 -->
-              <circle r="1.7" fill="#7CC0FF" opacity="0">
+              <!-- 雾青与灰紫两端向蓝色中点汇合 -->
+              <circle r="1.55" fill="#A9C7C3" opacity="0">
                 <animateMotion dur="1.8s" repeatCount="indefinite"
-                  path="M 6 8 C 6 20, 26 12, 26 24"
+                  path="M 6.5 8.5 C 12.25 8.5, 11.25 16, 16 16 C 20.75 16, 19.75 23.5, 25.5 23.5"
                   keyPoints="0;0.5;0.5"
                   keyTimes="0;0.55;1"
                   calcMode="spline"
@@ -3148,6 +3386,10 @@
                 <animate attributeName="opacity"
                   values="0;1;1;0;0"
                   keyTimes="0;0.2;0.5;0.6;1"
+                  dur="1.8s" repeatCount="indefinite"/>
+                <animate attributeName="fill"
+                  values="#A9C7C3;#A9C7C3;#4A9FFF;#4A9FFF"
+                  keyTimes="0;0.35;0.55;1"
                   dur="1.8s" repeatCount="indefinite"/>
                 <animate attributeName="r"
                   values="1.5;1.9;1.9;1.5"
@@ -3155,10 +3397,9 @@
                   dur="1.8s" repeatCount="indefinite"/>
               </circle>
 
-              <!-- 橙色小圆（反向）：从 26,24 出发，中点相遇 -->
-              <circle r="1.7" fill="#FFB067" opacity="0">
+              <circle r="1.55" fill="#B6AFC4" opacity="0">
                 <animateMotion dur="1.8s" repeatCount="indefinite"
-                  path="M 26 24 C 26 12, 6 20, 6 8"
+                  path="M 25.5 23.5 C 19.75 23.5, 20.75 16, 16 16 C 11.25 16, 12.25 8.5, 6.5 8.5"
                   keyPoints="0;0.5;0.5"
                   keyTimes="0;0.55;1"
                   calcMode="spline"
@@ -3166,6 +3407,10 @@
                 <animate attributeName="opacity"
                   values="0;1;1;0;0"
                   keyTimes="0;0.2;0.5;0.6;1"
+                  dur="1.8s" repeatCount="indefinite"/>
+                <animate attributeName="fill"
+                  values="#B6AFC4;#B6AFC4;#4A9FFF;#4A9FFF"
+                  keyTimes="0;0.35;0.55;1"
                   dur="1.8s" repeatCount="indefinite"/>
                 <animate attributeName="r"
                   values="1.5;1.9;1.9;1.5"
@@ -3175,7 +3420,7 @@
 
               <!-- 汇合脉冲环（两小圆相遇后向外扩散） -->
               <circle cx="16" cy="16" r="3.8" fill="none"
-                stroke="#FFCB70" stroke-width="1.4" opacity="0">
+                stroke="#4A9FFF" stroke-width="1.4" opacity="0">
                 <animate attributeName="r"
                   values="3.8;3.8;12" keyTimes="0;0.55;1"
                   dur="1.8s" repeatCount="indefinite" calcMode="spline"
@@ -3188,7 +3433,7 @@
                   dur="1.8s" repeatCount="indefinite"/>
               </circle>
 
-              <!-- 中心暖点：初始隐藏，汇合时脉冲放大 -->
+              <!-- 中点主标的蓝色核心，汇合时保留立体脉冲 -->
               <circle cx="16" cy="16" r="3.8" fill="url(#pha-dot)" opacity="0">
                 <animate attributeName="opacity"
                   values="0;0;1;1;0.7"
@@ -3235,6 +3480,10 @@
         </section>
 
         <section class="card" id="resultsCard" hidden style="padding:16px;">
+          <div class="recalc-state" id="recalcState" hidden role="status" aria-live="polite">
+            <span class="recalc-mark" aria-hidden="true"><img src="/static/middot-mark.svg?v=5" alt=""></span>
+            <span class="recalc-copy"><strong>正在重算路线</strong><span>保留候选，只更新每个人的真实耗时</span></span>
+          </div>
           <div class="summary" id="resultSummary" hidden></div>
           <div class="result-toolbar" id="resultToolbar" hidden>
             <div class="rt-seg" role="tablist" aria-label="排序方式">
@@ -3254,11 +3503,12 @@
 
       <main class="map-wrap" id="mapWrap">
         <div id="map"></div>
-        <button class="map-here-fab" id="mapHereBtn" type="button" title="定位到我的当前位置" aria-label="定位到我的当前位置">
+        <button class="map-here-fab map-floating-draggable" id="mapHereBtn" data-floating-key="locate" type="button" title="定位到我的当前位置；按住可拖动" aria-label="定位到我的当前位置；按住可拖动">
           <i data-lucide="locate-fixed"></i>
           <span>定位到我</span>
         </button>
-        <div class="map-context-pill" id="mapContextPill" hidden>
+        <div class="map-context-pill map-floating-draggable" id="mapContextPill" data-floating-key="context" aria-label="地图状态；按住可拖动" hidden>
+          <span class="mctx-drag-handle" aria-hidden="true"><i data-lucide="grip-vertical"></i></span>
           <button class="mctx-item mctx-anchor" id="mctxAnchor" title="修改锚点">
             <span class="mctx-icon"><i data-lucide="crosshair"></i></span>
             <span class="mctx-text" id="mctxAnchorText">未设置锚点</span>
@@ -3286,21 +3536,38 @@
         </button>
 
         <!-- ── AI 助手：右下浮球 + 折叠面板 ────────────────────── -->
-        <button class="assist-fab" id="assistFab" title="小 Mid · 中点里的 AI 助手" aria-label="小 Mid 中点 AI 助手">
-          <span class="mid-orb" aria-hidden="true"><span class="mid-orb-ring"></span><span class="mid-orb-dot"></span></span>
+        <svg class="ami-defs" width="0" height="0" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="amiUiBlue" x1="8" y1="27" x2="35" y2="52" gradientUnits="userSpaceOnUse"><stop stop-color="#6BC1FF"/><stop offset=".52" stop-color="#2E91EF"/><stop offset="1" stop-color="#2364B9"/></linearGradient>
+            <linearGradient id="amiUiViolet" x1="34" y1="9" x2="56" y2="34" gradientUnits="userSpaceOnUse"><stop stop-color="#B2A8F6"/><stop offset=".5" stop-color="#8273E1"/><stop offset="1" stop-color="#5748B2"/></linearGradient>
+            <linearGradient id="amiUiMint" x1="32" y1="29" x2="39" y2="39" gradientUnits="userSpaceOnUse"><stop stop-color="#C8F6EA"/><stop offset="1" stop-color="#58C8AE"/></linearGradient>
+          </defs>
+        </svg>
+        <button class="assist-fab map-floating-draggable" id="assistFab" data-floating-key="ami" title="阿觅 · 中点里的 AI 助手；按住可拖动" aria-label="阿觅，中点 AI 助手；按住可拖动">
+          <svg class="ami-mark" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+            <g class="ami-voice-left"><path d="M7 37.1C7 29.5 13 24 21.2 24H23.8C32.1 24 38 29.4 38 37C38 44.5 32.1 49.8 23.8 49.8H18.5L11.1 55L12.8 47.2C9.2 44.9 7 41.4 7 37.1Z" fill="url(#amiUiBlue)"/><path d="M15 36.9H27.7" stroke="white" stroke-width="3.1" stroke-linecap="round" stroke-opacity=".88"/></g>
+            <g class="ami-voice-right"><path d="M31 19.5C31 12.9 36.3 8.5 43.5 8.5H46C53.2 8.5 58 12.9 58 19.5C58 25.4 54.1 29.4 48.2 30.3L50.1 35.5L44.1 30.5H43.5C36.3 30.5 31 26.1 31 19.5Z" fill="url(#amiUiViolet)"/><path d="M39 19.3H50" stroke="white" stroke-width="2.8" stroke-linecap="round" stroke-opacity=".82"/></g>
+            <path class="ami-spark" d="M35.3 29.7C35.78 32.72 36.88 33.82 39.9 34.3C36.88 34.78 35.78 35.88 35.3 38.9C34.82 35.88 33.72 34.78 30.7 34.3C33.72 33.82 34.82 32.72 35.3 29.7Z" fill="url(#amiUiMint)"/>
+          </svg>
           <span class="fab-badge">AI</span>
         </button>
         <aside class="assist-panel" id="assistPanel" hidden>
           <header class="assist-head">
             <div class="assist-title">
-              <span class="assist-avatar" aria-hidden="true"><span class="mid-orb"><span class="mid-orb-ring"></span><span class="mid-orb-dot"></span></span></span>
+              <span class="assist-avatar" aria-hidden="true">
+                <svg class="ami-mark" viewBox="0 0 64 64" focusable="false">
+                  <g class="ami-voice-left"><path d="M7 37.1C7 29.5 13 24 21.2 24H23.8C32.1 24 38 29.4 38 37C38 44.5 32.1 49.8 23.8 49.8H18.5L11.1 55L12.8 47.2C9.2 44.9 7 41.4 7 37.1Z" fill="url(#amiUiBlue)"/><path d="M15 36.9H27.7" stroke="white" stroke-width="3.1" stroke-linecap="round" stroke-opacity=".88"/></g>
+                  <g class="ami-voice-right"><path d="M31 19.5C31 12.9 36.3 8.5 43.5 8.5H46C53.2 8.5 58 12.9 58 19.5C58 25.4 54.1 29.4 48.2 30.3L50.1 35.5L44.1 30.5H43.5C36.3 30.5 31 26.1 31 19.5Z" fill="url(#amiUiViolet)"/><path d="M39 19.3H50" stroke="white" stroke-width="2.8" stroke-linecap="round" stroke-opacity=".82"/></g>
+                  <path class="ami-spark" d="M35.3 29.7C35.78 32.72 36.88 33.82 39.9 34.3C36.88 34.78 35.78 35.88 35.3 38.9C34.82 35.88 33.72 34.78 30.7 34.3C33.72 33.82 34.82 32.72 35.3 29.7Z" fill="url(#amiUiMint)"/>
+                </svg>
+              </span>
               <div>
-                <div class="assist-name">小 Mid</div>
+                <div class="assist-name">阿觅</div>
                 <div class="assist-sub" id="assistSub">你的会面小雷达 · 换关键词 · 移锚点 · 重算路线</div>
               </div>
             </div>
             <div class="assist-head-actions">
-              <button class="assist-profile-btn" id="assistHistoryBtn" type="button" title="小 Mid 对话历史">
+              <button class="assist-profile-btn" id="assistHistoryBtn" type="button" title="阿觅对话历史">
                 <i data-lucide="history"></i><span>对话</span>
               </button>
               <button class="assist-profile-btn" id="assistMemoryBtn" data-memory-open type="button" aria-controls="memoryModal" aria-haspopup="dialog" title="我的会面档案">
@@ -3315,7 +3582,7 @@
               <button class="memory-secondary" id="assistNewConversation" type="button"><i data-lucide="plus"></i> 新对话</button>
             </div>
             <div class="assist-history-list" id="assistConversationList">
-              <div class="hist-empty">还没有和小 Mid 的历史对话。</div>
+              <div class="hist-empty">还没有和阿觅的历史对话。</div>
             </div>
           </div>
           <div class="assist-msgs" id="assistMsgs">
@@ -3670,6 +3937,7 @@
       lockedUntil: 0,
       timer: null, timerInterval: 3000, unchangedCount: 0,
       lastAiActionsSeen: 0,
+      aiWriteChain: Promise.resolve(),
       _soloBackup: null,  // 进房间前 state.participants 的快照
     };
     const ROOM_AVATAR_COLORS = ['#4CA5FF','#F76B15','#7C5CFF','#22B573','#E64980','#F59F00','#0EA5A5','#845EC2'];
@@ -3717,6 +3985,7 @@
       if (ROOM.timer) { clearInterval(ROOM.timer); ROOM.timer = null; }
       ROOM.code = null; ROOM.members = []; ROOM.revision = 0;
       ROOM.myDeviceId = null; ROOM.lastAiActionsSeen = 0; ROOM.lockedUntil = 0;
+      ROOM.aiWriteChain = Promise.resolve();
       // 还原 solo 参与者列表（如果之前存过）
       if (ROOM._soloBackup && ROOM._soloBackup.length) {
         state.participants = ROOM._soloBackup;
@@ -3822,11 +4091,15 @@
             renderAnchorPanel(); renderAnchorOnMap();
           }
         }
+      } else if (Object.prototype.hasOwnProperty.call(snap, 'anchor') && state.anchor) {
+        // 远端把锚点清空时也必须同步；尤其是 AI CAS 冲突回滚，不能只恢复非空值。
+        setAnchor(null, { silent: true });
       }
       // 远端关键词 → 本地输入框
-      if (typeof snap.keyword === 'string') {
+      if (Object.prototype.hasOwnProperty.call(snap, 'keyword')) {
         const q = $('#queryInput');
-        if (q && q.value !== snap.keyword) q.value = snap.keyword;
+        const remoteKeyword = snap.keyword || '';
+        if (q && q.value !== remoteKeyword) q.value = remoteKeyword;
       }
       // 远端搜索结果 → 本地：session_id 不同才 apply，避免刚 publish 完自己又被自己冲一次
       if (snap.search_snapshot && snap.search_snapshot.session_id
@@ -4858,6 +5131,7 @@
       // 首屏什么都还没填时不显示，避免噪音
       if (!hasAnchor && !validPs.length) { pill.hidden = true; return; }
       pill.hidden = false;
+      requestAnimationFrame(() => pill._restoreFloatingPosition?.());
 
       const anchorText = hasAnchor ? (state.anchor.name || '已选锚点') : '未设锚点';
       document.getElementById('mctxAnchorText').textContent = anchorText;
@@ -5399,9 +5673,8 @@
       const searchBtn = $('#searchBtn');
       searchBtn.disabled = true;
       const btnLabelOrig = searchBtn.innerHTML;
-      searchBtn.innerHTML = '<i data-lucide="loader-2"></i><span>搜索中…</span>';
-      refreshIcons();
-      searchBtn.querySelector('[data-lucide]')?.parentElement?.classList?.add('spin');
+      searchBtn.classList.add('is-searching');
+      searchBtn.querySelector('span').textContent = '正在找中点…';
 
       const payload = {
         query,
@@ -5482,6 +5755,7 @@
         toast(e.message || '搜索失败', true);
       } finally {
         searchBtn.disabled = false;
+        searchBtn.classList.remove('is-searching');
         searchBtn.innerHTML = btnLabelOrig;
         refreshIcons();
       }
@@ -5558,10 +5832,16 @@
     async function doRecalculate() {
       if (!state.sessionId) return;
       const btn = $('#recalcBtn');
+      const resultsCard = $('#resultsCard');
+      const recalcState = $('#recalcState');
+      const startedAt = performance.now();
       const btnHtml = btn.innerHTML;
       btn.disabled = true;
       btn.innerHTML = '<i data-lucide="loader-2"></i><span>重算中…</span>';
-      btn.classList.add('spin');
+      btn.classList.add('is-recalculating');
+      btn.setAttribute('aria-busy', 'true');
+      resultsCard?.classList.add('is-recalculating');
+      if (recalcState) recalcState.hidden = false;
       refreshIcons();
       try {
         const validPs = state.participants.filter(p => p.lng !== null);
@@ -5589,9 +5869,14 @@
       } catch (e) {
         toast(e.message, true);
       } finally {
+        const remaining = 520 - (performance.now() - startedAt);
+        if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
         btn.disabled = false;
         btn.innerHTML = btnHtml;
-        btn.classList.remove('spin');
+        btn.classList.remove('is-recalculating');
+        btn.removeAttribute('aria-busy');
+        resultsCard?.classList.remove('is-recalculating');
+        if (recalcState) recalcState.hidden = true;
         refreshIcons();
       }
     }
@@ -6116,7 +6401,124 @@
       return `${modeEmoji} ${prefix}${formatDurationMinutes(min, { compact: true })}`;
     }
 
+    // 地图浮动控件：拖动不触发原点击动作，位置按可用区域比例持久化。
+    // 桌面端和移动端分别记忆，避免跨断点后控件跑出屏幕。
+    function wireMapFloatingControl(el) {
+      if (!el || el._floatingWired) return;
+      el._floatingWired = true;
+      let drag = null;
+      let suppressClickUntil = 0;
+      let resizeFrame = 0;
+      const mode = () => window.matchMedia('(max-width: 820px)').matches ? 'mobile' : 'desktop';
+      const storageKey = () => `middot-map-float:v2:${el.dataset.floatingKey || el.id}:${mode()}`;
+      const parent = () => el.offsetParent || document.getElementById('mapWrap');
+      const resetInlinePosition = () => {
+        ['left','top','right','bottom','transform'].forEach(prop => el.style.removeProperty(prop));
+        el.classList.remove('is-user-positioned');
+      };
+      const readSaved = () => {
+        try { return JSON.parse(localStorage.getItem(storageKey()) || 'null'); }
+        catch (_) { return null; }
+      };
+      const applySaved = () => {
+        if (el.hidden || !el.offsetWidth || !el.offsetHeight) return;
+        const currentMode = mode();
+        const saved = readSaved();
+        if (!saved) {
+          if (el._floatingMode && el._floatingMode !== currentMode) resetInlinePosition();
+          el._floatingMode = currentMode;
+          return;
+        }
+        const host = parent();
+        if (!host) return;
+        const pad = 8;
+        const maxX = Math.max(pad, host.clientWidth - el.offsetWidth - pad);
+        const maxY = Math.max(pad, host.clientHeight - el.offsetHeight - pad);
+        const left = Math.min(maxX, Math.max(pad, Number(saved.x || 0) * maxX));
+        const top = Math.min(maxY, Math.max(pad, Number(saved.y || 0) * maxY));
+        Object.assign(el.style, {left:`${left}px`, top:`${top}px`, right:'auto', bottom:'auto', transform:'none'});
+        el.classList.add('is-user-positioned');
+        el._floatingMode = currentMode;
+      };
+      const savePosition = () => {
+        const host = parent();
+        if (!host) return;
+        const maxX = Math.max(1, host.clientWidth - el.offsetWidth);
+        const maxY = Math.max(1, host.clientHeight - el.offsetHeight);
+        const left = Number.parseFloat(el.style.left) || 0;
+        const top = Number.parseFloat(el.style.top) || 0;
+        try {
+          localStorage.setItem(storageKey(), JSON.stringify({
+            x: Math.min(1, Math.max(0, left / maxX)),
+            y: Math.min(1, Math.max(0, top / maxY)),
+          }));
+        } catch (_) {}
+        el._floatingMode = mode();
+      };
+      const finishDrag = (event) => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        try { el.releasePointerCapture(event.pointerId); } catch (_) {}
+        if (drag.moved) {
+          savePosition();
+          suppressClickUntil = performance.now() + 220;
+        }
+        el.classList.remove('is-dragging');
+        drag = null;
+      };
+      el.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || el.classList.contains('loading')) return;
+        const host = parent();
+        if (!host) return;
+        const rect = el.getBoundingClientRect();
+        const hostRect = host.getBoundingClientRect();
+        drag = {
+          pointerId: event.pointerId,
+          startX: event.clientX, startY: event.clientY,
+          left: rect.left - hostRect.left, top: rect.top - hostRect.top,
+          moved: false,
+        };
+        try { el.setPointerCapture(event.pointerId); } catch (_) {}
+      });
+      el.addEventListener('pointermove', event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        const dx = event.clientX - drag.startX;
+        const dy = event.clientY - drag.startY;
+        if (!drag.moved && Math.hypot(dx, dy) < 5) return;
+        if (!drag.moved) {
+          drag.moved = true;
+          el.classList.add('is-dragging','is-user-positioned');
+          Object.assign(el.style, {right:'auto', bottom:'auto', transform:'none'});
+        }
+        event.preventDefault();
+        const host = parent();
+        const pad = 8;
+        const maxX = Math.max(pad, host.clientWidth - el.offsetWidth - pad);
+        const maxY = Math.max(pad, host.clientHeight - el.offsetHeight - pad);
+        el.style.left = `${Math.min(maxX, Math.max(pad, drag.left + dx))}px`;
+        el.style.top = `${Math.min(maxY, Math.max(pad, drag.top + dy))}px`;
+      });
+      el.addEventListener('pointerup', finishDrag);
+      el.addEventListener('pointercancel', finishDrag);
+      el.addEventListener('click', event => {
+        if (performance.now() < suppressClickUntil) {
+          event.preventDefault(); event.stopImmediatePropagation();
+        }
+      }, true);
+      el.addEventListener('dragstart', event => event.preventDefault());
+      el._restoreFloatingPosition = applySaved;
+      if (window.ResizeObserver) {
+        const observer = new ResizeObserver(() => {
+          cancelAnimationFrame(resizeFrame);
+          resizeFrame = requestAnimationFrame(applySaved);
+        });
+        const host = parent();
+        if (host) observer.observe(host);
+      }
+      requestAnimationFrame(applySaved);
+    }
+
     function wireStatic() {
+      document.querySelectorAll('[data-floating-key]').forEach(wireMapFloatingControl);
       $('#addPBtn').addEventListener('click', () => {
         if (state.participants.length >= 6) { toast('最多 6 位参与者'); return; }
         state.participants.push(makeParticipant(`朋友${state.participants.length + 1}`));
@@ -6261,6 +6663,14 @@
       refreshIcons();
     }
 
+    function assistSetThinking(active) {
+      const busy = !!active;
+      document.getElementById('assistFab')?.classList.toggle('is-thinking', busy);
+      const panel = document.getElementById('assistPanel');
+      panel?.classList.toggle('is-thinking', busy);
+      if (panel) panel.setAttribute('aria-busy', busy ? 'true' : 'false');
+    }
+
     function assistRenderSuggestions() {
       const wrap = document.getElementById('assistSuggestions');
       if (!wrap) return;
@@ -6333,7 +6743,7 @@
         el.className = 'assist-msg bot assist-location-consent';
         el.innerHTML = `
           <div class="bubble">
-            <div><i data-lucide="map-pin" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"></i>为了计算你和朋友之间更合适的会面点，小 Mid 需要使用你当前的位置。</div>
+            <div><i data-lucide="map-pin" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"></i>为了计算你和朋友之间更合适的会面点，阿觅需要使用你当前的位置。</div>
             <div class="assist-location-actions">
               <button type="button" class="allow">允许一次</button>
               <button type="button" class="skip">暂不允许</button>
@@ -6460,11 +6870,20 @@
       ASSIST_STATE.waitingLabel = '';
     }
 
+    function normalizeAssistantMarkdown(text) {
+      const code=[];
+      const protectedText=String(text||'').replace(/```[\s\S]*?```|`[^`\n]+`/g,match=>{
+        const token=`@@MIDDOT_CODE_${code.length}@@`;code.push(match);return token;
+      });
+      // CommonMark 会拒绝部分紧邻中文或引号的 **粗体**；转成等价 HTML 后再统一净化。
+      const normalized=protectedText.replace(/\*\*([^*\n]+?)\*\*/g,'<strong>$1</strong>');
+      return normalized.replace(/@@MIDDOT_CODE_(\d+)@@/g,(_,index)=>code[Number(index)]||'');
+    }
     function renderMarkdown(text) {
       if (!window.marked || !window.DOMPurify) return escapeHtml(text).replace(/\n/g, '<br>');
       try {
         marked.setOptions({ breaks: true, gfm: true });
-        return DOMPurify.sanitize(marked.parse(text || ''));
+        return DOMPurify.sanitize(marked.parse(normalizeAssistantMarkdown(text)));
       } catch (_) {
         return escapeHtml(text).replace(/\n/g, '<br>');
       }
@@ -6490,7 +6909,7 @@
     function assistDeactivateChoiceCards() {
       document.querySelectorAll('.assist-choice-card.active').forEach(card=>{
         card.classList.remove('active'); card.classList.add('answered');
-        card.querySelectorAll('button').forEach(btn=>{btn.disabled=true;});
+        card.querySelectorAll('button:not(.assist-choice-expand)').forEach(btn=>{btn.disabled=true;});
       });
       ASSIST_STATE.activeChoiceToken=null;
       ASSIST_STATE.selectedChoices=[];
@@ -6500,16 +6919,53 @@
     function assistMarkChoiceCardsSubmitted({locationChoice, choiceAnswers, memoryChoiceLabel}) {
       document.querySelectorAll('.assist-choice-card.active').forEach(card => {
         const strip = card.closest('.assist-turn')?.querySelector('.assist-tool-strip');
-        if (!strip) return;
         let label = '已提交选择';
         if (locationChoice) label = '已选择位置';
         else if (memoryChoiceLabel === '确认保存') label = '已确认保存';
         else if (memoryChoiceLabel === '这次不记') label = '已选择不保存';
         else if (memoryChoiceLabel === '修改') label = '已选择修改';
         else if ((choiceAnswers || []).length > 1) label = `已提交 ${choiceAnswers.length} 项选择`;
-        _atsSetStripStatus(strip, 'ok');
-        _atsSetLabel(strip, label);
+
+        // 上一轮已经结束，内存里的 strip items 已释放；此处必须直接收尾旧 DOM，
+        // 否则外框虽已完成，明细仍会保留旋转中的 wait 图标。
+        if (strip) {
+          strip.querySelectorAll('.ats-item.wait').forEach(item => {
+            item.classList.remove('wait'); item.classList.add('ok');
+            const icon = item.querySelector('.ic');
+            if (icon) {
+              const doneIcon = document.createElement('i');
+              doneIcon.className = 'ic';
+              doneIcon.setAttribute('data-lucide', 'check');
+              icon.replaceWith(doneIcon);
+            }
+            const text = item.querySelector('.lbl');
+            if (text) text.textContent = locationChoice
+              ? `已确认位置：${locationChoice.label || '所选地点'}`
+              : label;
+          });
+          _atsSetStripStatus(strip, 'ok');
+          _atsSetLabel(strip, label);
+        }
+
+        // 提交后默认只预览已选项，仍可展开查看当时的全部候选。
+        card.classList.add('submitted-collapsed');
+        const question = card.querySelector('.assist-choice-question');
+        if (question && !question.querySelector('.assist-choice-expand')) {
+          const toggle = document.createElement('button');
+          toggle.type = 'button';
+          toggle.className = 'assist-choice-expand';
+          toggle.textContent = '展开全部';
+          toggle.setAttribute('aria-expanded', 'false');
+          toggle.addEventListener('click', event => {
+            event.stopPropagation();
+            const expanded = card.classList.toggle('expanded');
+            toggle.textContent = expanded ? '收起' : '展开全部';
+            toggle.setAttribute('aria-expanded', String(expanded));
+          });
+          question.appendChild(toggle);
+        }
       });
+      refreshIcons();
     }
     function assistRenderChoices(patch) {
       assistDeactivateChoiceCards();
@@ -6738,14 +7194,17 @@
       }
       if (!target) return;
       target.ok = !!patch.ok;
-      target.status = patch.ok ? 'ok' : 'err';
+      const waitingForUser = !!patch.data?.waiting_for_user;
+      target.status = waitingForUser ? 'wait' : (patch.ok ? 'ok' : 'err');
       target.summary = patch.summary || '';
       if (name === 'remember_person' && patch.data?.waiting_for_detail) {
         ASSIST_STATE.pendingMemoryDetail = true;
       } else if (name === 'remember_person' && patch.data?.waiting_for_user) {
         ASSIST_STATE.pendingMemoryDetail = false;
       }
-      target.label = patch.ok
+      target.label = waitingForUser
+        ? `等待确认「${String(target.args?.place_name || target.args?.keyword || '候选').slice(0,12)}」的具体位置`
+        : patch.ok
         ? toolDoneLabel(name, target.args)
         : (['remember_person','remember_preference','remember_feedback','forget_memory'].includes(name)
             ? toolNaturalLabel(name, target.args).replace(/^正在/, '') + ' · 未保存'
@@ -6838,7 +7297,7 @@
         el.innerHTML = `
           <div class="aa-head">
             <i data-lucide="history"></i>
-            <span>小 Mid 的改动</span>
+            <span>阿觅的改动</span>
             <span class="aa-count"></span>
           </div>
           <div class="aa-body"></div>
@@ -7010,7 +7469,7 @@
       activityPush(entry);
       flashForKind(d.kind, d.data);
       syncApplyDraftsBackend([{ kind: d.kind, data: d.data }]);
-      if (typeof ROOM !== 'undefined' && ROOM.code) roomBroadcastAfterAi(d.kind, d.data, before);
+      if (typeof ROOM !== 'undefined' && ROOM.code) roomBroadcastAfterAi(d.kind, d.data, before, entry);
     }
 
     function syncApplyDraftsBackend(drafts) {
@@ -7022,39 +7481,64 @@
       }).catch(() => {});
     }
 
-    function roomBroadcastAfterAi(kind, data, before) {
-      if (typeof roomDebouncedUpdate !== 'function') return;
-      // 房间字段更新（跟人工改走同一 debounce 通道）
+    function roomBroadcastAfterAi(kind, data, before, activityEntry = null) {
+      if (!ROOM.code) return;
+      // AI 修改用一次原子请求提交“字段变化 + 归属日志 + 旧值条件”。
+      // 旧值仍相同才写入；无关字段变化不会阻塞，同一字段被抢先修改则返回 409。
+      const patch = { expected: {} };
       if (kind === 'shift_center' && data?.anchor) {
-        roomDebouncedUpdate({ anchor: {
+        patch.anchor = {
           lng: data.anchor.lng, lat: data.anchor.lat,
           name: data.anchor.name, radius_m: data.anchor.radius_m || (state.anchor?.radius_m || 5000)
-        }});
+        };
+        patch.expected.anchor = before?.anchor || null;
       } else if (kind === 'set_keyword') {
-        roomDebouncedUpdate({ keyword: data?.keyword || '' });
+        patch.keyword = data?.keyword || '';
+        if (before) patch.expected.keyword = before.keyword || '';
       } else if (kind === 'set_radius' && state.anchor) {
-        roomDebouncedUpdate({ anchor: { ...state.anchor, radius_m: data.radius_m }});
+        patch.anchor = { ...state.anchor, radius_m: data.radius_m };
+        if (before) patch.expected.anchor = { ...state.anchor, radius_m: before.radius_m || 5000 };
       } else if (kind === 'set_participant_location') {
         const meDid = ROOM.myDeviceId;
         if (data?.participant_id === `room-${meDid}`) {
-          const patch = {};
           if (data.lng != null && data.lat != null) {
-            patch.my_location = { lng: data.lng, lat: data.lat, address: data.address || '' };
+            patch.my_location = {lng:data.lng, lat:data.lat, address:data.address || ''};
+            patch.expected.my_location = before?.lng != null && before?.lat != null
+              ? {lng:before.lng, lat:before.lat, address:before.address || ''} : null;
           }
-          if (data.new_nickname) patch.my_nickname = data.new_nickname;
-          if (Object.keys(patch).length) roomDebouncedUpdate(patch);
+          if (data.new_nickname) {
+            patch.my_nickname = data.new_nickname;
+            patch.expected.my_nickname = before?.name || '';
+          }
         }
       }
-      // AI 归属日志：立刻单独发一条（不 debounce），让别人 3s 内能看到 attribution
       const aiAction = buildAiActionPayload(kind, data, before);
-      if (aiAction) {
-        fetch(`/api/v2/rooms/${ROOM.code}/update`, {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ ai_action: aiAction }),
-        }).then(r => r.json()).then(r => {
-          if (r?.revision) ROOM.revision = Math.max(ROOM.revision, r.revision);
-        }).catch(() => {});
-      }
+      if (aiAction) patch.ai_action = aiAction;
+      if (Object.keys(patch).every(key => ['expected','ai_action'].includes(key))) return;
+      const roomCode = ROOM.code;
+      // 同一轮若连续改多个字段，按产生顺序落库，避免网络乱序造成后一步先冲突。
+      ROOM.aiWriteChain = (ROOM.aiWriteChain || Promise.resolve()).then(() =>
+        fetch(`/api/v2/rooms/${roomCode}/update`, {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(patch),
+        }).then(async response => {
+          const result = await response.json().catch(() => ({}));
+          if (response.status === 409 && result.conflict) {
+            if (activityEntry) {
+              activityEntry.undone = true;
+              activityEntry.label += ' · 房间已变化，未覆盖';
+              renderActivityPanel();
+            }
+            if (result.snapshot && ROOM.code === roomCode) roomApplySnapshot(result.snapshot);
+            toast('同一项刚被房间里的其他操作更新，阿觅没有覆盖它', true);
+            return;
+          }
+          if (!response.ok) throw new Error(result.error || '房间同步失败');
+          if (ROOM.code === roomCode && result.revision) {
+            ROOM.revision = Math.max(ROOM.revision, result.revision);
+          }
+        })
+      ).catch(error => toast(error.message || '房间同步失败', true));
     }
 
     function buildAiActionPayload(kind, data, before) {
@@ -7184,14 +7668,18 @@
       el.innerHTML = q.map(a => {
         const rem = Math.max(0, Math.floor((ROOM_BANNER_TTL_MS - (Date.now() - a.ts * 1000)) / 1000));
         const isHuman = a.actor_type === 'human';
-        // human 用手指图标 + "X 改了…"；ai 用 sparkles + "X 的小 Mid 改了…"
+        // human 直接显示成员操作；ai 明确说明阿觅根据哪位成员的输入完成更新。
         const icon = isHuman ? 'hand' : 'sparkles';
-        const verb = isHuman ? '改了' : ' 的小 Mid 改了';
+        const actor = escapeHtml(a.actor_name || '某人');
+        const label = escapeHtml(roomBannerLabel(a));
+        const title = isHuman
+          ? `<b>${actor}</b>改了 ${label}`
+          : `阿觅根据 <b>${actor}</b> 的操作更新了 ${label}`;
         return `
           <div class="ra-item" data-aid="${a.id}">
             <i data-lucide="${icon}" class="ra-ic"></i>
             <div class="ra-txt">
-              <div class="ra-title"><b>${escapeHtml(a.actor_name || '某人')}</b>${verb} ${escapeHtml(roomBannerLabel(a))}</div>
+              <div class="ra-title">${title}</div>
               <div class="ra-sub">${new Date(a.ts * 1000).toLocaleTimeString()}</div>
             </div>
             <button type="button" class="ra-btn" data-undo="${a.id}">撤销</button>
@@ -7325,7 +7813,7 @@
       el.innerHTML = `
         <div class="draft-head">
           <i data-lucide="sparkles"></i>
-          <div class="draft-title">小 Mid 想帮你这样填</div>
+          <div class="draft-title">阿觅想帮你这样填</div>
         </div>
         ${warnHtml}
         <div class="draft-rows"></div>
@@ -7603,6 +8091,7 @@
 
       const pendingUser = assistAddUser(displayText);
       ASSIST_STATE.streaming = true;
+      assistSetThinking(true);
       document.getElementById('assistSend').disabled = true;
       input.disabled = true;
       await assistMaybeAttachMyLocation(displayText);
@@ -7680,6 +8169,7 @@
         (ASSIST_STATE.currentTurnEl || ASSIST_STATE.msgsEl).appendChild(err);
       } finally {
         ASSIST_STATE.streaming = false;
+        assistSetThinking(false);
         document.getElementById('assistSend').disabled = false;
         input.disabled = false;
         assistTurnEnd();
@@ -7792,7 +8282,7 @@
       const list = document.getElementById('assistConversationList');
       if (!list) return;
       if (!HIST.conversations.length) {
-        list.innerHTML = `<div class="hist-empty">还没有和小 Mid 的历史对话。</div>`;
+        list.innerHTML = `<div class="hist-empty">还没有和阿觅的历史对话。</div>`;
         return;
       }
       list.innerHTML = HIST.conversations.map(it => {
@@ -7841,7 +8331,9 @@
             const el = document.createElement('div');
             el.className = `assist-msg ${event.role === 'user' ? 'user' : 'bot'}`;
             el.innerHTML = `<div class="bubble"></div>`;
-            el.querySelector('.bubble').textContent = event.visible_content || '';
+            const bubble=el.querySelector('.bubble');
+            if(event.role==='user')bubble.textContent=event.visible_content||'';
+            else bubble.innerHTML=renderMarkdown(event.visible_content||'');
             ASSIST_STATE.msgsEl.appendChild(el);
           });
         }
@@ -7888,7 +8380,7 @@
       }
       conversationHistoryClose();
       document.getElementById('assistInput')?.focus();
-      toast('已新建小 Mid 对话');
+      toast('已新建阿觅对话');
     }
 
     async function conversationDelete(id) {
@@ -8154,13 +8646,16 @@
         ? `<div class="memory-source-quote">“${escapeHtml(p.excerpt)}”</div>` : '';
       return `<div class="memory-source"><i data-lucide="git-commit-horizontal"></i><span class="memory-source-badge">${escapeHtml(label)}</span>${when ? `<span>${escapeHtml(when)}</span>` : ''}</div>${quote}`;
     }
-    function memoryItemHtml(kind, item) {
+    function memoryItemHtml(kind, item, extraFacts = []) {
       const editable = kind !== 'episode';
       const expired = kind === 'person' && item.place_status === 'expired';
+      const extraHtml = extraFacts.length
+        ? `<div class="memory-item-detail">${extraFacts.map(f => `${escapeHtml(f.label)}：${escapeHtml(f.value)}`).join(' · ')}</div>` : '';
       return `<article class="memory-item${expired ? ' is-expired' : ''}" data-kind="${kind}" data-id="${Number(item.id)}">
         <div class="memory-item-main">
           <div class="memory-item-title">${escapeHtml(memoryTitle(kind, item))}</div>
           <div class="memory-item-detail">${escapeHtml(memoryDetail(kind, item))}</div>
+          ${extraHtml}
           ${memorySourceHtml(item)}
         </div>
         <div class="memory-item-actions">
@@ -8174,17 +8669,25 @@
       if (!items.length) return '';
       return `<section class="memory-section"><div class="memory-section-head"><span>${escapeHtml(label)}</span><span>${items.length} 项</span></div>${items.map(x => memoryItemHtml(kind, x)).join('')}</section>`;
     }
+    function memoryEvidenceSpan(hours) {
+      const value=Number(hours||0);
+      if(value<1) return '同日';
+      if(value<24) return `覆盖 ${Math.round(value)} 小时`;
+      const days=value/24;
+      return `覆盖 ${days<10?days.toFixed(1):Math.round(days)} 天`;
+    }
     function memoryCandidateSection(items) {
       if (!items.length) return '';
       return `<section class="memory-section"><div class="memory-section-head"><span>待确认记忆</span><span>${items.length} 组</span></div>
-        <div class="modal-hint" style="margin-bottom:8px;">这里仅保留尚未达到自动晋升条件、敏感或存在冲突的线索。系统会继续累积独立证据；你也可以现在确认入档。</div>
+        <div class="modal-hint" style="margin-bottom:8px;">这里保留尚未达到自动晋升条件、敏感或存在冲突的线索。同日重复主要提高事实可信度，跨日证据才提高长期稳定性；你也可以现在确认入档。</div>
         ${items.map(item => `<article class="memory-item memory-candidate${item.status === 'conflict' ? ' is-conflict' : ''}" data-candidate-group="${escapeHtml(item.group_id)}" data-candidate-ids="${(item.candidate_ids || []).map(Number).join(',')}">
           <div class="memory-item-main">
             <div class="memory-item-title">${escapeHtml(item.entity_key)} · ${escapeHtml(item.predicate_label)}</div>
             <div class="memory-item-detail">${escapeHtml(item.value)}${item.status === 'conflict' ? ' · 与当前档案可能冲突' : ''}</div>
-            <div class="memory-source"><i data-lucide="git-merge"></i><span>${Number(item.evidence_count || item.candidate_ids?.length || 0)} 条证据 · ${Number(item.independent_count || 1)} 个独立对话${item.sensitive ? ' · 敏感事实' : ''}</span></div>
+            <div class="memory-source"><i data-lucide="git-merge"></i><span>${Number(item.evidence_count || item.candidate_ids?.length || 0)} 条证据 · ${Number(item.independent_count || 1)} 次对话 · ${Number(item.distinct_day_count || 1)} 个证据日 · ${memoryEvidenceSpan(item.evidence_span_hours)}${item.sensitive ? ' · 敏感事实' : ''}</span></div>
             <div class="memory-confidence"><span>事实可信</span><span class="memory-confidence-track"><span class="memory-confidence-fill" style="width:${Math.round(Number(item.confidence || 0) * 100)}%"></span></span><strong>${Math.round(Number(item.confidence || 0) * 100)}%</strong></div>
             <div class="memory-confidence persistence"><span>适合长期</span><span class="memory-confidence-track"><span class="memory-confidence-fill" style="width:${Math.round(Number(item.persistence_score || 0) * 100)}%"></span></span><strong>${Math.round(Number(item.persistence_score || 0) * 100)}%</strong></div>
+            <div class="memory-source"><i data-lucide="calendar-range"></i><span>语义稳定 ${Math.round(Number(item.semantic_persistence_score || 0) * 100)}% · 时间覆盖 ${Math.round(Number(item.temporal_coverage_score || 0) * 100)}%</span></div>
             ${item.decision_reason ? `<div class="memory-decision-reason">${escapeHtml(item.decision_reason)}</div>` : ''}
             ${(item.evidence || []).map(text => `<div class="memory-source-quote">${escapeHtml(text)}</div>`).join('')}
           </div>
@@ -8195,10 +8698,17 @@
           </div>
         </article>`).join('')}</section>`;
     }
-    function memoryWikiSection(pages) {
-      const confirmed = (pages || []).filter(page => (page.facts || []).some(f => f.status === 'confirmed'));
-      if (!confirmed.length) return '';
-      return `<section class="memory-section"><div class="memory-section-head"><span>Wiki 页面</span><span>${confirmed.length} 个实体</span></div>${confirmed.map(page => `<article class="memory-item memory-wiki-card" data-wiki-page="${escapeHtml(page.id)}"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(page.title)}</div><div class="memory-item-detail">${escapeHtml(page.summary)}</div><div class="memory-source"><i data-lucide="network"></i><span>${(page.facts || []).length} 条关联事实</span></div></div><i data-lucide="chevron-right"></i></article>`).join('')}</section>`;
+    function memoryGeneralWikiPages(pages, types) {
+      return (pages || []).filter(page => types.includes(page.type)).map(page => {
+        const facts = (page.facts || []).filter(f => f.status === 'confirmed' && !f.domain_kind);
+        return {...page, facts, summary:facts.slice(0,3).map(f => `${f.label}：${f.value}`).join('；')};
+      }).filter(page => page.facts.length);
+    }
+    function memoryWikiCards(pages) {
+      return (pages || []).map(page => `<article class="memory-item memory-wiki-card" data-wiki-page="${escapeHtml(page.id)}"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(page.title)}</div><div class="memory-item-detail">${escapeHtml(page.summary)}</div><div class="memory-source"><i data-lucide="network"></i><span>${page.facts.length} 条关联事实</span></div></div><i data-lucide="chevron-right"></i></article>`).join('');
+    }
+    function memoryProfileSection(icon, label, count, unit, body, emptyText) {
+      return `<section class="memory-section memory-profile-card"><div class="memory-section-head"><span class="memory-profile-card-title"><span class="memory-profile-card-icon" aria-hidden="true"><i data-lucide="${escapeHtml(icon)}"></i></span>${escapeHtml(label)}</span><span>${count} ${escapeHtml(unit)}</span></div>${body || `<div class="memory-empty-compact">${escapeHtml(emptyText)}</div>`}</section>`;
     }
     function memoryGraphLayout(nodes, edges) {
       const signature = nodes.map(n => n.id).sort().join('|');
@@ -8489,11 +8999,12 @@
       const panel=document.querySelector('.memory-modal-panel'),before=panel?.getBoundingClientRect();
       MEMORY_UI.view = ['profile','candidates','graph'].includes(view) ? view : 'profile';
       document.querySelectorAll('[data-memory-view]').forEach(btn => btn.classList.toggle('is-active', btn.dataset.memoryView === MEMORY_UI.view));
+      panel?.classList.toggle('is-profile-view', MEMORY_UI.view === 'profile');
       panel?.classList.toggle('is-graph-view', MEMORY_UI.view === 'graph');
-      memoryRender();
+      memoryRender(MEMORY_UI.view === 'graph');
       memoryAnimateViewChange(panel,before);
     }
-    function memoryRender() {
+    function memoryRender(fitGraph = false) {
       const data = MEMORY_UI.data || {};
       const list = document.getElementById('memoryList');
       const stats = document.getElementById('memoryStats');
@@ -8505,25 +9016,39 @@
       list.hidden = false; footer.hidden = false;
       const s = data.stats || {};
       stats.hidden = false;
-      stats.innerHTML = `<div class="memory-stat"><strong>${Number(s.active || 0)}</strong><span>当前会用于规划</span></div>
-        <div class="memory-stat"><strong>${Number(s.expired || 0)}</strong><span>已过期待确认</span></div>
-        <div class="memory-stat"><strong>${Number(s.candidates || 0)}</strong><span>待确认记忆</span></div>`;
+      stats.classList.toggle('is-profile-summary', MEMORY_UI.view === 'profile');
+      if (MEMORY_UI.view === 'profile') {
+        stats.innerHTML = `<div class="memory-profile-summary-copy"><strong>${Number(s.active || 0)}</strong>条记忆正在帮助规划</div><button class="memory-profile-pending" type="button" data-memory-summary-candidates>${Number(s.candidates || 0)} 条待确认</button>`;
+      } else {
+        stats.innerHTML = `<div class="memory-stat"><strong>${Number(s.active || 0)}</strong><span>当前会用于规划</span></div>
+          <div class="memory-stat"><strong>${Number(s.expired || 0)}</strong><span>已过期待确认</span></div>
+          <div class="memory-stat"><strong>${Number(s.candidates || 0)}</strong><span>待确认记忆</span></div>`;
+      }
+      list.classList.toggle('memory-profile-grid', MEMORY_UI.view === 'profile');
       if (MEMORY_UI.view === 'candidates') {
         list.innerHTML = memoryCandidateSection(data.candidate_groups || []) || `<div class="memory-empty"><i data-lucide="circle-check"></i>目前没有待确认记忆。</div>`;
       } else if (MEMORY_UI.view === 'graph') {
         list.innerHTML = memoryGraphHtml(data.graph || {});
       } else {
-        const sections = [
-          memorySectionHtml('preference', '个人偏好', data.preferences || []),
-          memorySectionHtml('person', '常约的人', data.people || []),
-          memorySectionHtml('feedback', '店铺反馈', data.feedback || []),
-          memoryWikiSection(data.wiki_pages || []),
-          memorySectionHtml('episode', '规划记录（不等于去过）', data.episodes || []),
-        ].filter(Boolean).join('');
-        list.innerHTML = sections || `<div class="memory-empty"><i data-lucide="brain"></i>还没有已确认的会面档案。<br>历史线索可以在“待确认”中处理。</div>`;
+        const pages=data.wiki_pages||[],preferences=data.preferences||[],people=data.people||[],feedback=data.feedback||[],episodes=data.episodes||[],placeAliases=data.place_aliases||[];
+        const aboutPages=memoryGeneralWikiPages(pages,['user','preference']);
+        const personPages=memoryGeneralWikiPages(pages,['person']);
+        const placePages=memoryGeneralWikiPages(pages,['place','poi','brand','organization','school']);
+        const aboutBody=`<div class="memory-subsection-title"><span>个人偏好</span><span>${preferences.length}</span></div>${preferences.length?preferences.map(x=>memoryItemHtml('preference',x)).join(''):'<div class="memory-empty-compact">暂时还不了解你的长期出行、饮食或预算偏好。</div>'}${aboutPages.length?`<div class="memory-subsection-title"><span>个人资料</span><span>${aboutPages.length}</span></div>${memoryWikiCards(aboutPages)}`:''}`;
+        const representedPeople=new Set(people.map(x=>x.name));
+        const peopleCount=new Set([...people.map(x=>x.name),...personPages.map(page=>page.title)]).size;
+        const peopleBody=`${people.map(x=>memoryItemHtml('person',x,(personPages.find(page=>page.title===x.name)||{}).facts||[])).join('')}${memoryWikiCards(personPages.filter(page=>!representedPeople.has(page.title)))}`;
+        const aliasBody=placeAliases.length?`<div class="memory-subsection-title"><span>地点简称</span><span>${placeAliases.length}</span></div>${placeAliases.map(x=>`<div class="memory-item"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(x.alias)} → ${escapeHtml(x.canonical_name)}</div><div class="memory-item-detail">${escapeHtml(x.city)} · ${escapeHtml(x.address||'地址未提供')} · 已确认 ${Number(x.confirmation_count||1)} 次</div></div><button class="memory-item-btn" type="button" data-place-alias-delete="${Number(x.id)}" title="删除地点简称"><i data-lucide="trash-2"></i></button></div>`).join('')}`:'';
+        const placeBody=`${aliasBody}${feedback.map(x=>memoryItemHtml('feedback',x)).join('')}${memoryWikiCards(placePages)}`;
+        list.innerHTML = [
+          memoryProfileSection('user-round','关于我',preferences.length+aboutPages.length,'条',aboutBody,'暂时还不了解你的长期资料。'),
+          memoryProfileSection('users-round','常约的人',peopleCount,'人',peopleBody,'还没有常约的人或人物资料。'),
+          memoryProfileSection('map-pin','地点与店铺',placeAliases.length+feedback.length+placePages.length,'个',placeBody,'还没有确认过的地点资料、简称或店铺反馈。'),
+          memoryProfileSection('calendar-check','规划记录',episodes.length,'条',episodes.map(x=>memoryItemHtml('episode',x)).join(''),'还没有规划记录；搜索和推荐不会被当成已经去过。'),
+        ].join('');
       }
       refreshIcons();
-      if (MEMORY_UI.view === 'graph') requestAnimationFrame(() => memoryInitGraph());
+      if (MEMORY_UI.view === 'graph') requestAnimationFrame(() => memoryInitGraph(fitGraph));
     }
     async function memoryFetchJson(url, options = {}) {
       const response = await fetch(url, options);
@@ -8556,8 +9081,12 @@
       list.innerHTML = '<div class="memory-empty"><i data-lucide="loader-2" class="spin"></i>正在编译会面档案…</div>';
       refreshIcons();
       try {
-        const data = await memoryFetchJson('/api/v2/memories', {signal: controller.signal});
+        const [data,aliases] = await Promise.all([
+          memoryFetchJson('/api/v2/memories', {signal: controller.signal}),
+          memoryFetchJson('/api/v2/place-aliases', {signal: controller.signal}),
+        ]);
         if (seq !== MEMORY_UI.requestSeq) return;
+        data.place_aliases = aliases.items || [];
         MEMORY_UI.data = data;
         memoryRender();
       } catch (e) {
@@ -8599,7 +9128,7 @@
             value:overrideValue || undefined, session_id:state.sessionId || '',
           }),
         });
-        if (action === 'session') toast('已仅用于当前小 Mid 会话，不会写入长期档案');
+        if (action === 'session') toast('已仅用于当前阿觅会话，不会写入长期档案');
         else if (action === 'dismiss') toast('已忽略这组线索');
         else toast('已确认并编译进会面档案');
         if (result.profile) MEMORY_UI.data = result.profile;
@@ -8621,8 +9150,18 @@
       const page = (MEMORY_UI.data?.wiki_pages || []).find(x => x.id === pageId);
       if (!page) return;
       const editor = memoryShowSubView(page.title);
-      const facts = (page.facts || []).map(f => {const stateLabel={confirmed:'已确认并生效',challenged:'受质疑，暂停生效',conflict:'冲突待确认',candidate:'待确认'}[f.status]||'待确认';return `<article class="memory-item${f.status !== 'confirmed' ? ' memory-candidate' : ''}"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(f.label)}</div><div class="memory-item-detail">${escapeHtml(f.value)}</div><div class="memory-source"><i data-lucide="${f.status === 'confirmed' ? 'circle-check' : 'circle-help'}"></i><span>${stateLabel}</span></div></div></article>`;}).join('');
+      const facts = (page.facts || []).map(f => {const stateLabel={confirmed:'已确认并生效',challenged:'受质疑，暂停生效',expired:'已过期，暂停生效',conflict:'冲突待确认',candidate:'待确认'}[f.status]||'待确认',actions=f.origin&&f.action_id?`<div class="memory-item-actions"><button class="memory-item-btn" type="button" data-wiki-fact-action="edit" data-fact-id="${Number(f.action_id)}" data-predicate="${escapeHtml(f.predicate)}" data-value="${escapeHtml(f.value)}" title="修改"><i data-lucide="pencil"></i></button><button class="memory-item-btn danger" type="button" data-wiki-fact-action="delete" data-fact-id="${Number(f.action_id)}" data-predicate="${escapeHtml(f.predicate)}" title="删除"><i data-lucide="trash-2"></i></button></div>`:'';return `<article class="memory-item${f.status !== 'confirmed' ? ' memory-candidate' : ''}"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(f.label)}</div><div class="memory-item-detail">${escapeHtml(f.value)}</div><div class="memory-source"><i data-lucide="${f.status === 'confirmed' ? 'circle-check' : 'circle-help'}"></i><span>${stateLabel}</span></div></div>${actions}</article>`;}).join('');
       editor.insertAdjacentHTML('beforeend', `<div class="memory-intro"><i data-lucide="file-text"></i><span>${escapeHtml(page.summary)}</span></div><section class="memory-section">${facts || '<div class="memory-empty">暂无事实</div>'}</section>`);
+      editor.addEventListener('click',async event=>{
+        const button=event.target.closest('[data-wiki-fact-action]');if(!button)return;
+        const action=button.dataset.wikiFactAction,id=Number(button.dataset.factId),predicate=button.dataset.predicate;
+        let value=button.dataset.value||'';
+        if(action==='edit'){const edited=prompt(`修改“${predicate}”`,value);if(edited===null)return;value=edited.trim();if(!value)return toast('关系内容不能为空',true);}
+        else if(!confirm('删除这条事实关系？只会删除当前关系，不会删除整个实体。'))return;
+        editor.querySelectorAll('button').forEach(el=>el.disabled=true);memoryCancelLoad();
+        try{const result=await memoryFetchJson('/api/v2/memories/relation',{method:action==='delete'?'DELETE':'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({origin:'wiki',id,predicate,value:value||undefined})});MEMORY_UI.data=result.profile;memoryRender();toast(action==='delete'?'关系已删除':'关系已修改');}
+        catch(err){toast(err.message||'操作失败',true);memoryShowWikiPage(pageId);}
+      });
       refreshIcons();
     }
     function memoryShowSubView(title) {
@@ -8794,7 +9333,7 @@
     }
     async function memoryDelete(kind, id, button) {
       const item = memoryFind(kind, id);
-      if (!item || !confirm(`让小 Mid 永久忘掉“${memoryTitle(kind,item)}”？\n相关来源原句也会清除。`)) return;
+      if (!item || !confirm(`让阿觅永久忘掉“${memoryTitle(kind,item)}”？\n相关来源原句也会清除。`)) return;
       button.disabled = true;
       try {
         await memoryFetchJson('/api/v2/memories/item', {
@@ -8814,6 +9353,9 @@
       document.getElementById('memoryTabs')?.addEventListener('click', e => {
         const tab = e.target.closest('[data-memory-view]'); if (tab) memorySetView(tab.dataset.memoryView);
       });
+      document.getElementById('memoryStats')?.addEventListener('click', e => {
+        if (e.target.closest('[data-memory-summary-candidates]')) memorySetView('candidates');
+      });
       modal?.addEventListener('click', e => { if (e.target === modal) memoryClose(); });
       document.addEventListener('keydown', e => {
         if (!modal || modal.hidden) return;
@@ -8821,6 +9363,15 @@
         else if (e.key === 'Tab') memoryTrapFocus(e, modal);
       });
       document.getElementById('memoryList')?.addEventListener('click', e => {
+        const aliasDelete = e.target.closest('[data-place-alias-delete]');
+        if (aliasDelete) {
+          if (confirm('删除这个地点简称？以后遇到相同说法时会重新选择。')) {
+            memoryFetchJson(`/api/v2/place-aliases/${aliasDelete.dataset.placeAliasDelete}`, {method:'DELETE'})
+              .then(()=>{toast('已删除地点简称');return memoryLoad()})
+              .catch(err=>toast(err.message||'删除失败',true));
+          }
+          return;
+        }
         const candidate = e.target.closest('[data-candidate-group]');
         if (candidate) {
           const action = e.target.closest('[data-candidate-action]')?.dataset.candidateAction;

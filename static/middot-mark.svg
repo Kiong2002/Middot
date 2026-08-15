@@ -1,0 +1,48 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">中点 Middot</title>
+  <desc id="desc">一条白色路线穿过蓝色中点。</desc>
+  <defs>
+    <linearGradient id="mid-bg" x1="7" y1="4" x2="57" y2="61" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#203A55"/>
+      <stop offset=".46" stop-color="#0B1726"/>
+      <stop offset="1" stop-color="#040A12"/>
+    </linearGradient>
+    <radialGradient id="mid-glass" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(17 10) rotate(48) scale(49)">
+      <stop stop-color="white" stop-opacity=".26"/>
+      <stop offset=".36" stop-color="#A9D3F4" stop-opacity=".07"/>
+      <stop offset="1" stop-color="white" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mid-route" x1="13" y1="17" x2="51" y2="47" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset=".5" stop-color="#F7FAFD"/>
+      <stop offset="1" stop-color="#DCE8F4"/>
+    </linearGradient>
+    <radialGradient id="mid-core" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(29.5 28.5) rotate(51) scale(10)">
+      <stop stop-color="#DDF1FF"/>
+      <stop offset=".32" stop-color="#83C4FF"/>
+      <stop offset=".72" stop-color="#4A9FFF"/>
+      <stop offset="1" stop-color="#247EDB"/>
+    </radialGradient>
+    <filter id="mid-card-shadow" x="-22%" y="-18%" width="144%" height="155%">
+      <feDropShadow dy="3.5" stdDeviation="3.2" flood-color="#020812" flood-opacity=".32"/>
+    </filter>
+    <filter id="mid-route-shadow" x="-18%" y="-35%" width="136%" height="170%">
+      <feDropShadow dy="1.2" stdDeviation="1.2" flood-color="#000A14" flood-opacity=".38"/>
+    </filter>
+    <filter id="mid-core-glow" x="-170%" y="-170%" width="440%" height="440%">
+      <feGaussianBlur stdDeviation="2.2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#mid-card-shadow)">
+    <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#mid-bg)"/>
+    <rect x="2.7" y="2.7" width="58.6" height="58.6" rx="16.3" fill="url(#mid-glass)"/>
+    <rect x="2.7" y="2.7" width="58.6" height="58.6" rx="16.3" stroke="#35516B" stroke-width="1.4"/>
+    <path d="M8 49C17 57 37 62 51 52" stroke="#020811" stroke-opacity=".4" stroke-width="7" stroke-linecap="round"/>
+  </g>
+  <path d="M13 17C24.5 17 22.5 32 32 32C41.5 32 39.5 47 51 47" stroke="#8FC8FF" stroke-width="9.5" stroke-linecap="round" opacity=".16"/>
+  <path d="M13 17C24.5 17 22.5 32 32 32C41.5 32 39.5 47 51 47" stroke="url(#mid-route)" stroke-width="5.5" stroke-linecap="round" filter="url(#mid-route-shadow)"/>
+  <circle cx="32" cy="32" r="8.6" fill="#081423" fill-opacity=".92"/>
+  <circle cx="32" cy="32" r="5.7" fill="url(#mid-core)" filter="url(#mid-core-glow)"/>
+  <circle cx="30.5" cy="30.2" r=".72" fill="white" fill-opacity=".28"/>
+</svg>

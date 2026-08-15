@@ -42,14 +42,14 @@ assert not conn.execute("SELECT 1 FROM memory_wiki_facts WHERE id=?",(edge["acti
 person=conn.execute("SELECT usual_place FROM memory_people WHERE device_id=? AND name='阿杰'",(did,)).fetchone()
 assert person and person[0] is None
 
-# 旧人物投影生成的关系同样可以只修改/删除单个字段，不删除人物实体。
+# 旧人物投影会先补迁移为 Wiki 事实；关系操作不再绕过唯一事实源。
 conn.execute("UPDATE memory_people SET relation='朋友',updated_at=? WHERE device_id=? AND name='阿杰'",(now+10,did));conn.commit();conn.close()
 profile=client.get("/api/v2/memories").get_json()
 relation_edge=next(edge for edge in profile["graph"]["edges"] if edge.get("predicate")=="relation")
-assert relation_edge["origin"]=="person"
-changed=client.patch("/api/v2/memories/relation",json={"origin":"person","id":relation_edge["action_id"],"predicate":"relation","value":"同事"})
+assert relation_edge["origin"]=="wiki"
+changed=client.patch("/api/v2/memories/relation",json={"origin":"wiki","id":relation_edge["action_id"],"predicate":"relation","value":"同事"})
 assert changed.status_code==200,changed.get_json()
-removed=client.delete("/api/v2/memories/relation",json={"origin":"person","id":relation_edge["action_id"],"predicate":"relation"})
+removed=client.delete("/api/v2/memories/relation",json={"origin":"wiki","id":relation_edge["action_id"],"predicate":"relation"})
 assert removed.status_code==200,removed.get_json()
 conn=module._db_connect();row=conn.execute("SELECT relation FROM memory_people WHERE device_id=? AND name='阿杰'",(did,)).fetchone();assert row and row[0] is None;conn.close()
 print("MEMORY_GRAPH_ACTIONS_SMOKE_OK")

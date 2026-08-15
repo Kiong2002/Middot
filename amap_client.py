@@ -54,7 +54,52 @@ def amap_geocode(address: str, city: str | None = None) -> dict:
             "formatted_address": geocode.get("formatted_address", address),
             "city": geocode.get("city", ""),
         }
-    return {"success": False, "error": data.get("info", "地理编码失败")}
+    return {
+        "success": False,
+        "error": data.get("info", "地理编码失败"),
+        "provider": "amap_geocode",
+        "infocode": data.get("infocode", ""),
+        "query": address,
+        "city": city or "",
+    }
+
+
+def amap_input_tips(keyword: str, city: str | None = None, limit: int = 6) -> dict:
+    """Return AMap's coordinate-bearing place candidates for human or agent resolution."""
+    url = "https://restapi.amap.com/v3/assistant/inputtips"
+    params = {
+        "key": AMAP_KEY, "keywords": keyword, "datatype": "all", "output": "json",
+    }
+    if city:
+        params["city"] = city
+        params["citylimit"] = "true"
+    try:
+        resp = requests.get(url, params=params, timeout=(6, 12))
+        data = resp.json()
+    except (request_exceptions.RequestException, ValueError) as exc:
+        return {"success": False, "error": str(exc), "provider": "amap_inputtips",
+                "query": keyword, "city": city or "", "tips": []}
+    if data.get("status") != "1":
+        return {"success": False, "error": data.get("info", "地点候选搜索失败"),
+                "infocode": data.get("infocode", ""), "provider": "amap_inputtips",
+                "query": keyword, "city": city or "", "tips": []}
+    tips = []
+    for tip in data.get("tips", []):
+        location = tip.get("location")
+        if not isinstance(location, str) or "," not in location:
+            continue
+        try:
+            lng, lat = (float(x) for x in location.split(",", 1))
+        except (TypeError, ValueError):
+            continue
+        tips.append({
+            "id": tip.get("id") or "", "name": tip.get("name") or keyword,
+            "district": tip.get("district") if isinstance(tip.get("district"), str) else "",
+            "address": tip.get("address") if isinstance(tip.get("address"), str) else "",
+            "lng": lng, "lat": lat,
+        })
+    return {"success": True, "provider": "amap_inputtips", "query": keyword,
+            "city": city or "", "tips": tips[:max(1, min(20, int(limit)))]}
 
 
 # ─────────────────────────────────────────────

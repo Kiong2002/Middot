@@ -1,0 +1,34 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">阿觅</title>
+  <desc id="desc">两句话错落相遇，在交接处亮起一束共识微光</desc>
+  <defs>
+    <linearGradient id="ami-blue" x1="8" y1="27" x2="35" y2="52" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6BC1FF"/><stop offset=".52" stop-color="#2E91EF"/><stop offset="1" stop-color="#2364B9"/>
+    </linearGradient>
+    <linearGradient id="ami-violet" x1="34" y1="9" x2="56" y2="34" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B2A8F6"/><stop offset=".5" stop-color="#8273E1"/><stop offset="1" stop-color="#5748B2"/>
+    </linearGradient>
+    <linearGradient id="ami-mint" x1="32" y1="29" x2="39" y2="39" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C8F6EA"/><stop offset="1" stop-color="#58C8AE"/>
+    </linearGradient>
+    <filter id="ami-shadow" x="-60%" y="-60%" width="220%" height="240%"><feDropShadow dy="3" stdDeviation="3.2" flood-color="#1C3C63" flood-opacity=".2"/></filter>
+    <filter id="ami-glow" x="-180%" y="-180%" width="460%" height="460%"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <style>
+    .ami-voice-left,.ami-voice-right,.ami-spark { transform-box: fill-box; transform-origin: center; transition: transform .62s cubic-bezier(.2,.82,.2,1),filter .3s ease; }
+    svg:hover .ami-voice-left { transform: translate(2px,-1.5px) rotate(-1deg); }
+    svg:hover .ami-voice-right { transform: translate(-2px,1.5px) rotate(1deg); }
+    svg:hover .ami-spark { animation: ami-spark-awake .86s cubic-bezier(.2,.82,.2,1) both; }
+    @keyframes ami-spark-awake { 0% { opacity:.68; transform:scale(.72) rotate(0); } 52% { opacity:1; transform:scale(1.34) rotate(18deg); } 100% { opacity:.96; transform:scale(1.07) rotate(8deg); } }
+    @media (prefers-reduced-motion: reduce) { .ami-voice-left,.ami-voice-right,.ami-spark { animation:none!important; transition:none!important; } }
+  </style>
+  <g class="ami-voice-left" filter="url(#ami-shadow)">
+    <path d="M7 37.1C7 29.5 13 24 21.2 24H23.8C32.1 24 38 29.4 38 37C38 44.5 32.1 49.8 23.8 49.8H18.5L11.1 55L12.8 47.2C9.2 44.9 7 41.4 7 37.1Z" fill="url(#ami-blue)"/>
+    <path d="M15 36.9H27.7" stroke="white" stroke-width="3.1" stroke-linecap="round" stroke-opacity=".88"/>
+  </g>
+  <g class="ami-voice-right" filter="url(#ami-shadow)">
+    <path d="M31 19.5C31 12.9 36.3 8.5 43.5 8.5H46C53.2 8.5 58 12.9 58 19.5C58 25.4 54.1 29.4 48.2 30.3L50.1 35.5L44.1 30.5H43.5C36.3 30.5 31 26.1 31 19.5Z" fill="url(#ami-violet)"/>
+    <path d="M39 19.3H50" stroke="white" stroke-width="2.8" stroke-linecap="round" stroke-opacity=".82"/>
+  </g>
+  <path class="ami-spark" d="M35.3 29.7C35.78 32.72 36.88 33.82 39.9 34.3C36.88 34.78 35.78 35.88 35.3 38.9C34.82 35.88 33.72 34.78 30.7 34.3C33.72 33.82 34.82 32.72 35.3 29.7Z" fill="url(#ami-mint)" filter="url(#ami-glow)"/>
+</svg>

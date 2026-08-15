@@ -1,250 +1,120 @@
-# 中点 Middot
+<p align="center">
+  <img src="docs/readme/hero.svg" width="100%" alt="Middot — 约在真正的中间">
+</p>
 
-> 「我们在哪见？」—— 让 AI 帮你和朋友挑一个都不远、都开心的地方。
+<p align="center">
+  <a href="https://middot.myowl.me/"><strong>立即体验</strong></a>
+  &nbsp;·&nbsp;
+  <a href="#认识阿觅">认识阿觅</a>
+  &nbsp;·&nbsp;
+  <a href="#会面档案让下一次不从零开始">会面档案</a>
+  &nbsp;·&nbsp;
+  <a href="#本地运行">本地运行</a>
+</p>
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
-[![Flask](https://img.shields.io/badge/Flask-3.0-000000)](https://flask.palletsprojects.com/)
-[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-9146FF)](https://platform.deepseek.com/)
-[![高德地图](https://img.shields.io/badge/地图-高德%20JS%20API%202.0-E4392E)](https://console.amap.com/)
-[![Live Demo](https://img.shields.io/badge/线上体验-middot.myowl.me-1F883D)](https://middot.myowl.me/)
+<p align="center">
+  <img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10+-2676E5?style=flat-square">
+  <img alt="Flask" src="https://img.shields.io/badge/Flask-lightweight-111827?style=flat-square">
+  <img alt="License MIT" src="https://img.shields.io/badge/License-MIT-12A594?style=flat-square">
+</p>
 
-线上体验：**[middot.myowl.me](https://middot.myowl.me/)**
+## 为什么需要中点
 
----
+约人见面，难的通常不是“附近有什么”，而是**哪里对每个人都合适**。
 
-## 这是什么
+一个人在国贸，一个人在清华；有人坐地铁，有人骑车；这次想安静聊天，下次又想吃火锅。地图能给出几何中心，却不会替大家权衡真实路程和见面偏好。
 
-**中点 Middot** 是一个多人碰面地点决策工具。
+**中点 Middot** 就是为这件事而生：把每个人从哪里出发、怎么出行、想做什么放到同一个方案里，找到一个不只在地图中央，也让大家更愿意赴约的地方。
 
-你输入所有人的出发地和一句话需求（"找家安静点的火锅店"、"想吃日料，人均别太贵"），中点会：
+<p align="center">
+  <img src="docs/readme/journey.svg" width="100%" alt="从说出位置到找到公平会面点的完整过程">
+</p>
 
-1. 算出所有人的**地理中点**（可拖动锚点、拉半径），
-2. 到高德地图上搜候选地点，
-3. **分别为每个人**规划实时路线（公交/驾车/骑行/步行/最快），
-4. 按"公平/评分/距离"三种口径排序，
-5. 让**小 Mid**（内嵌 AI 助手）用自然语言改需求："再远一点"、"人均别超 150"、"再加一个朋友，她在望京"。
+## 公平，不只是地图上的正中央
 
-它不是"帮你搜餐厅"——它是**帮你做决定**。
+两点之间的直线中点看起来最公平，真实世界却不是直线：地铁要换乘，河流和高架会绕路，不同交通方式也会改变答案。
 
----
+Middot 会分别计算每个人的实际路线，把时间差和整体成本一起考虑，再到这个公平区域里寻找真正适合见面的店和场所。你仍然可以移动锚点、调整范围，或者为每个人单独选择公交、驾车、骑行和步行。
 
-## 核心亮点
+<p align="center">
+  <img src="docs/readme/fair-meeting.svg" width="100%" alt="比较我·国贸和朋友·清华的真实路线，而不是只取地图直线中点">
+</p>
 
-- **多人 · 不止 A/B**：支持任意人数参与者（不再局限于两人对约）
-- **锚点 + 半径**：不满意 AI 算的中点？拖到你想要的位置，设个"离所有人都别超 5km"
-- **房间实时协作**：6 位房间号，朋友扫码进来，改锚点、改需求、改自己的位置——**3 秒同步给所有人**
-- **小 Mid AI 助手**：DeepSeek + tool_calls，支持"加人 / 改位置 / 改锚点 / 换关键词 / 再搜一批"等结构化操作，前端每一次工具调用都有可撤销的活动日志
-- **iOS Apple Maps 风视觉**：柔和圆角、玻璃质感、动效克制
-- **收藏 & 历史**：常去的位置、以前找过的地方，一键找回
-- **纯 HTML/CSS/JS 前端**：单文件 SPA，无构建工具，无 npm，无 React
+但位置只是会面的一部分。计划还会变化：朋友临时换了出发地、有人加入、大家忽然想换一种店。为了让这些变化不必一次次重填表单，Middot 里住着一位真正理解当前方案的 AI 会面伙伴。
 
----
+## 认识阿觅
 
-## 快速开始
+**阿觅** 是中点 Middot 的 AI 会面伙伴。她知道你们正在讨论哪次见面，也能把一句自然表达变成地图上的实际调整。
 
-### 1. 拿两把 API Key
+你不需要学习命令，也不用先把所有条件整理得井井有条。告诉阿觅“朋友改从清华出发”“想找安静一点的火锅”或“这几家谁更公平”，她会接着当前方案继续处理，并把发生的变化留在页面上。
 
-在项目根目录 `cp .env.example .env` 后填入：
+<p align="center">
+  <img src="docs/readme/ami-intro.svg" width="100%" alt="阿觅把自然对话转化为地图、路线和会面方案的变化">
+</p>
 
-```env
-# DeepSeek: https://platform.deepseek.com/
-DEEPSEEK_API_KEY=sk-...
+## 条件变了，接着说就好
 
-# 高德 Web 服务 Key（后端 geocode / 路线 API）: https://console.amap.com/
-AMAP_KEY=...
+传统筛选器要求你返回上一层、改完条件再重新搜索。阿觅保留正在进行的会面上下文，所以一句“安静一点”是在调整现有结果，而不是开启一次互不相关的新搜索。
 
-# 高德 Web 端 JS API Key（前端地图）——需要在控制台把 localhost/127.0.0.1 加到白名单
-AMAP_JS_KEY=...
-```
+她也不只会执行：当用户问“为什么这家排第一”，阿觅会根据真实路线和当前偏好解释，而不是编造一个听起来合理的答案。
 
-### 2. 启动
+<p align="center">
+  <img src="docs/readme/mid-chat.svg" width="100%" alt="通过阿觅自然地换菜系、改出发地并继续当前会面方案">
+</p>
+
+## 一起决定，不必一个人填完
+
+会面属于所有参与者，位置也应该由每个人自己确认。
+
+建立房间后，把口令发给朋友即可加入。每个人可以填写自己的出发地和交通方式；成员的操作会同步给房间，阿觅带来的方案变化也会说明由谁触发。大家看到的是同一张地图、同一组结果和同一条决策过程。
+
+<p align="center">
+  <img src="docs/readme/room-collab.svg" width="100%" alt="朋友加入 Middot 房间后共同填写位置并同步会面方案">
+</p>
+
+## 会面档案：让下一次不从零开始
+
+一次计划结束后，有些信息值得在下一次继续使用——常约的人通常从哪里出发、你平时更喜欢哪种交通方式、哪些偏好是长期的。
+
+阿觅会把有明确来源的长期信息整理进**会面档案**，但不会把一次搜索、一个推荐结果或模型猜测偷偷当成事实。不确定、敏感或互相冲突的线索会留在“待确认”，不会直接影响后续规划。
+
+后台只维护一份带来源和版本的事实库；“关于我”“常约的人”“地点与店铺”是它面向会面场景的不同视图，图谱则把同一批事实换成关系网络来展示。无论从档案还是图谱修改，后续规划读到的都会同步变化。
+
+<p align="center">
+  <img src="docs/readme/memory-graph.svg" width="100%" alt="可追溯、可确认、可修改和可遗忘的会面记忆图谱">
+</p>
+
+这套记忆始终遵循三件事：
+
+1. **看得见**：知道阿觅记住了什么，也能回到它来自的对话。
+2. **改得动**：待确认关系可以确认或忽略，正式关系可以修改或删除。
+3. **会过期**：地点和时效性信息不会被当作永远不变的事实。
+
+从第一次输入位置，到一起调整方案，再到下一次自然接着聊，Middot 想做的不是替大家决定去哪里，而是让“约在哪儿”不再成为见面前最费劲的那一步。
+
+## 本地运行
 
 ```bash
+git clone https://github.com/Kiong2002/Middot.git
+cd Middot
+cp .env.example .env
 bash start.sh
 ```
 
-首次运行会用 `uv` 建虚拟环境、装依赖、启动 `app_v2.py`。访问 <http://localhost:5000>。
+按 `.env.example` 填写地图与模型配置，然后打开 <http://localhost:5000>。
 
-手动启动：
+需要 Python 3.10 或更高版本。项目不依赖前端构建工具，克隆后即可运行。
 
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python app_v2.py
-```
+## 现在正在做
 
----
-
-## 使用指南
-
-### 单人模式：先摆参与者，再搜
-
-1. 侧边栏点「+ 参与者」加人，每人填地址或点地图选点
-2. 设定锚点（可选：不设则用几何中点）
-3. 输入需求，如「安静的咖啡厅，人均别超 60」
-4. 「找餐厅」→ 出结果 → 点小圆点看每人到那的路线
-
-### 多人模式：开房间
-
-1. 顶栏点「房间」→「创建」→ 拿到 6 位房号（比如 `473521`）
-2. 分享链接或口头告诉朋友
-3. 朋友进来后填自己位置，你能实时看到，反之亦然
-4. 谁改了锚点、关键词，其他人都会收到顶部横幅通知
-5. 房主可以「锁定房间」防止陌生人加入
-
-### 让小 Mid 帮你
-
-点右下角 🧭 图标打开小 Mid 面板。它能：
-
-- 「我在北大，Lisa 在人大，想吃火锅」→ 自动加两个参与者 + 填关键词
-- 「换一个安静点的」→ 换关键词重搜
-- 「再加一个朋友，她在望京」→ `add_participant`
-- 「第 2 个人的位置改到国贸」→ `set_participant_location`
-- 「锚点往北挪 2 公里」→ `shift_center`
-- 每一次工具调用都会在 AI 面板顶部生成活动条目，可**撤销**
-
----
-
-## 技术架构
-
-### 后端流水线（`app_v2.py`）
-
-```
-用户查询 →  规划 Agent（提关键词 / 排序权重 / 评分阈值）
-        →  高德 Search API（POI 候选）
-        →  评分过滤 & 排序
-        →  批量路线计算（并发 + QPS 限速）
-        →  总结 Agent（生成 2-4 句推荐话术）
-        →  SSE 流式返回 + 落盘 session 供后续路线重算
-```
-
-- **多 Agent 拆分**：把重的（长上下文、大数据）留给 Python，把轻的（自然语言理解）留给 LLM
-- **Session 缓存**：切换出行方式不需要重搜——直接对已有 POI 重算路线
-- **SSE 流式进度**：前端能看到「规划 → 搜索 → 路线 → 总结」逐步推进
-- **rate limiter**：全局 QPS 限流，避免高德配额被打爆
-
-### 小 Mid AI 助手（`/api/v2/assistant/stream`）
-
-- **OpenAI 风格 tool_calls**：DeepSeek 支持工具调用，前端每收到一个 `tool_call` 立即渲染卡片
-- **13 个工具**：`add_participant` / `set_participant_location` / `set_anchor` / `shift_center` / `set_query` / `set_radius` / `set_participant_prefer` / `search_now` / `remove_participant` / ...
-- **服务端硬约束**：AI 只能改可白名单内的字段，重名/越界/参数错都会被拒
-- **限流 + max iterations**：单轮最多 7 次工具调用，防止 AI 卡在死循环
-- **前端 ActivityLog**：每次调用可撤销，被 AI 改的字段有 2s 高亮动画
-
-### 房间协作（`app_v2.py` L2000+）
-
-- **6 位纯数字房号**：避开常见电话号码前缀，24h 不复用
-- **revision-based 增量拉取**：`GET /api/v2/rooms/<code>?since_rev=N`，无变化返回 `{unchanged: true}`
-- **BEGIN IMMEDIATE 事务**：避免两个并发 update 拿到同一个 revision
-- **3s 轮询 + 智能退避**：5 次无变化退到 8s；`document.hidden` 时暂停
-- **权限分级**：房主能锁房 / 踢人 / 转让；成员能改自己位置 + 改锚点关键词
-- **归属水印**：谁改了什么，顶部横幅显示 5s
-
-### 前端（`static/index.html`）
-
-- **单文件 SPA**：~6000 行 vanilla JS，无构建工具、无框架、无 npm
-- **高德 JS API 2.0** + `HawkEye`（右上角小地图）+ `Driving/Walking/Riding/Transfer/Geolocation`
-- **Lucide icons** + 自托管 marked/purify（Xiao Mid 消息 Markdown 渲染）
-- **Apple Maps 视觉**：柔和圆角、玻璃质感面板、iOS 风 accordion
-- **手机端专项**：三层抽屉（sidebar / results / assist），底部圆角、地图留 15vh 保底
-
----
-
-## 项目结构
-
-```
-.
-├── app_v2.py             # Flask 主入口 + 多 Agent 流水线 + AI 助手 + 房间 + 收藏
-├── amap_client.py        # 高德 API 客户端（geocode / 路线 / POI 搜索）
-├── requirements.txt
-├── start.sh              # 一键启动
-├── .env.example          # API Key 模板（复制成 .env）
-├── static/
-│   ├── index.html        # 单文件前端 SPA
-│   └── vendor/           # 自托管 marked.min.js / purify.min.js
-└── README.md
-```
-
----
-
-## 后端 API 一览
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| `POST` | `/api/v2/search-stream` | 主流水线（SSE 流式） |
-| `POST` | `/api/v2/routes` | 路线重算（用 session_id，不重搜） |
-| `POST` | `/api/v2/assistant/stream` | 小 Mid 对话（SSE + tool_calls） |
-| `GET`  | `/api/v2/session/<id>` | 查看 session 详情 |
-| `POST` | `/api/v2/rooms` | 创建房间 |
-| `POST` | `/api/v2/rooms/join` | 加入房间 |
-| `GET`  | `/api/v2/rooms/<code>?since_rev=N` | 增量拉取房间状态 |
-| `POST` | `/api/v2/rooms/<code>/update` | 更新房间（锚点/关键词/自己的位置等） |
-| `POST` | `/api/v2/rooms/<code>/leave` | 离开房间 |
-| `POST` | `/api/v2/rooms/<code>/lock` | 锁定/解锁房间（仅房主） |
-| `POST` | `/api/v2/rooms/<code>/kick` | 踢人（仅房主） |
-| `GET`/`POST`/`DELETE` | `/api/favorites` | 收藏（`kind=location \| poi`） |
-| `POST` | `/api/geocode` | 地址 → 坐标 |
-| `POST` | `/api/geocode-suggest` | 输入联想 |
-| `POST` | `/api/nearby-search` | 附近 POI |
-| `GET`  | `/api/config` | 前端配置（含 JS API Key） |
-
----
-
-## 部署
-
-生产环境用 rsync 直推 + `pkill -f app_v2.py` 重启：
-
-```bash
-rsync -avz app_v2.py amap_client.py root@<host>:/root/Middot/
-rsync -avz static/ root@<host>:/root/Middot/static/
-ssh root@<host> 'bash /root/restart_middot.sh'
-```
-
-`restart_middot.sh` 只是简单的 `pkill + nohup`，日志到 `server.log`。
-
----
-
-## 依赖
-
-```
-flask==3.0.3
-flask-cors==4.0.1
-requests==2.31.0
-openai>=2.0.0
-httpx>=0.27.0
-python-dotenv==1.0.1
-```
-
-Python **3.10+**（用到了 `str | None` 联合类型语法）。
-
----
-
-## 常见问题
-
-**地点搜索联想没结果？** 检查 `AMAP_KEY`，确认高德控制台的 QPS 配额没超。
-
-**地图不显示？** 检查 `AMAP_JS_KEY`，确认高德控制台的域名白名单里加了你部署的域名（localhost 也要加）。
-
-**部分路线显示"计算中"？** 高德路线 API 免费版 QPS 较低，后端已加限流；若仍慢可减少候选数量或错峰使用。
-
-**公交路线时间对不上？** 高德公交 API 默认使用工作日中午 12:00 规划（避免末班车干扰）。可在「出发时间」处手动指定。
-
----
-
-## Roadmap
-
-- [x] 多人参与（不再局限 A/B）
-- [x] 锚点 + 半径可视化
-- [x] 房间实时协作（3s 轮询）
-- [x] 小 Mid AI 助手（DeepSeek + tool_calls）
-- [x] ActivityLog + 撤销
-- [x] 位置收藏
-- [ ] POI 收藏 & 我的历史
-- [ ] 小 Mid 双模式（背后规划 + 结果抽屉，不改用户面板）
-- [ ] 房间共享 AI（AI 建议全房间可见）
-
----
+- [x] 多人出发地与公平路线比较
+- [x] 阿觅自然语言调整方案
+- [x] 房间协作与共享会面状态
+- [x] 历史对话与后台记忆整理
+- [x] 可追溯、可确认的会面档案
+- [x] 可搜索、可移动的记忆图谱
+- [ ] 更自然的多人协作提醒
+- [ ] 更丰富的会面复盘与收藏体验
 
 ## License
 
