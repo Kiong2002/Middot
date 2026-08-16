@@ -4527,6 +4527,12 @@
       routes:  '正在为每位算最优路线…',
       summary: '正在综合排序 · 汇合到中点…',
     };
+    const PROGRESS_DEFAULT_DETAILS = {
+      plan:    '识别关键词、评分、排序偏好',
+      search:  '在锚点周边收集地点',
+      routes:  '为每位参与者算最优出行',
+      summary: '综合排序 + 一句话点评',
+    };
     function setProgressHeroLabel(text) {
       const el = document.getElementById('progressHeroLabel');
       if (el && text) el.textContent = text;
@@ -4543,6 +4549,10 @@
       $$('.progress-step', card).forEach(s => {
         s.classList.remove('active', 'done', 'error');
         s.classList.add('pending');
+        const detail = s.querySelector('.progress-detail');
+        if (detail && PROGRESS_DEFAULT_DETAILS[s.dataset.step]) {
+          detail.textContent = PROGRESS_DEFAULT_DETAILS[s.dataset.step];
+        }
         const icon = s.querySelector('.progress-icon');
         icon.innerHTML = '<i data-lucide="circle"></i>';
         const bar = s.querySelector('.progress-bar');
