@@ -529,6 +529,97 @@ def test_exact_group_normalizes_slots_and_removes_trailing_people(monkeypatch, t
     assert module._normalize_participant_tool_plan(sid, [], iteration=2) == []
 
 
+def test_exact_group_moves_explicit_location_with_person(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {"id": "me", "name": "我", "lng": 1.0, "lat": 1.0},
+                {"id": "lisa", "name": "Lisa", "lng": 2.0, "lat": 2.0, "address": "国贸"},
+                {
+                    "id": "chichi",
+                    "name": "chichi",
+                    "lng": 3.0,
+                    "lat": 3.0,
+                    "address": "北京图书大厦",
+                },
+            ],
+            "current_utterance_parse": {
+                "city_context": "北京",
+                "participant_change": {"mode": "exact", "ordered_names": ["我", "chichi"]},
+                "locations": [
+                    {"owner": "我", "participant_index": 1, "expression": "北大"},
+                    {"owner": "chichi", "participant_index": 3, "expression": "西单图书大厦"},
+                ],
+            },
+        }
+    )
+
+    normalized = module._normalize_participant_tool_plan(sid, [], iteration=1)
+    decoded = [
+        (item["function"]["name"], json.loads(item["function"]["arguments"]))
+        for item in normalized
+    ]
+
+    assert decoded == [
+        (
+            "ensure_participant",
+            {
+                "index": 1,
+                "participant_name": "我",
+                "place_name": "北大",
+                "city": "北京",
+            },
+        ),
+        (
+            "ensure_participant",
+            {
+                "index": 2,
+                "participant_name": "chichi",
+                "place_name": "西单图书大厦",
+                "city": "北京",
+            },
+        ),
+        ("remove_participant", {"index": 3}),
+    ]
+
+
+def test_exact_group_preserves_existing_location_when_reordering(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {"id": "me", "name": "我", "lng": 1.0, "lat": 1.0},
+                {"id": "lisa", "name": "Lisa", "lng": 2.0, "lat": 2.0, "address": "国贸"},
+                {
+                    "id": "chichi",
+                    "name": "chichi",
+                    "lng": 116.377078,
+                    "lat": 39.907883,
+                    "address": "北京图书大厦",
+                    "prefer": "cycling",
+                },
+            ],
+            "current_utterance_parse": {
+                "participant_change": {"mode": "exact", "ordered_names": ["我", "chichi"]},
+                "locations": [],
+            },
+        }
+    )
+
+    normalized = module._normalize_participant_tool_plan(sid, [], iteration=1)
+    ensure_args = json.loads(normalized[0]["function"]["arguments"])
+
+    assert ensure_args == {
+        "index": 2,
+        "participant_name": "chichi",
+        "lng": 116.377078,
+        "lat": 39.907883,
+        "place_name": "北京图书大厦",
+        "prefer": "cycling",
+    }
+
+
 def test_ensure_participant_creates_when_list_is_empty(monkeypatch, tmp_path):
     module = _load_app(monkeypatch, tmp_path)
     sid = module.session_create(

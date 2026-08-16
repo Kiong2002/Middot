@@ -9774,6 +9774,46 @@ def _normalize_participant_tool_plan(
             elif name != "remove_participant":
                 other_calls.append(call)
 
+        location_by_owner = {
+            str(item.get("owner") or "").strip(): item
+            for item in (utterance.get("locations") or [])
+            if isinstance(item, dict) and str(item.get("owner") or "").strip()
+        }
+        current_by_name = {
+            str(item.get("name") or "").strip(): item
+            for item in participants
+            if str(item.get("name") or "").strip()
+        }
+        city_context = str(utterance.get("city_context") or "").strip()
+
+        def complete_slot_args(slot: int, final_name: str, args: dict) -> dict:
+            completed = {**args, "index": slot, "participant_name": final_name}
+            has_explicit_location = (
+                completed.get("place_name")
+                or (completed.get("lng") is not None and completed.get("lat") is not None)
+            )
+            parsed_location = location_by_owner.get(final_name) or {}
+            expression = str(parsed_location.get("expression") or "").strip()
+            if not has_explicit_location and expression:
+                completed["place_name"] = expression
+                if city_context:
+                    completed["city"] = city_context
+                return completed
+
+            # A person may already exist in another slot. If the user did not
+            # provide a new location this turn, move the person's full travel
+            # state instead of copying only their name onto the target slot.
+            source = current_by_name.get(final_name) or {}
+            if not has_explicit_location and source:
+                if source.get("lng") is not None and source.get("lat") is not None:
+                    completed["lng"] = source.get("lng")
+                    completed["lat"] = source.get("lat")
+                    if str(source.get("address") or "").strip():
+                        completed["place_name"] = str(source.get("address") or "").strip()
+                if source.get("prefer") in {"auto", "transit", "driving", "walking", "cycling"}:
+                    completed["prefer"] = source.get("prefer")
+            return completed
+
         normalized = []
         for slot, final_name in enumerate(ordered_names, start=1):
             queued = ensure_by_name.get(final_name) or []
@@ -9785,13 +9825,13 @@ def _normalize_participant_tool_plan(
             )
             if existing_call:
                 call, args = existing_call
-                args = {**args, "index": slot, "participant_name": final_name}
+                args = complete_slot_args(slot, final_name, args)
                 normalized.append(_participant_tool_call(str(call.get("id") or f"slot_{iteration}_{slot}"), "ensure_participant", args))
-            elif current_name != final_name:
+            elif current_name != final_name or final_name in location_by_owner:
                 normalized.append(_participant_tool_call(
                     f"slot_plan_{iteration}_{slot}",
                     "ensure_participant",
-                    {"index": slot, "participant_name": final_name},
+                    complete_slot_args(slot, final_name, {}),
                 ))
         for slot in range(len(ordered_names) + 1, len(participants) + 1):
             normalized.append(_participant_tool_call(
