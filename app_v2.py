@@ -6595,7 +6595,7 @@ def _memory_entity_ensure(
         conn.execute(
             "INSERT INTO memory_entity_aliases(device_id,entity_id,alias,alias_norm,source,confidence,status,created_at,updated_at) "
             "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(device_id,entity_id,alias_norm) DO UPDATE SET "
-            "confidence=MAX(confidence,excluded.confidence),updated_at=excluded.updated_at",
+            "confidence=MAX(memory_entity_aliases.confidence,excluded.confidence),updated_at=excluded.updated_at",
             (device_id, entity_id, _memory_clean_text(raw_alias, 100), norm, alias_source, confidence, alias_status, now, now),
         )
     return entity_id, resolved_name

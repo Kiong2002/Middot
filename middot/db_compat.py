@@ -97,7 +97,10 @@ def _postgres_sql(sql: str) -> str:
         ("MAX(memory_jobs.target_seq,excluded.target_seq)", "GREATEST(memory_jobs.target_seq,excluded.target_seq)"),
         ("MAX(memory_jobs.priority,excluded.priority)", "GREATEST(memory_jobs.priority,excluded.priority)"),
         ("MAX(priority,90)", "GREATEST(priority,90)"),
-        ("MAX(confidence,excluded.confidence)", "GREATEST(confidence,excluded.confidence)"),
+        (
+            "MAX(memory_entity_aliases.confidence,excluded.confidence)",
+            "GREATEST(memory_entity_aliases.confidence,excluded.confidence)",
+        ),
         ("MAX(1,COALESCE(", "GREATEST(1,COALESCE("),
         ("MAX(0,COALESCE(", "GREATEST(0,COALESCE("),
         ("MIN(0.99,", "LEAST(0.99,"),
