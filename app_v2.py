@@ -27,6 +27,26 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, request, jsonify, send_from_directory, Response, g
 from flask_cors import CORS
 from openai import OpenAI
+from middot.state_store import (
+    clear_rate_limit,
+    rate_limit_failures,
+    record_rate_limit_failure,
+    redis_client,
+    session_store,
+)
+from middot.db_compat import (
+    acquire_schema_lock,
+    connect as database_connect,
+    integrity_error_types,
+    release_schema_lock,
+)
+from middot.room_runtime import (
+    heartbeat as room_heartbeat,
+    leave_presence as room_leave_presence,
+    online_members as room_online_members,
+    remove_room_runtime,
+    schedule_room_expiry,
+)
 
 # 路线计算并发上限。每个 (POI, 参与者) 独立发一次 amap_get_best_route，
 # 内部还会串行试多种交通方式。高德个人 key 默认 QPS 3/s，
@@ -50,7 +70,12 @@ from amap_client import (
 )
 
 app = Flask(__name__, static_folder="static")
-CORS(app)
+_cors_raw = str(os.getenv("MIDDOT_CORS_ORIGINS") or "").strip()
+_cors_origins: str | list[str] = (
+    [item.strip() for item in _cors_raw.split(",") if item.strip()]
+    if _cors_raw else "*"
+)
+CORS(app, resources={r"/api/*": {"origins": _cors_origins}})
 
 llm_client = OpenAI(
     api_key=DEEPSEEK_API_KEY,
@@ -62,37 +87,26 @@ llm_client = OpenAI(
 # Session 管理（内存缓存，TTL 1 小时）
 # ──────────────────────────────────────────────────────
 
-_sessions: dict[str, dict] = {}
 SESSION_TTL = 3600
+# Legacy tests and local debugging sometimes simulate a process restart by
+# clearing this mapping. Production Redis sessions never use this dictionary.
+_sessions = getattr(session_store(SESSION_TTL), "_items", {})
 
 
 def session_create(data: dict) -> str:
-    sid = str(uuid.uuid4())[:8]
-    _sessions[sid] = {"data": data, "expires_at": time.time() + SESSION_TTL}
-    _session_cleanup()
-    return sid
+    return session_store(SESSION_TTL).create(data)
 
 
 def session_get(sid: str) -> dict | None:
-    s = _sessions.get(sid)
-    if not s or s["expires_at"] < time.time():
-        return None
-    return s["data"]
+    return session_store(SESSION_TTL).get(sid)
 
 
 def session_update(sid: str, data: dict) -> bool:
-    if sid not in _sessions:
-        return False
-    _sessions[sid]["data"].update(data)
-    _sessions[sid]["expires_at"] = time.time() + SESSION_TTL
-    return True
+    return session_store(SESSION_TTL).update(sid, data)
 
 
 def _session_cleanup():
-    now = time.time()
-    expired = [k for k, v in _sessions.items() if v["expires_at"] < now]
-    for k in expired:
-        del _sessions[k]
+    session_store(SESSION_TTL).cleanup()
 
 
 # ══════════════════════════════════════════════════════
@@ -168,6 +182,7 @@ ROOM_CODE_ALPHABET = "0123456789"      # 纯数字（PM 拍板：好读、好念
 ROOM_CODE_LEN = 6
 ROOM_TTL_S = 60 * 60 * 24              # 未锁定：24h 无活跃回收
 ROOM_LOCK_TTL_S = 60 * 60 * 24 * 7     # 锁定后暂存 7 天
+ROOM_EMPTY_TTL_S = 60 * 10              # 最后一人离开后给刷新/重连留 10 分钟
 ROOM_CODE_REUSE_COOLDOWN_S = 60 * 60 * 24  # 关闭后 24h 内不复用同 code
 # 记忆锚点黑名单：太顺口 / 太常见 / 太像验证码
 ROOM_CODE_BLACKLIST = frozenset({
@@ -179,12 +194,7 @@ ROOM_CODE_BLACKLIST = frozenset({
 
 
 def _db_connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(MIDDOT_DB_PATH, timeout=5.0, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=3000")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    return database_connect(MIDDOT_DB_PATH)
 
 
 def _db() -> sqlite3.Connection:
@@ -203,6 +213,7 @@ def _db_close(_exc):
 
 def init_middot_db():
     conn = _db_connect()
+    acquire_schema_lock(conn)
     try:
         schema_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         conn.executescript("""
@@ -238,7 +249,8 @@ def init_middot_db():
           revision       INTEGER NOT NULL DEFAULT 0,
           status         TEXT NOT NULL DEFAULT 'active',   -- 'active' | 'closed'
           created_at     INTEGER NOT NULL,
-          last_active_at INTEGER NOT NULL
+          last_active_at INTEGER NOT NULL,
+          expires_at     INTEGER
         );
         CREATE TABLE IF NOT EXISTS room_members (
           room_code     TEXT NOT NULL,
@@ -637,6 +649,14 @@ def init_middot_db():
                 conn.execute("ALTER TABLE rooms ADD COLUMN last_ai_actions_json TEXT")
             if "locked_until" not in cols:
                 conn.execute("ALTER TABLE rooms ADD COLUMN locked_until INTEGER")
+            if "expires_at" not in cols:
+                conn.execute("ALTER TABLE rooms ADD COLUMN expires_at INTEGER")
+                conn.execute(
+                    "UPDATE rooms SET expires_at=CASE "
+                    "WHEN locked_until IS NOT NULL AND locked_until>0 THEN locked_until "
+                    "ELSE last_active_at+? END WHERE expires_at IS NULL",
+                    (ROOM_TTL_S,),
+                )
         except Exception:
             pass
 
@@ -821,6 +841,7 @@ def init_middot_db():
             conn.execute("PRAGMA user_version=3")
         conn.commit()
     finally:
+        release_schema_lock(conn)
         conn.close()
 
 
@@ -829,6 +850,26 @@ init_middot_db()
 
 def _now() -> int:
     return int(time.time())
+
+
+def _database_health_ping() -> bool:
+    conn = _db_connect()
+    try:
+        return int(conn.execute("SELECT 1").fetchone()[0]) == 1
+    finally:
+        conn.close()
+
+
+def _redis_health_ping() -> bool | None:
+    client = redis_client()
+    return None if client is None else bool(client.ping())
+
+
+from middot.observability import install_observability
+
+install_observability(
+    app, database_ping=_database_health_ping, redis_ping=_redis_health_ping
+)
 
 
 def _ensure_device(conn: sqlite3.Connection, device_id: str):
@@ -984,7 +1025,9 @@ def _claim_legacy_device(old_device_id: str) -> str | None:
 def _middot_attach_device():
     # 只处理 API + SPA 路由；静态资源直接放行
     p = request.path
-    if p.startswith("/static/") or p in ("/favicon.ico",):
+    if p.startswith("/static/") or p in (
+        "/favicon.ico", "/health/live", "/health/ready", "/metrics",
+    ):
         return None
     raw_cookie = request.cookies.get(DEVICE_COOKIE)
     did = _device_cookie_decode(raw_cookie)
@@ -1090,18 +1133,25 @@ def api_admin_session():
 def api_admin_login():
     remote = str(request.remote_addr or "unknown")
     now = time.time()
-    with _admin_login_lock:
-        recent = [stamp for stamp in _admin_login_attempts.get(remote, []) if now - stamp < 600]
-        _admin_login_attempts[remote] = recent
-        if len(recent) >= 5:
+    shared_failures = rate_limit_failures("admin-login", remote)
+    if shared_failures is not None:
+        if shared_failures >= 5:
             return jsonify({"error": "登录尝试过多，请10分钟后再试"}), 429
+    else:
+        with _admin_login_lock:
+            recent = [stamp for stamp in _admin_login_attempts.get(remote, []) if now - stamp < 600]
+            _admin_login_attempts[remote] = recent
+            if len(recent) >= 5:
+                return jsonify({"error": "登录尝试过多，请10分钟后再试"}), 429
     data = request.get_json(silent=True) or {}
     username_ok = hmac.compare_digest(str(data.get("username") or ""), ADMIN_USERNAME)
     password_ok = hmac.compare_digest(str(data.get("password") or ""), ADMIN_PASSWORD)
     if not (username_ok and password_ok):
-        with _admin_login_lock:
-            _admin_login_attempts.setdefault(remote, []).append(now)
+        if record_rate_limit_failure("admin-login", remote, 600) is None:
+            with _admin_login_lock:
+                _admin_login_attempts.setdefault(remote, []).append(now)
         return jsonify({"error": "账号或密码错误"}), 401
+    clear_rate_limit("admin-login", remote)
     with _admin_login_lock:
         _admin_login_attempts.pop(remote, None)
     expires_at = _now() + ADMIN_COOKIE_MAX_AGE
@@ -1253,22 +1303,26 @@ def _gen_room_code(conn: sqlite3.Connection) -> str:
 
 
 def _sweep_stale_rooms(conn: sqlite3.Connection):
-    """懒清理：
-    - 未锁定房间：24h 无活动 → closed
-    - 锁定房间：locked_until 到期 → closed（哪怕最近还有活动，锁本身是显式 TTL）
-    """
+    """Close rooms whose durable expiry has elapsed; Redis is only an accelerator."""
     now = _now()
-    unlocked_threshold = now - ROOM_TTL_S
-    conn.execute(
-        "UPDATE rooms SET status='closed' WHERE status='active' AND "
-        "(locked_until IS NULL OR locked_until=0) AND last_active_at<?",
-        (unlocked_threshold,),
-    )
-    conn.execute(
-        "UPDATE rooms SET status='closed' WHERE status='active' AND "
-        "locked_until IS NOT NULL AND locked_until>0 AND locked_until<?",
-        (now,),
-    )
+    rows = conn.execute(
+        "SELECT code FROM rooms WHERE status='active' AND COALESCE(expires_at,"
+        "CASE WHEN locked_until IS NOT NULL AND locked_until>0 THEN locked_until "
+        "ELSE last_active_at+? END)<?",
+        (ROOM_TTL_S, now),
+    ).fetchall()
+    if rows:
+        conn.execute(
+            "UPDATE rooms SET status='closed' WHERE status='active' AND COALESCE(expires_at,"
+            "CASE WHEN locked_until IS NOT NULL AND locked_until>0 THEN locked_until "
+            "ELSE last_active_at+? END)<?",
+            (ROOM_TTL_S, now),
+        )
+        for item in rows:
+            try:
+                remove_room_runtime(str(item["code"]))
+            except Exception:
+                app.logger.warning("[rooms] redis cleanup failed for %s", item["code"])
 
 
 def _begin_immediate(conn: sqlite3.Connection):
@@ -1294,7 +1348,7 @@ def _room_snapshot(conn: sqlite3.Connection, code: str, me_did: str) -> dict | N
     """一次读 rooms + room_members，按 device_id 打 is_me 标。"""
     row = conn.execute(
         "SELECT code, host_device_id, keyword, anchor_json, revision, status, "
-        "created_at, last_active_at, updated_by, last_ai_actions_json, locked_until "
+        "created_at, last_active_at, updated_by, last_ai_actions_json, locked_until, expires_at "
         "FROM rooms WHERE code=?",
         (code,),
     ).fetchone()
@@ -1305,6 +1359,10 @@ def _room_snapshot(conn: sqlite3.Connection, code: str, me_did: str) -> dict | N
         "FROM room_members WHERE room_code=? ORDER BY joined_at ASC",
         (code,),
     ).fetchall()
+    try:
+        online_ids = room_online_members(code, [str(member["device_id"]) for member in members])
+    except Exception:
+        online_ids = set()
     try:
         last_ai = json.loads(row["last_ai_actions_json"] or "[]")
     except (TypeError, ValueError):
@@ -1328,6 +1386,7 @@ def _room_snapshot(conn: sqlite3.Connection, code: str, me_did: str) -> dict | N
         "created_at":      row["created_at"],
         "last_active_at":  row["last_active_at"],
         "locked_until":    row["locked_until"] or 0,
+        "expires_at":      row["expires_at"] or 0,
         "last_ai_actions": safe_actions,
         "members": [
             {
@@ -1338,17 +1397,37 @@ def _room_snapshot(conn: sqlite3.Connection, code: str, me_did: str) -> dict | N
                 "prefer":    m["prefer"] or "auto",
                 "joined_at": m["joined_at"],
                 "is_me":     (m["device_id"] == me_did),
+                "online":    (m["device_id"] in online_ids),
             } for m in members
         ],
     }
 
 
 def _room_bump_revision(conn: sqlite3.Connection, code: str, updated_by: str | None):
-    """rooms.revision += 1（同事务原子），并更新 last_active_at + updated_by。"""
+    """Atomically bump revision and persist the room's next expiry."""
+    now = _now()
+    state = conn.execute(
+        "SELECT locked_until,(SELECT COUNT(*) FROM room_members WHERE room_code=rooms.code) AS member_count "
+        "FROM rooms WHERE code=?",
+        (code,),
+    ).fetchone()
+    if not state:
+        return
+    locked_until = int(state["locked_until"] or 0)
+    if locked_until > now:
+        expires_at = locked_until
+    elif int(state["member_count"] or 0) == 0:
+        expires_at = now + ROOM_EMPTY_TTL_S
+    else:
+        expires_at = now + ROOM_TTL_S
     conn.execute(
-        "UPDATE rooms SET revision=revision+1, last_active_at=?, updated_by=? WHERE code=?",
-        (_now(), updated_by, code),
+        "UPDATE rooms SET revision=revision+1,last_active_at=?,updated_by=?,expires_at=? WHERE code=?",
+        (now, updated_by, expires_at, code),
     )
+    try:
+        schedule_room_expiry(code, expires_at)
+    except Exception:
+        app.logger.warning("[rooms] redis expiry scheduling failed for %s", code)
 
 
 # ── AI 归属日志 ────────────────────────────────────────────
@@ -1522,9 +1601,9 @@ def api_rooms_create():
         keyword = (data.get("keyword") or "").strip()[:120] or None
         conn.execute(
             "INSERT INTO rooms(code, host_device_id, keyword, anchor_json, revision, "
-            "status, created_at, last_active_at, updated_by) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
-            (code, g.device_id, keyword, anchor_s, 1, "active", now, now, g.device_id),
+            "status, created_at, last_active_at, updated_by, expires_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (code, g.device_id, keyword, anchor_s, 1, "active", now, now, g.device_id, now + ROOM_TTL_S),
         )
         location = data.get("location")
         loc_s = json.dumps(location, ensure_ascii=False) if location else None
@@ -1535,6 +1614,11 @@ def api_rooms_create():
             (code, g.device_id, nickname, "host", loc_s, prefer, now),
         )
         conn.commit()
+        try:
+            schedule_room_expiry(code, now + ROOM_TTL_S)
+            room_heartbeat(code, g.device_id)
+        except Exception:
+            app.logger.warning("[rooms] redis create projection failed for %s", code)
     except Exception as e:
         conn.rollback()
         app.logger.warning("[rooms] create failed: %s", e)
@@ -1557,7 +1641,7 @@ def api_rooms_join():
         _begin_immediate(conn)
         _sweep_stale_rooms(conn)
         room = conn.execute(
-            "SELECT status, locked_until FROM rooms WHERE code=?", (code,)
+            "SELECT status,locked_until,host_device_id FROM rooms WHERE code=?", (code,)
         ).fetchone()
         if not room or room["status"] != "active":
             conn.rollback()
@@ -1569,7 +1653,7 @@ def api_rooms_join():
             (code, g.device_id),
         ).fetchone()
         locked_until = room["locked_until"] or 0
-        if locked_until and locked_until > now and not existed:
+        if locked_until and locked_until > now and not existed and room["host_device_id"] != g.device_id:
             conn.rollback()
             return jsonify({"error": "房间已锁定，不再接受新成员"}), 403
         if existed:
@@ -1579,13 +1663,25 @@ def api_rooms_join():
                 (nickname, loc_s, prefer, code, g.device_id),
             )
         else:
+            member_count = int(conn.execute(
+                "SELECT COUNT(*) FROM room_members WHERE room_code=?", (code,)
+            ).fetchone()[0])
+            role = "host" if member_count == 0 else "member"
             conn.execute(
                 "INSERT INTO room_members(room_code, device_id, nickname, role, "
                 "location_json, prefer, joined_at) VALUES(?,?,?,?,?,?,?)",
-                (code, g.device_id, nickname, "member", loc_s, prefer, now),
+                (code, g.device_id, nickname, role, loc_s, prefer, now),
             )
+            if role == "host":
+                conn.execute(
+                    "UPDATE rooms SET host_device_id=? WHERE code=?", (g.device_id, code)
+                )
         _room_bump_revision(conn, code, g.device_id)
         conn.commit()
+        try:
+            room_heartbeat(code, g.device_id)
+        except Exception:
+            app.logger.warning("[rooms] redis join heartbeat failed for %s", code)
     except Exception as e:
         conn.rollback()
         app.logger.warning("[rooms] join failed: %s", e)
@@ -1607,6 +1703,13 @@ def api_rooms_get(code: str):
     ).fetchone()
     if not row or row["status"] != "active":
         return jsonify({"error": "房间不存在或已关闭"}), 404
+    if conn.execute(
+        "SELECT 1 FROM room_members WHERE room_code=? AND device_id=?", (code, g.device_id)
+    ).fetchone():
+        try:
+            room_heartbeat(code, g.device_id)
+        except Exception:
+            app.logger.warning("[rooms] redis heartbeat failed for %s", code)
     if row["revision"] <= since_rev:
         return jsonify({"revision": row["revision"], "unchanged": True})
     snap = _room_snapshot(conn, code, g.device_id)
@@ -1783,7 +1886,7 @@ def api_rooms_leave(code: str):
             "DELETE FROM room_members WHERE room_code=? AND device_id=?",
             (code, g.device_id),
         )
-        # host 走了 → 移交给最早 joined 的成员；没人了 → close
+        # host 走了 → 移交给最早 joined 的成员；没人了 → 保留 10 分钟供刷新重连。
         if room["host_device_id"] == g.device_id:
             heir = conn.execute(
                 "SELECT device_id FROM room_members WHERE room_code=? "
@@ -1799,12 +1902,12 @@ def api_rooms_leave(code: str):
                     "UPDATE room_members SET role='host' WHERE room_code=? AND device_id=?",
                     (code, heir["device_id"]),
                 )
-            else:
-                conn.execute(
-                    "UPDATE rooms SET status='closed' WHERE code=?", (code,)
-                )
         _room_bump_revision(conn, code, g.device_id)
         conn.commit()
+        try:
+            room_leave_presence(code, g.device_id)
+        except Exception:
+            app.logger.warning("[rooms] redis leave projection failed for %s", code)
     except Exception as e:
         conn.rollback()
         app.logger.warning("[rooms] leave failed: %s", e)
@@ -8397,7 +8500,7 @@ def api_v2_memory_update_item():
                              else None),
         )
         conn.commit()
-    except sqlite3.IntegrityError:
+    except integrity_error_types():
         conn.rollback()
         return jsonify({"error": "档案存在冲突，请刷新后重试"}), 409
     except Exception:
@@ -9192,15 +9295,12 @@ def _get_choice_graph_runtime():
     with _choice_graph_lock:
         if _choice_graph_runtime is not None:
             return _choice_graph_runtime
-        from langgraph.checkpoint.sqlite import SqliteSaver
         from middot.agent_runtime.choice_graph import ChoiceResolutionRuntime, build_choice_graph
+        from middot.checkpoints import get_checkpointer
 
-        _choice_graph_conn = sqlite3.connect(
-            MIDDOT_LANGGRAPH_DB_PATH, timeout=5.0, check_same_thread=False
-        )
-        _choice_graph_conn.execute("PRAGMA journal_mode=WAL")
-        _choice_graph_conn.execute("PRAGMA busy_timeout=3000")
-        graph = build_choice_graph(checkpointer=SqliteSaver(_choice_graph_conn))
+        saver = get_checkpointer(MIDDOT_LANGGRAPH_DB_PATH)
+        _choice_graph_conn = getattr(saver, "conn", None)
+        graph = build_choice_graph(checkpointer=saver)
         _choice_graph_runtime = ChoiceResolutionRuntime(graph)
         return _choice_graph_runtime
 
@@ -9638,17 +9738,13 @@ def _get_location_graph_runtime():
     with _location_graph_lock:
         if _location_graph_runtime is not None:
             return _location_graph_runtime
-        from langgraph.checkpoint.sqlite import SqliteSaver
         from middot.agent_runtime.location_graph import LocationResolutionRuntime, build_location_graph
         from middot.agent_runtime.runtime import load_runtime_settings
         from middot.agent_runtime.trace import build_trace_sink
+        from middot.checkpoints import get_checkpointer
 
-        _location_graph_conn = sqlite3.connect(
-            MIDDOT_LANGGRAPH_DB_PATH, timeout=5.0, check_same_thread=False
-        )
-        _location_graph_conn.execute("PRAGMA journal_mode=WAL")
-        _location_graph_conn.execute("PRAGMA busy_timeout=3000")
-        saver = SqliteSaver(_location_graph_conn)
+        saver = get_checkpointer(MIDDOT_LANGGRAPH_DB_PATH)
+        _location_graph_conn = getattr(saver, "conn", None)
         graph = build_location_graph(
             resolver=_location_graph_resolver,
             selector=_location_graph_selector,
@@ -10458,7 +10554,6 @@ def _get_main_agent_graph_runtime():
     with _main_agent_graph_lock:
         if _main_agent_graph_runtime is not None:
             return _main_agent_graph_runtime
-        from langgraph.checkpoint.sqlite import SqliteSaver
         from middot.agent_runtime.main_graph import (
             MainAgentHooks,
             MainAgentRuntime,
@@ -10466,13 +10561,10 @@ def _get_main_agent_graph_runtime():
         )
         from middot.agent_runtime.runtime import load_runtime_settings
         from middot.agent_runtime.trace import build_trace_sink
+        from middot.checkpoints import get_checkpointer
 
-        _main_agent_graph_conn = sqlite3.connect(
-            MIDDOT_LANGGRAPH_DB_PATH, timeout=5.0, check_same_thread=False
-        )
-        _main_agent_graph_conn.execute("PRAGMA journal_mode=WAL")
-        _main_agent_graph_conn.execute("PRAGMA busy_timeout=3000")
-        saver = SqliteSaver(_main_agent_graph_conn)
+        saver = get_checkpointer(MIDDOT_LANGGRAPH_DB_PATH)
+        _main_agent_graph_conn = getattr(saver, "conn", None)
         hooks = MainAgentHooks(
             call_model=_main_graph_call_model,
             execute_tool=_main_graph_execute_tool,

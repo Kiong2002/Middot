@@ -1,0 +1,23 @@
+[Unit]
+Description=Middot room expiry reconciler
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=middot
+Group=middot
+WorkingDirectory=/opt/middot/current
+EnvironmentFile=/etc/middot/middot.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/middot/current/venv/bin/python3 /opt/middot/current/room_gc_worker.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/middot/shared
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+http://myowl.me, http://www.myowl.me {
+	redir https://{host}{uri} 301
+}
+
+myowl.me, www.myowl.me {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:3000
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+}
+
+http://154.37.208.157 {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:3000
+}
+
+middot.myowl.me {
+	encode zstd gzip
+	@private path /metrics
+	respond @private 404
+	reverse_proxy 127.0.0.1:5000
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+}
+
+meetmid.myowl.me {
+	redir https://middot.myowl.me{uri} 301
+}

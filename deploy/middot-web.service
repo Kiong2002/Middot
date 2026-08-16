@@ -1,0 +1,31 @@
+[Unit]
+Description=Middot production web service
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=middot
+Group=middot
+WorkingDirectory=/opt/middot/current
+EnvironmentFile=/etc/middot/middot.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PROMETHEUS_MULTIPROC_DIR=/run/middot-prometheus
+RuntimeDirectory=middot-prometheus
+RuntimeDirectoryMode=0750
+ExecStartPre=/usr/bin/find /run/middot-prometheus -type f -delete
+ExecStart=/opt/middot/current/venv/bin/gunicorn -c /opt/middot/current/gunicorn.conf.py wsgi:app
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGTERM
+TimeoutStopSec=45
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/middot/shared /run/middot-prometheus
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

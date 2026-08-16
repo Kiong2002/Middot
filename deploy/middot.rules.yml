@@ -1,0 +1,42 @@
+groups:
+  - name: middot
+    rules:
+      - alert: MiddotDown
+        expr: up{job="middot"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Middot has been unreachable for two minutes
+
+      - alert: MiddotHighServerErrorRate
+        expr: >-
+          sum(rate(middot_http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(middot_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Middot 5xx responses exceed 5%
+
+      - alert: MiddotHighP95Latency
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(middot_http_request_duration_seconds_bucket[5m]))) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Middot p95 latency exceeds ten seconds
+
+      - alert: HostDiskSpaceLow
+        expr: >-
+          node_filesystem_avail_bytes{mountpoint="/",fstype!=""}
+          /
+          node_filesystem_size_bytes{mountpoint="/",fstype!=""} < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Root filesystem has less than 15% free space
