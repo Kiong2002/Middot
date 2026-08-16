@@ -4520,6 +4520,7 @@
 
     // ── 内联进度条 ──
     const PROGRESS_ORDER = ['plan', 'search', 'routes', 'summary'];
+    let progressHideTimer = null;
     const PROGRESS_HERO_LABELS = {
       plan:    '正在理解你想去哪…',
       search:  '正在锚点周边找候选…',
@@ -4531,6 +4532,10 @@
       if (el && text) el.textContent = text;
     }
     function progressReset() {
+      if (progressHideTimer) {
+        clearTimeout(progressHideTimer);
+        progressHideTimer = null;
+      }
       _pbStopAll();
       const card = $('#progressCard');
       card.hidden = false;
@@ -4637,9 +4642,17 @@
           progressSet(k, 'done');
         }
       }
-      setTimeout(() => { $('#progressCard').hidden = true; }, 500);
+      if (progressHideTimer) clearTimeout(progressHideTimer);
+      progressHideTimer = setTimeout(() => {
+        $('#progressCard').hidden = true;
+        progressHideTimer = null;
+      }, 500);
     }
     function progressError(msg) {
+      if (progressHideTimer) {
+        clearTimeout(progressHideTimer);
+        progressHideTimer = null;
+      }
       // 当前正在跑的那一步标红
       const active = document.querySelector('.progress-step.active');
       if (active) {
@@ -4650,6 +4663,90 @@
         if (d) d.textContent = msg;
       }
       refreshIcons();
+    }
+
+    // AI 助手与左侧“开始搜索”共用同一套中间栏进度 UI。助手的 search_pois
+    // 是一个同步工具：tool_call 到达时搜索刚开始，tool_result 后紧跟
+    // pois_replaced。这里按真实事件推进，不用定时器伪造百分比。
+    const ASSIST_SEARCH_PROGRESS = {
+      active: false,
+      toolId: '',
+      keyword: '',
+      previousResultsVisible: false,
+      previousResultCount: '',
+    };
+
+    function assistSearchProgressStart(ev) {
+      const args = ev?.args || {};
+      const keyword = String(args.keyword || '').trim();
+      const resultsCard = $('#resultsCard');
+      ASSIST_SEARCH_PROGRESS.active = true;
+      ASSIST_SEARCH_PROGRESS.toolId = String(ev?.id || '');
+      ASSIST_SEARCH_PROGRESS.keyword = keyword;
+      ASSIST_SEARCH_PROGRESS.previousResultsVisible = !!resultsCard && !resultsCard.hidden;
+      ASSIST_SEARCH_PROGRESS.previousResultCount = $('#resultCount')?.textContent || '';
+
+      showResultsPanel();
+      progressReset();
+      if (resultsCard) resultsCard.hidden = true;
+      if ($('#resultCount')) $('#resultCount').textContent = '搜索中…';
+      progressSet(
+        'plan',
+        'done',
+        keyword ? `已读取关键词「${keyword}」和参与者位置` : '已读取关键词和参与者位置',
+      );
+      progressAdvanceTo('search');
+      progressSet(
+        'search',
+        'active',
+        keyword ? `正在锚点周边搜索「${keyword}」` : '正在锚点周边搜索候选地点',
+      );
+    }
+
+    function assistSearchProgressResult(ev) {
+      if (!ASSIST_SEARCH_PROGRESS.active) return;
+      const eventId = String(ev?.id || '');
+      if (ASSIST_SEARCH_PROGRESS.toolId && eventId && eventId !== ASSIST_SEARCH_PROGRESS.toolId) return;
+      const data = ev?.data || {};
+      if (!ev?.ok || data.skipped) {
+        const msg = ev?.summary || data.error || '搜索没有完成';
+        if (data.skipped) {
+          $('#progressCard').hidden = true;
+        } else {
+          setProgressHeroLabel('这次搜索没有完成');
+          progressError(msg);
+        }
+        if ($('#resultsCard')) $('#resultsCard').hidden = !ASSIST_SEARCH_PROGRESS.previousResultsVisible;
+        if ($('#resultCount')) $('#resultCount').textContent = ASSIST_SEARCH_PROGRESS.previousResultCount;
+        ASSIST_SEARCH_PROGRESS.active = false;
+        return;
+      }
+
+      const count = Number(data.count);
+      progressSet(
+        'search',
+        'done',
+        Number.isFinite(count) ? `找到 ${count} 个候选地点` : '候选地点已找到',
+      );
+      progressSet('routes', 'done', '已计算每位参与者的出行路线');
+      progressAdvanceTo('summary');
+      progressSet('summary', 'active', '正在整理并展示推荐结果…');
+    }
+
+    function assistSearchProgressPatched(patch) {
+      if (!ASSIST_SEARCH_PROGRESS.active || patch?.type !== 'pois_replaced') return;
+      progressSet('summary', 'done', '推荐结果已更新');
+      ASSIST_SEARCH_PROGRESS.active = false;
+      progressComplete();
+    }
+
+    function assistSearchProgressAbort(msg) {
+      if (!ASSIST_SEARCH_PROGRESS.active) return;
+      setProgressHeroLabel('这次搜索没有完成');
+      progressError(msg || '搜索中断，请重试');
+      if ($('#resultsCard')) $('#resultsCard').hidden = !ASSIST_SEARCH_PROGRESS.previousResultsVisible;
+      if ($('#resultCount')) $('#resultCount').textContent = ASSIST_SEARCH_PROGRESS.previousResultCount;
+      ASSIST_SEARCH_PROGRESS.active = false;
     }
 
     let map, anchorCircle = null;
@@ -8299,16 +8396,19 @@
           break;
         case 'tool_call':
           assistAddTool(ev.name, ev.args || {});
+          if (ev.name === 'search_pois') assistSearchProgressStart(ev);
           break;
         case 'tool_result':
           assistUpdateTool(ev.name, {
             ok: !!ev.ok, summary: ev.summary || '', data: ev.data,
           });
+          if (ev.name === 'search_pois') assistSearchProgressResult(ev);
           break;
         case 'state_patch':
           if(ev.patch?.type==='choices') assistRenderChoices(ev.patch);
           else if(ev.patch?.type==='location_choices') assistRenderLocationChoices(ev.patch);
           else assistApplyPatch(ev.patch);
+          assistSearchProgressPatched(ev.patch);
           break;
         case 'waiting':
           ASSIST_STATE.turnOutcome = 'waiting';
@@ -8320,6 +8420,7 @@
           break;
         case 'error':
           ASSIST_STATE.turnOutcome = 'failed';
+          assistSearchProgressAbort(ev.msg || '搜索中断，请重试');
           const err = document.createElement('div');
           err.className = 'assist-msg bot';
           err.innerHTML = `<div class="bubble" style="color:var(--danger)">${escapeHtml(ev.msg || '出错了')}</div>`;
@@ -8328,6 +8429,9 @@
           break;
         case 'done':
           ASSIST_STATE.turnOutcome = ev.outcome || ASSIST_STATE.turnOutcome || 'completed';
+          if (ASSIST_SEARCH_PROGRESS.active) {
+            assistSearchProgressAbort('搜索结束，但没有收到新的推荐结果');
+          }
           assistTurnEnd();
           if (ASSIST_STATE.drafts.length > 0) assistRenderDraftCard();
           if (ACTIVITY.entries.length) renderActivityPanel();
