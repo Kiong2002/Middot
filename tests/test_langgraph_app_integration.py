@@ -428,6 +428,7 @@ def test_agent_exposes_unified_participant_tools(monkeypatch, tmp_path):
     ensure_schema = functions["ensure_participant"]["parameters"]
     assert ensure_schema["required"] == ["index", "participant_name"]
     assert "existing_name" not in ensure_schema["properties"]
+    assert ensure_schema["properties"]["identity_action"]["enum"] == ["rename", "replace"]
 
 
 def test_utterance_parser_keeps_exact_group_and_new_person(monkeypatch, tmp_path):
@@ -436,7 +437,13 @@ def test_utterance_parser_keeps_exact_group_and_new_person(monkeypatch, tmp_path
         "intent": "meeting",
         "activity": "炒饭",
         "city_context": "北京",
-        "participant_change": {"mode": "exact", "ordered_names": ["我", "chichi"]},
+        "participant_change": {
+            "mode": "exact",
+            "ordered_names": ["我", "chichi"],
+            "slot_changes": [
+                {"index": 2, "from_name": "Lisa", "to_name": "chichi", "identity_action": "replace"}
+            ],
+        },
         "locations": [
             {
                 "owner": "我",
@@ -474,6 +481,9 @@ def test_utterance_parser_keeps_exact_group_and_new_person(monkeypatch, tmp_path
     assert result["participant_change"] == {
         "mode": "exact",
         "ordered_names": ["我", "chichi"],
+        "slot_changes": [
+            {"index": 2, "from_name": "Lisa", "to_name": "chichi", "identity_action": "replace"}
+        ],
     }
     assert result["locations"][1]["owner"] == "chichi"
     assert result["locations"][1]["participant_index"] is None
@@ -485,7 +495,13 @@ def test_utterance_parser_does_not_replace_new_owner_with_old_slot_name(monkeypa
         "intent": "meeting",
         "activity": "炒饭",
         "city_context": "北京",
-        "participant_change": {"mode": "exact", "ordered_names": ["我", "chichi"]},
+        "participant_change": {
+            "mode": "exact",
+            "ordered_names": ["我", "chichi"],
+            "slot_changes": [
+                {"index": 2, "from_name": "Lisa", "to_name": "chichi", "identity_action": "replace"}
+            ],
+        },
         "locations": [
             {"owner": "我", "participant_index": 1, "expression": "北大", "kind": "named_place"},
             {
@@ -526,7 +542,13 @@ def test_exact_group_normalizes_slots_and_removes_trailing_people(monkeypatch, t
                 {"id": "dviad", "name": "dviad", "lng": None, "lat": None},
             ],
             "current_utterance_parse": {
-                "participant_change": {"mode": "exact", "ordered_names": ["我", "chichi"]}
+                "participant_change": {
+                    "mode": "exact",
+                    "ordered_names": ["我", "chichi"],
+                    "slot_changes": [
+                        {"index": 2, "from_name": "Lisa", "to_name": "chichi", "identity_action": "replace"}
+                    ],
+                }
             },
         }
     )
@@ -558,12 +580,42 @@ def test_exact_group_normalizes_slots_and_removes_trailing_people(monkeypatch, t
         ),
         (
             "ensure_participant",
-            {"participant_name": "chichi", "place_name": "西单图书大厦", "index": 2},
+            {"participant_name": "chichi", "place_name": "西单图书大厦", "index": 2, "identity_action": "replace"},
         ),
         ("remove_participant", {"index": 3}),
         ("set_keyword", {"keyword": "炒饭"}),
     ]
     assert module._normalize_participant_tool_plan(sid, [], iteration=2) == []
+
+
+def test_uncertain_identity_change_asks_before_touching_the_slot(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {"id": "lisa", "name": "Lisa", "lng": 116.4, "lat": 39.9, "address": "国贸"}
+            ],
+            "current_utterance_parse": {
+                "participant_change": {
+                    "mode": "exact",
+                    "ordered_names": ["chichi"],
+                    "slot_changes": [
+                        {"index": 1, "from_name": "Lisa", "to_name": "chichi", "identity_action": "uncertain"}
+                    ],
+                }
+            },
+        }
+    )
+
+    normalized = module._normalize_participant_tool_plan(sid, [], iteration=1)
+    assert len(normalized) == 1
+    assert normalized[0]["function"]["name"] == "offer_choices"
+    args = json.loads(normalized[0]["function"]["arguments"])
+    assert args["mode"] == "single"
+    assert args["options"] == [
+        {"label": "同一个人，只把 Lisa 改名为 chichi"},
+        {"label": "换成另一位 chichi"},
+    ]
 
 
 def test_exact_group_moves_explicit_location_with_person(monkeypatch, tmp_path):
@@ -583,7 +635,13 @@ def test_exact_group_moves_explicit_location_with_person(monkeypatch, tmp_path):
             ],
             "current_utterance_parse": {
                 "city_context": "北京",
-                "participant_change": {"mode": "exact", "ordered_names": ["我", "chichi"]},
+                "participant_change": {
+                    "mode": "exact",
+                    "ordered_names": ["我", "chichi"],
+                    "slot_changes": [
+                        {"index": 2, "from_name": "Lisa", "to_name": "chichi", "identity_action": "replace"}
+                    ],
+                },
                 "locations": [
                     {"owner": "我", "participant_index": 1, "expression": "北大"},
                     {"owner": "chichi", "participant_index": 3, "expression": "西单图书大厦"},
@@ -613,6 +671,7 @@ def test_exact_group_moves_explicit_location_with_person(monkeypatch, tmp_path):
             {
                 "index": 2,
                 "participant_name": "chichi",
+                "identity_action": "replace",
                 "place_name": "西单图书大厦",
                 "city": "北京",
             },
@@ -631,7 +690,13 @@ def test_exact_group_can_recover_location_by_target_slot(monkeypatch, tmp_path):
             ],
             "current_utterance_parse": {
                 "city_context": "北京",
-                "participant_change": {"mode": "exact", "ordered_names": ["我", "chichi"]},
+                "participant_change": {
+                    "mode": "exact",
+                    "ordered_names": ["我", "chichi"],
+                    "slot_changes": [
+                        {"index": 2, "from_name": "Lisa", "to_name": "chichi", "identity_action": "replace"}
+                    ],
+                },
                 # Defensive reproduction of the old postprocessor bug: owner was
                 # overwritten by the old slot name, but the desired slot stayed 2.
                 "locations": [
@@ -647,6 +712,7 @@ def test_exact_group_can_recover_location_by_target_slot(monkeypatch, tmp_path):
     assert ensure_args == {
         "index": 2,
         "participant_name": "chichi",
+        "identity_action": "replace",
         "place_name": "西单图书大厦",
         "city": "北京",
     }
@@ -669,7 +735,13 @@ def test_exact_group_preserves_existing_location_when_reordering(monkeypatch, tm
                 },
             ],
             "current_utterance_parse": {
-                "participant_change": {"mode": "exact", "ordered_names": ["我", "chichi"]},
+                "participant_change": {
+                    "mode": "exact",
+                    "ordered_names": ["我", "chichi"],
+                    "slot_changes": [
+                        {"index": 2, "from_name": "Lisa", "to_name": "chichi", "identity_action": "replace"}
+                    ],
+                },
                 "locations": [],
             },
         }
@@ -681,6 +753,7 @@ def test_exact_group_preserves_existing_location_when_reordering(monkeypatch, tm
     assert ensure_args == {
         "index": 2,
         "participant_name": "chichi",
+        "identity_action": "replace",
         "lng": 116.377078,
         "lat": 39.907883,
         "place_name": "北京图书大厦",
@@ -727,6 +800,145 @@ def test_ensure_participant_requires_an_explicit_slot(monkeypatch, tmp_path):
     assert result["error_code"] == "participant_index_required"
     assert patch is None
     assert module.session_get(sid)["participants"][0]["name"] == "dviad"
+
+
+def test_ensure_requires_identity_action_when_existing_name_changes(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {"id": "lisa", "name": "Lisa", "lng": 116.4, "lat": 39.9, "address": "国贸"}
+            ],
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+
+    result, patch = module._tool_ensure_participant(
+        sid, {"index": 1, "participant_name": "chichi"}
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "participant_identity_action_required"
+    assert patch is None
+
+
+def test_rename_keeps_existing_location_and_preference(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {
+                    "id": "lisa",
+                    "name": "Lisa",
+                    "lng": 116.4,
+                    "lat": 39.9,
+                    "address": "国贸",
+                    "prefer": "cycling",
+                }
+            ],
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    result, patch = module._tool_ensure_participant(
+        sid,
+        {"index": 1, "participant_name": "chichi", "identity_action": "rename"},
+    )
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={"session_id": sid, "drafts": [{"kind": patch["kind"], "data": patch["data"]}]},
+    )
+
+    participant = response.get_json()["participants"][0]
+    assert result["ok"] is True
+    assert participant == {
+        "id": "lisa",
+        "name": "chichi",
+        "lng": 116.4,
+        "lat": 39.9,
+        "address": "国贸",
+        "prefer": "cycling",
+    }
+
+
+def test_replace_clears_old_location_and_preference_when_new_location_missing(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {
+                    "id": "lisa",
+                    "name": "Lisa",
+                    "lng": 116.4,
+                    "lat": 39.9,
+                    "address": "国贸",
+                    "prefer": "cycling",
+                }
+            ],
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    result, patch = module._tool_ensure_participant(
+        sid,
+        {"index": 1, "participant_name": "chichi", "identity_action": "replace"},
+    )
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={"session_id": sid, "drafts": [{"kind": patch["kind"], "data": patch["data"]}]},
+    )
+
+    participant = response.get_json()["participants"][0]
+    assert result["ok"] is True
+    assert patch["data"]["clear_location"] is True
+    assert participant["name"] == "chichi"
+    assert participant["lng"] is None
+    assert participant["lat"] is None
+    assert participant["address"] == ""
+    assert participant["prefer"] == "auto"
+
+
+def test_replace_uses_explicit_new_location_but_not_old_preference(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {
+                    "id": "lisa",
+                    "name": "Lisa",
+                    "lng": 116.4,
+                    "lat": 39.9,
+                    "address": "国贸",
+                    "prefer": "cycling",
+                }
+            ],
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    _, patch = module._tool_ensure_participant(
+        sid,
+        {
+            "index": 1,
+            "participant_name": "chichi",
+            "identity_action": "replace",
+            "lng": 116.37,
+            "lat": 39.91,
+            "place_name": "西单图书大厦",
+        },
+    )
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={"session_id": sid, "drafts": [{"kind": patch["kind"], "data": patch["data"]}]},
+    )
+
+    participant = response.get_json()["participants"][0]
+    assert participant["name"] == "chichi"
+    assert participant["lng"] == 116.37
+    assert participant["lat"] == 39.91
+    assert participant["address"] == "西单图书大厦"
+    assert participant["prefer"] == "auto"
 
 
 def test_ensure_does_not_reuse_a_named_unlocated_participant(monkeypatch, tmp_path):
@@ -812,7 +1024,9 @@ def test_search_waits_for_participant_draft_confirmation(monkeypatch, tmp_path):
             "my_did": "device-a",
         }
     )
-    module._tool_ensure_participant(sid, {"index": 1, "participant_name": "E"})
+    module._tool_ensure_participant(
+        sid, {"index": 1, "participant_name": "E", "identity_action": "replace"}
+    )
 
     result, patch = module._tool_search_pois(sid, {"keyword": "咖啡"})
 
@@ -835,8 +1049,12 @@ def test_replace_abc_with_ef_and_remove_c_in_one_draft_batch(monkeypatch, tmp_pa
             "my_did": "device-a",
         }
     )
-    _, e_patch = module._tool_ensure_participant(sid, {"index": 1, "participant_name": "E"})
-    _, f_patch = module._tool_ensure_participant(sid, {"index": 2, "participant_name": "F"})
+    _, e_patch = module._tool_ensure_participant(
+        sid, {"index": 1, "participant_name": "E", "identity_action": "replace"}
+    )
+    _, f_patch = module._tool_ensure_participant(
+        sid, {"index": 2, "participant_name": "F", "identity_action": "replace"}
+    )
     _, remove_patch = module._tool_remove_participant(sid, {"index": 3})
     response = module.app.test_client().post(
         "/api/v2/session/apply-drafts",
@@ -870,7 +1088,14 @@ def test_exact_three_person_plan_becomes_me_and_chichi(monkeypatch, tmp_path):
         sid, {"index": 1, "participant_name": "我", "lng": 10.0, "lat": 10.0}
     )
     _, chichi_patch = module._tool_ensure_participant(
-        sid, {"index": 2, "participant_name": "chichi", "lng": 20.0, "lat": 20.0}
+        sid,
+        {
+            "index": 2,
+            "participant_name": "chichi",
+            "identity_action": "replace",
+            "lng": 20.0,
+            "lat": 20.0,
+        },
     )
     _, remove_patch = module._tool_remove_participant(sid, {"index": 3})
 
@@ -901,7 +1126,14 @@ def test_participant_batch_automatically_searches_after_confirmation(monkeypatch
         }
     )
     _, draft = module._tool_ensure_participant(
-        sid, {"index": 1, "participant_name": "E", "lng": 2.0, "lat": 2.0}
+        sid,
+        {
+            "index": 1,
+            "participant_name": "E",
+            "identity_action": "replace",
+            "lng": 2.0,
+            "lat": 2.0,
+        },
     )
     calls = []
 

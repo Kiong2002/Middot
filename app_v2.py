@@ -4190,12 +4190,13 @@ ASSISTANT_TOOLS = [
         "type": "function",
         "function": {
             "name": "ensure_participant",
-            "description": "【草稿】确保指定槽位最终是这位参与者，并按需设置位置或交通。index 必填：已有槽位就修改该槽位，index=当前规划人数+1 就在末尾新增；工具绝不会自行寻找或覆盖其他未定位人物。ABC 切换为 EF 时，确保 index=1/2 为 E/F，再删除 index=3。不会立刻生效，进入草稿卡统一确认。",
+            "description": "【草稿】确保指定槽位最终是这位参与者，并按需设置位置或交通。index 必填：已有槽位就修改该槽位，index=当前规划人数+1 就在末尾新增；工具绝不会自行寻找或覆盖其他未定位人物。已有槽位改成不同姓名时，必须用 identity_action 明确是同一人改名还是换人。ABC 切换为 EF 时，确保 index=1/2 为 E/F，再删除 index=3。不会立刻生效，进入草稿卡统一确认。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "index": {"type": "integer", "minimum": 1, "description": "最终名单中的槽位序号（1-based），必填。已有槽位表示修改该槽位；紧接当前规划末尾表示新增。"},
                     "participant_name": {"type": "string", "description": "该槽位最终应显示的人物名称，如『我』『Lisa』『王明』，必填。"},
+                    "identity_action": {"type": "string", "enum": ["rename", "replace"], "description": "仅当已有槽位换成不同姓名时使用：rename=同一个人改称呼并保留原位置；replace=换成另一个人，不继承原人的位置和交通偏好。语义不明确时不要调用本工具，先用 offer_choices 询问。"},
                     "place_name": {"type": "string", "description": "出发地点。只调整人物名称或交通时可省略。"},
                     "city": {"type": "string", "description": "地点所在城市；跨城市时必填。"},
                     "lng": {"type": "number"},
@@ -4756,8 +4757,10 @@ canonical_candidates最多4个，不得扩展成其他品牌。只输出JSON。"
 def _parse_meeting_utterance(message: str, participants: list[dict], me_index: int) -> dict:
     """整句先解析一次，避免逐工具理解把人物、地点和噪声粘连。"""
     system = """你是会面规划的整句语义解析器。只抽取用户明确表达的事实，输出JSON：
-{"intent":"meeting|location_update|other","activity":"","city_context":"","participant_change":{"mode":"additive|exact|patch|uncertain","ordered_names":[]},"locations":[{"owner":"我或人物名","participant_index":1,"expression":"","kind":"area|address|named_place","area_hint":"","raw_entity":"","canonical_candidates":[],"needs_disambiguation":false}],"ignored_text":[]}。
-participant_change 由你根据整句语义判断，不使用关键词硬匹配：additive=明确在原名单上再加人；exact=用户完整重述本次会面的参与者集合；patch=只修改已有人物且未表示重组选人；uncertain=无法判断未提及的人是否继续参加。exact 的 ordered_names 必须按用户表达顺序给出最终完整名单；additive/patch 给出本轮明确涉及的人物。例：已有“我/Lisa/dviad”时，“dviad也加进来”是 additive；“我和chichi分别从北大和西单图书大厦出发，吃炒饭”是 exact，ordered_names=["我","chichi"]。不确定时不得擅自删除人物。
+{"intent":"meeting|location_update|other","activity":"","city_context":"","participant_change":{"mode":"additive|exact|patch|uncertain","ordered_names":[],"slot_changes":[{"index":2,"from_name":"Lisa","to_name":"chichi","identity_action":"rename|replace|uncertain"}]},"locations":[{"owner":"我或人物名","participant_index":1,"expression":"","kind":"area|address|named_place","area_hint":"","raw_entity":"","canonical_candidates":[],"needs_disambiguation":false}],"ignored_text":[]}。
+participant_change 由你根据整句语义判断，不使用关键词硬匹配：additive=明确在原名单上再加人；exact=用户完整重述本次会面的参与者集合；patch=只修改已有人物且未表示重组选人；uncertain=无法判断未提及的人是否继续参加。exact 的 ordered_names 必须按用户表达顺序给出最终完整名单；additive/patch 给出本轮明确涉及的人物。不确定时不得擅自删除人物。
+当已有槽位的姓名发生变化时，slot_changes 必须逐槽给出人物连续性：rename=用户明确表示同一个人只是改名/改昵称，必须保留原人的位置；replace=用户明确换成另一位参与者，不得继承原人的位置或交通偏好；uncertain=仅凭原话无法判断是改名还是换人，必须交给用户确认。不得用姓名相似度或槽位相同来猜。
+例：已有“我/Lisa/dviad”时，“Lisa以后叫chichi”是 patch，slot_changes=[{index:2,from_name:"Lisa",to_name:"chichi",identity_action:"rename"}]；“Lisa不去了，换chichi”是 replace；“第二位改成chichi”若没有其他上下文则是 uncertain；“我和chichi分别从北大和西单图书大厦出发，吃炒饭”是 exact，ordered_names=["我","chichi"]，且第2槽是 Lisa→chichi 的 replace。
 expression 是直接交给地图候选搜索的纯地点实体，不是原句片段。必须由你完成语义提取：去掉人物、位置关系、出发/到达等动作和句末语气，但保留真实地名中有意义的组成部分，例如“清华大学东门”的“东门”不能删除。后端不会替你裁剪中文。
 规则：先绑定人物再绑定地点；同一人物最多一个位置；范围宽泛不等于歧义，杭州市/西湖/文三路可直接接受；俗名、简称、多门店品牌才需消歧并给正式名称候选；网络梗或无关尾巴放 ignored_text，不得拼进位置。输入若同时含选择回答与“用户原文（若与选择冲突，以此为准）”，冲突事实必须采用用户原文。
 city_context 表示这些地点最可信的城市。可根据中国常识解析明确地标或行政区，例如“西湖旁边”是杭州、“外滩”是上海；确实无法判断才留空。不得沿用调用方默认城市。
@@ -4858,9 +4861,40 @@ city_context 表示这些地点最可信的城市。可根据中国常识解析�
         cleaned = str(name or "").strip()
         if cleaned and cleaned not in ordered_names:
             ordered_names.append(cleaned[:60])
+    slot_changes = []
+    seen_change_slots = set()
+    for item in participant_change.get("slot_changes") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            slot = int(item.get("index") or 0)
+        except (TypeError, ValueError):
+            slot = 0
+        action = str(item.get("identity_action") or "uncertain").strip().lower()
+        from_name = str(item.get("from_name") or "").strip()[:60]
+        to_name = str(item.get("to_name") or "").strip()[:60]
+        if (
+            slot < 1
+            or slot > 6
+            or slot in seen_change_slots
+            or not from_name
+            or not to_name
+            or from_name == to_name
+        ):
+            continue
+        if action not in {"rename", "replace", "uncertain"}:
+            action = "uncertain"
+        seen_change_slots.add(slot)
+        slot_changes.append({
+            "index": slot,
+            "from_name": from_name,
+            "to_name": to_name,
+            "identity_action": action,
+        })
     return {"intent":parsed.get("intent") or "other","activity":str(parsed.get("activity") or "").strip(),
             "city_context":parsed_city or _landmark_city(message) or "",
-            "participant_change":{"mode":change_mode,"ordered_names":ordered_names[:6]},
+            "participant_change":{"mode":change_mode,"ordered_names":ordered_names[:6],
+                                  "slot_changes":slot_changes},
             "locations":out,"ignored_text":[str(x) for x in (parsed.get("ignored_text") or [])][:8],
             "_trace_meta":trace_meta}
 
@@ -4964,6 +4998,8 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
     explicit_city = (args.get("city") or "").strip() or None
     session_city = st.get("city") or "北京"
     new_nickname = (args.get("new_nickname") or "").strip() or None
+    identity_action = str(args.get("identity_action") or "").strip().lower()
+    replacing_identity = bool(new_nickname and identity_action == "replace")
     new_prefer = (args.get("prefer") or "").strip().lower() or None
     if new_prefer and new_prefer not in {"auto", "transit", "driving", "walking", "cycling"}:
         new_prefer = None
@@ -4972,6 +5008,8 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
     location_specified = bool(place_name) or (lng is not None and lat is not None)
     if not location_specified and not new_nickname and not new_prefer:
         return {"ok": False, "error": "需要 place_name / (lng,lat) / new_nickname / prefer 至少一个"}, None
+    if replacing_identity and tid.startswith("room-"):
+        return {"ok": False, "error": "房间成员身份由本人加入/退出维护，不能把现有成员替换成另一个人"}, None
 
     address = None
     if location_specified:
@@ -5000,6 +5038,7 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
                 "id": target.get("id"),
                 "name": display_name,
                 "new_nickname": new_nickname,
+                "identity_action": identity_action or None,
             }
             if _location_graph_enabled():
                 try:
@@ -5106,13 +5145,17 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
     display_name = new_nickname or old_name
     if location_specified and new_nickname:
         label = f"{old_name} → {new_nickname} @ {address}"
-        detail = f"改名 + 定位到 {address}"
+        detail = ("换人" if replacing_identity else "改名") + f" + 定位到 {address}"
     elif location_specified:
         label = f"{old_name} → {address}"
         detail = f"{lng:.4f}, {lat:.4f}"
     elif new_nickname:
-        label = f"{old_name} → 昵称改为 {new_nickname}"
-        detail = ""
+        if replacing_identity:
+            label = f"{old_name} → 换成 {new_nickname}"
+            detail = "新参与者位置待补，不继承原位置"
+        else:
+            label = f"{old_name} → 昵称改为 {new_nickname}"
+            detail = ""
     else:
         label = f"{old_name} → 交通方式改为 {new_prefer}"
         detail = ""
@@ -5128,12 +5171,23 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
             }
     if new_nickname:
         data["new_nickname"] = new_nickname
+    if replacing_identity:
+        data["replace_identity"] = True
+        if not location_specified:
+            data["clear_location"] = True
+        if not new_prefer:
+            data["reset_prefer"] = True
     if new_prefer:
         data["prefer"] = new_prefer
 
     summary = (
-        f"提议把 {old_name} 改名为 {new_nickname}"
-        + (f"、位置改为 {address}" if location_specified else "")
+        (
+            f"提议把 {old_name} 换成 {new_nickname}"
+            + (f"、位置设为 {address}" if location_specified else "；新参与者不继承原位置")
+        ) if replacing_identity else (
+            f"提议把 {old_name} 改名为 {new_nickname}"
+            + (f"、位置改为 {address}" if location_specified else "")
+        )
     ) if new_nickname else (
         f"提议把 {old_name} 的位置改为 {address}"
         if location_specified else f"提议把 {old_name} 的交通方式改为 {new_prefer}"
@@ -5258,6 +5312,7 @@ def _tool_ensure_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
     parts = list(st.get("participants") or [])
     idx = args.get("index")
     participant_name = str(args.get("participant_name") or "").strip()
+    identity_action = str(args.get("identity_action") or "").strip().lower()
     if isinstance(idx, bool) or not isinstance(idx, int) or idx < 1:
         return {
             "ok": False,
@@ -5293,14 +5348,27 @@ def _tool_ensure_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
 
     if idx <= len(parts):
         target = parts[idx - 1]
+        current_name = str(target.get("name") or "").strip()
+        name_changes = participant_name != current_name
+        if name_changes and identity_action not in {"rename", "replace"}:
+            return {
+                "ok": False,
+                "error_code": "participant_identity_action_required",
+                "error": (
+                    f"index={idx} 当前是“{current_name}”，目标是“{participant_name}”。"
+                    "必须明确 identity_action=rename（同一人改名）或 replace（换人）；"
+                    "如果用户没有说清楚，请先用 offer_choices 询问。"
+                ),
+            }, None
         delegated = {
             key: args[key]
             for key in ("place_name", "city", "lng", "lat", "prefer")
             if args.get(key) is not None
         }
         delegated["index"] = idx
-        if participant_name and participant_name != str(target.get("name") or "").strip():
+        if name_changes:
             delegated["new_nickname"] = participant_name
+            delegated["identity_action"] = identity_action
         if len(delegated) == 1:
             task["participant_planned_indices"] = sorted(planned_indices | {idx})
             session_update(sid, {"agent_task": task})
@@ -8786,6 +8854,7 @@ _ASSISTANT_SYSTEM = """你叫「阿觅」，是中点 Middot 的 AI 会面助手
 - **【硬规则 · 快照位置优先】**：本轮进入主 Agent 前，前端可能已经取得设备定位并写入 `[当前会话快照]`。只要 `me_index` 对应参与者的 `lng` 和 `lat` 非空，就代表“我”的位置**已经设置完成**，即使用户原句没有文字说明“我在哪”。此时禁止回复“你的位置还没设”、禁止再次索取位置，也不要再为“我”调用 `ensure_participant`；直接使用快照坐标继续规划。
 - 用户问“我在哪 / 你能看到我在哪吗”时，读取 `me_index` 那位的 `address` 回答：地址非空就直接告诉用户页面当前显示的地址；只有 address 为空而坐标非空时，才说明目前只有坐标。快照里的 address 是地图定位和反向解析结果，复述它不属于额外猜测。
 - **参与者统一入口是槽位驱动的**：新增、改名、改位置都只调用 `ensure_participant`，而且每次都必须同时传 `index` 和 `participant_name`。工具只修改指定槽位；`index=当前规划人数+1` 才是末尾新增。禁止省略 index，禁止让工具寻找未定位人物，禁止把“没地点”当作“空人”。
+- **姓名变化必须说明人物连续性**：已有槽位改成不同姓名时，严格采用 `[本轮整句结构化解析].participant_change.slot_changes[].identity_action`。`rename` 表示同一个人改名，保留原位置；`replace` 表示换成另一个人，不继承原位置和交通偏好。若为 `uncertain` 或解析中缺失，先用 `offer_choices` 问用户，禁止自行猜测，也禁止调用缺少 `identity_action` 的 `ensure_participant`。
 - **先规划最终名单，再调用工具**：结合 `[本轮整句结构化解析].participant_change` 判断是追加、局部修改、完整换组还是不确定。`exact` 时按 ordered_names 依次占用 index=1..N，并移除所有 index>N 的旧槽位；`additive` 时从当前末尾继续编号；`patch` 时使用该人物当前 index；`uncertain` 时先询问，不能擅自删人。
 - **整组切换用最小修改**：例如当前 A/B/C，用户明确改为 E/F，调用 `ensure_participant(index=1, participant_name="E", ...)`、`ensure_participant(index=2, participant_name="F", ...)`，再 `remove_participant(index=3)`。当前“我/Lisa/dviad”，用户说“我和 chichi 分别从北大和西单图书大厦出发，吃炒饭”时，本轮完整名单是“我/chichi”：确保 index=1/2，删除 index=3，不能保留 Lisa 后又声称只有两人。
 - **【硬规则 · 确认后再搜】**：本轮没有参与者草稿时，若满足「keyword 已设 + 所有人都有位置」，主动 `search_pois`。只要本轮调用过 `ensure_participant` 或 `remove_participant` 并产生草稿，就不要用旧参与者搜索；用户统一应用草稿后，服务端会自动刷新原推荐或按当前关键词搜索。
@@ -9398,6 +9467,8 @@ def _project_location_selection(sid: str, target: dict, selected: dict) -> tuple
     })
     if target.get("new_nickname"):
         row["name"] = target["new_nickname"]
+    if target.get("identity_action") == "replace":
+        row["prefer"] = "auto"
     answer = f"{target.get('name','参与者')}在{selected.get('label')}（{selected.get('address')}）"
     task = dict(s.get("agent_task") or {})
     task.update({
@@ -9797,9 +9868,58 @@ def _normalize_participant_tool_plan(
             if str(item.get("name") or "").strip()
         }
         city_context = str(utterance.get("city_context") or "").strip()
+        slot_change_by_slot = {
+            int(item.get("index")): item
+            for item in (change.get("slot_changes") or [])
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("index"), int)
+                and not isinstance(item.get("index"), bool)
+            )
+        }
+
+        def identity_action_for(slot: int, current_name: str, final_name: str) -> str:
+            if not current_name or current_name == final_name:
+                return ""
+            item = slot_change_by_slot.get(slot) or {}
+            if (
+                str(item.get("from_name") or "").strip() != current_name
+                or str(item.get("to_name") or "").strip() != final_name
+            ):
+                return "uncertain"
+            action = str(item.get("identity_action") or "uncertain").strip().lower()
+            return action if action in {"rename", "replace"} else "uncertain"
+
+        for slot, final_name in enumerate(ordered_names, start=1):
+            current_name = (
+                str(participants[slot - 1].get("name") or "").strip()
+                if slot <= len(participants)
+                else ""
+            )
+            if identity_action_for(slot, current_name, final_name) == "uncertain":
+                return [_participant_tool_call(
+                    f"slot_identity_choice_{iteration}_{slot}",
+                    "offer_choices",
+                    {
+                        "question": f"第 {slot} 位从“{current_name}”变成“{final_name}”：这是同一个人改名，还是换成另一位？",
+                        "mode": "single",
+                        "options": [
+                            {"label": f"同一个人，只把 {current_name} 改名为 {final_name}"},
+                            {"label": f"换成另一位 {final_name}"},
+                        ],
+                    },
+                )]
 
         def complete_slot_args(slot: int, final_name: str, args: dict) -> dict:
             completed = {**args, "index": slot, "participant_name": final_name}
+            current_name = (
+                str(participants[slot - 1].get("name") or "").strip()
+                if slot <= len(participants)
+                else ""
+            )
+            identity_action = identity_action_for(slot, current_name, final_name)
+            if identity_action:
+                completed["identity_action"] = identity_action
             has_explicit_location = (
                 completed.get("place_name")
                 or (completed.get("lng") is not None and completed.get("lat") is not None)
@@ -9853,6 +9973,29 @@ def _normalize_participant_tool_plan(
             ))
         return [*normalized, *other_calls]
 
+    parsed_slot_changes = [
+        item for item in (change.get("slot_changes") or [])
+        if isinstance(item, dict) and isinstance(item.get("index"), int)
+    ]
+    for item in parsed_slot_changes:
+        if str(item.get("identity_action") or "uncertain").strip().lower() != "uncertain":
+            continue
+        slot = int(item["index"])
+        from_name = str(item.get("from_name") or "").strip()
+        to_name = str(item.get("to_name") or "").strip()
+        return [_participant_tool_call(
+            f"slot_identity_choice_{iteration}_{slot}",
+            "offer_choices",
+            {
+                "question": f"第 {slot} 位从“{from_name}”变成“{to_name}”：这是同一个人改名，还是换成另一位？",
+                "mode": "single",
+                "options": [
+                    {"label": f"同一个人，只把 {from_name} 改名为 {to_name}"},
+                    {"label": f"换成另一位 {to_name}"},
+                ],
+            },
+        )]
+
     current_name_to_index = {
         str(item.get("name") or "").strip(): index
         for index, item in enumerate(participants, start=1)
@@ -9870,10 +10013,23 @@ def _normalize_participant_tool_plan(
             continue
         participant_name = str(args.get("participant_name") or "").strip()
         target_index = current_name_to_index.get(participant_name)
+        slot_change = next(
+            (
+                item for item in parsed_slot_changes
+                if str(item.get("to_name") or "").strip() == participant_name
+            ),
+            None,
+        )
+        if target_index is None and slot_change is not None:
+            target_index = int(slot_change["index"])
         if target_index is None and mode == "additive":
             target_index = new_name_to_index.get(participant_name)
         if target_index is not None:
             args = {**args, "index": target_index, "participant_name": participant_name}
+            if slot_change is not None:
+                action = str(slot_change.get("identity_action") or "").strip().lower()
+                if action in {"rename", "replace"}:
+                    args["identity_action"] = action
             normalized.append(_participant_tool_call(str(call.get("id") or f"slot_{iteration}_{target_index}"), name, args))
         else:
             normalized.append(call)
@@ -10224,10 +10380,16 @@ def api_v2_apply_drafts():
                 if lng is not None and lat is not None:
                     target["lng"] = float(lng); target["lat"] = float(lat)
                     if addr: target["address"] = addr
+                elif body.get("clear_location") is True:
+                    target["lng"] = None; target["lat"] = None
+                    target["address"] = ""
+                    target.pop("place_resolution", None)
                 if new_nickname:
                     target["name"] = new_nickname
                 if requested_prefer in {"auto", "transit", "driving", "walking", "cycling"}:
                     target["prefer"] = requested_prefer
+                elif body.get("reset_prefer") is True:
+                    target["prefer"] = "auto"
                 parts_dirty = True
                 resolution = body.get("place_resolution") if isinstance(body.get("place_resolution"), dict) else None
                 if resolution:
