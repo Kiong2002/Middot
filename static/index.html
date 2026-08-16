@@ -7842,6 +7842,9 @@
       if (d.kind === 'set_participant_prefer') {
         return `set_participant_prefer:${d.data?.participant_id ?? ''}`;
       }
+      if (d.kind === 'add_participant') {
+        return `add_participant:${d.data?.participant_index ?? d.data?.nickname ?? ''}`;
+      }
       if (d.kind === 'remove_participant') {
         return `remove_participant:${d.data?.participant_id ?? ''}`;
       }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from types import SimpleNamespace
 
@@ -418,11 +419,114 @@ def test_apply_drafts_does_not_reference_assistant_message(monkeypatch, tmp_path
 
 def test_agent_exposes_unified_participant_tools(monkeypatch, tmp_path):
     module = _load_app(monkeypatch, tmp_path)
-    names = {(tool.get("function") or {}).get("name") for tool in module.ASSISTANT_TOOLS}
+    functions = {tool["function"]["name"]: tool["function"] for tool in module.ASSISTANT_TOOLS}
+    names = set(functions)
     assert "ensure_participant" in names
     assert "remove_participant" in names
     assert "set_participant_location" not in names
     assert "add_participant" not in names
+    ensure_schema = functions["ensure_participant"]["parameters"]
+    assert ensure_schema["required"] == ["index", "participant_name"]
+    assert "existing_name" not in ensure_schema["properties"]
+
+
+def test_utterance_parser_keeps_exact_group_and_new_person(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    parsed = {
+        "intent": "meeting",
+        "activity": "炒饭",
+        "city_context": "北京",
+        "participant_change": {"mode": "exact", "ordered_names": ["我", "chichi"]},
+        "locations": [
+            {
+                "owner": "我",
+                "participant_index": 1,
+                "expression": "北大",
+                "kind": "named_place",
+            },
+            {
+                "owner": "chichi",
+                "participant_index": None,
+                "expression": "西单图书大厦",
+                "kind": "named_place",
+            },
+        ],
+        "ignored_text": [],
+    }
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(parsed, ensure_ascii=False)))]
+            )
+
+    module.llm_client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+    result = module._parse_meeting_utterance(
+        "我和chichi分别从北大和西单图书大厦出发，吃炒饭",
+        [
+            {"name": "我"},
+            {"name": "Lisa"},
+            {"name": "dviad"},
+        ],
+        1,
+    )
+
+    assert result["participant_change"] == {
+        "mode": "exact",
+        "ordered_names": ["我", "chichi"],
+    }
+    assert result["locations"][1]["owner"] == "chichi"
+    assert result["locations"][1]["participant_index"] is None
+
+
+def test_exact_group_normalizes_slots_and_removes_trailing_people(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {"id": "me", "name": "我", "lng": 1.0, "lat": 1.0},
+                {"id": "lisa", "name": "Lisa", "lng": 2.0, "lat": 2.0},
+                {"id": "dviad", "name": "dviad", "lng": None, "lat": None},
+            ],
+            "current_utterance_parse": {
+                "participant_change": {"mode": "exact", "ordered_names": ["我", "chichi"]}
+            },
+        }
+    )
+    calls = [
+        module._participant_tool_call(
+            "call-me", "ensure_participant",
+            {"index": 1, "participant_name": "我", "place_name": "北京大学"},
+        ),
+        module._participant_tool_call(
+            "call-chichi", "ensure_participant",
+            {"participant_name": "chichi", "place_name": "西单图书大厦"},
+        ),
+        module._participant_tool_call("call-keyword", "set_keyword", {"keyword": "炒饭"}),
+    ]
+
+    normalized = module._normalize_participant_tool_plan(sid, calls, iteration=1)
+    decoded = [
+        (
+            item["function"]["name"],
+            json.loads(item["function"]["arguments"]),
+        )
+        for item in normalized
+    ]
+
+    assert decoded == [
+        (
+            "ensure_participant",
+            {"index": 1, "participant_name": "我", "place_name": "北京大学"},
+        ),
+        (
+            "ensure_participant",
+            {"participant_name": "chichi", "place_name": "西单图书大厦", "index": 2},
+        ),
+        ("remove_participant", {"index": 3}),
+        ("set_keyword", {"keyword": "炒饭"}),
+    ]
+    assert module._normalize_participant_tool_plan(sid, [], iteration=2) == []
 
 
 def test_ensure_participant_creates_when_list_is_empty(monkeypatch, tmp_path):
@@ -444,6 +548,99 @@ def test_ensure_participant_creates_when_list_is_empty(monkeypatch, tmp_path):
     assert patch["kind"] == "add_participant"
     assert patch["data"]["nickname"] == "我"
     assert module.session_get(sid)["agent_task"]["participant_drafts_pending"] is True
+
+
+def test_ensure_participant_requires_an_explicit_slot(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [{"id": "a", "name": "dviad", "lng": None, "lat": None}],
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+
+    result, patch = module._tool_ensure_participant(
+        sid, {"participant_name": "chichi", "place_name": "西单图书大厦"}
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "participant_index_required"
+    assert patch is None
+    assert module.session_get(sid)["participants"][0]["name"] == "dviad"
+
+
+def test_ensure_does_not_reuse_a_named_unlocated_participant(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {"id": "me", "name": "我", "lng": 1.0, "lat": 1.0},
+                {"id": "lisa", "name": "Lisa", "lng": 2.0, "lat": 2.0},
+                {"id": "dviad", "name": "dviad", "lng": None, "lat": None},
+            ],
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+
+    result, patch = module._tool_ensure_participant(
+        sid, {"index": 4, "participant_name": "chichi", "lng": 3.0, "lat": 3.0}
+    )
+
+    assert result["ok"] is True
+    assert result["action"] == "created"
+    assert patch["kind"] == "add_participant"
+    assert patch["data"]["participant_index"] == 4
+    assert patch["data"]["nickname"] == "chichi"
+
+
+def test_empty_list_can_plan_two_consecutive_slots(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [],
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+
+    _, me_patch = module._tool_ensure_participant(
+        sid, {"index": 1, "participant_name": "我", "lng": 1.0, "lat": 1.0}
+    )
+    lisa_result, lisa_patch = module._tool_ensure_participant(
+        sid, {"index": 2, "participant_name": "Lisa", "lng": 2.0, "lat": 2.0}
+    )
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={
+            "session_id": sid,
+            "drafts": [
+                {"kind": me_patch["kind"], "data": me_patch["data"]},
+                {"kind": lisa_patch["kind"], "data": lisa_patch["data"]},
+            ],
+        },
+    )
+
+    assert lisa_result["ok"] is True
+    assert lisa_patch["data"]["participant_index"] == 2
+    assert response.status_code == 200
+    assert [item["name"] for item in response.get_json()["participants"]] == ["我", "Lisa"]
+
+
+def test_ensure_rejects_a_gap_in_planned_slots(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {"participants": [], "memory_did": "device-a", "my_did": "device-a"}
+    )
+
+    result, patch = module._tool_ensure_participant(
+        sid, {"index": 2, "participant_name": "Lisa"}
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "invalid_participant_index"
+    assert patch is None
 
 
 def test_search_waits_for_participant_draft_confirmation(monkeypatch, tmp_path):
@@ -495,6 +692,43 @@ def test_replace_abc_with_ef_and_remove_c_in_one_draft_batch(monkeypatch, tmp_pa
     )
     assert response.status_code == 200
     assert [item["name"] for item in response.get_json()["participants"]] == ["E", "F"]
+
+
+def test_exact_three_person_plan_becomes_me_and_chichi(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {"id": "me", "name": "我", "lng": 1.0, "lat": 1.0},
+                {"id": "lisa", "name": "Lisa", "lng": 2.0, "lat": 2.0},
+                {"id": "dviad", "name": "dviad", "lng": None, "lat": None},
+            ],
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    _, me_patch = module._tool_ensure_participant(
+        sid, {"index": 1, "participant_name": "我", "lng": 10.0, "lat": 10.0}
+    )
+    _, chichi_patch = module._tool_ensure_participant(
+        sid, {"index": 2, "participant_name": "chichi", "lng": 20.0, "lat": 20.0}
+    )
+    _, remove_patch = module._tool_remove_participant(sid, {"index": 3})
+
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={
+            "session_id": sid,
+            "drafts": [
+                {"kind": me_patch["kind"], "data": me_patch["data"]},
+                {"kind": chichi_patch["kind"], "data": chichi_patch["data"]},
+                {"kind": remove_patch["kind"], "data": remove_patch["data"]},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert [item["name"] for item in response.get_json()["participants"]] == ["我", "chichi"]
 
 
 def test_participant_batch_automatically_searches_after_confirmation(monkeypatch, tmp_path):
