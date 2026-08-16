@@ -7300,6 +7300,11 @@
         const nowName = data?.new_nickname || p?.name || '参与者';
         const oldName = before?.name;
         const addr = data?.address || '';
+        if (data?.replace_identity && data?.new_nickname && oldName && oldName !== data.new_nickname) {
+          return addr
+            ? `${oldName} → 换成 ${data.new_nickname} · ${addr}`
+            : `${oldName} → 换成 ${data.new_nickname} · 位置待补`;
+        }
         if (data?.new_nickname && oldName && oldName !== data.new_nickname) {
           return addr
             ? `${oldName} → ${data.new_nickname} · ${addr}`
@@ -7393,8 +7398,9 @@
           if (before.lng != null && before.lat != null) {
             restorePatch.lng = before.lng; restorePatch.lat = before.lat;
             restorePatch.address = before.address || '';
-          }
+          } else restorePatch.clear_location = true;
           if (before.name) restorePatch.new_nickname = before.name;
+          if (before.prefer) restorePatch.prefer = before.prefer;
           applyDraftLocally({kind:'set_participant_location', data: restorePatch});
         }
       } else if (entry.kind === 'add_participant') {
@@ -7500,7 +7506,7 @@
       }
       if (kind === 'set_participant_location') {
         const p = state.participants.find(x => x.id === data?.participant_id);
-        return p ? { participant_id: p.id, lng: p.lng, lat: p.lat, address: p.address || '', name: p.name || '' } : null;
+        return p ? { participant_id: p.id, lng: p.lng, lat: p.lat, address: p.address || '', name: p.name || '', prefer: p.prefer || 'auto' } : null;
       }
       if (kind === 'add_participant') {
         // before = 加人前的空态。撤销 = 从列表里删掉这个 id。
@@ -8015,9 +8021,13 @@
         if (body.lng != null && body.lat != null) {
           p.lng = body.lng; p.lat = body.lat;
           if (body.address) p.address = body.address;
+        } else if (body.clear_location === true) {
+          p.lng = null; p.lat = null; p.address = '';
+          delete p.place_resolution;
         }
         if (body.new_nickname) p.name = body.new_nickname;
         if (body.prefer) p.prefer = body.prefer;
+        else if (body.reset_prefer === true) p.prefer = 'auto';
         renderParticipantList && renderParticipantList();
         refreshMapMarkers && refreshMapMarkers();
         focusRelevantView && focusRelevantView({ excludePois: true });
