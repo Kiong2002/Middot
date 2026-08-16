@@ -4538,6 +4538,59 @@ def _place_alias_mapping(device_id: str, alias: str, city: str) -> dict | None:
         conn.close()
 
 
+def _coordinates_match_place(
+    current_lng: object,
+    current_lat: object,
+    target_lng: object,
+    target_lat: object,
+    *,
+    tolerance_m: float = 30.0,
+) -> bool:
+    """Treat provider coordinates for the same POI as equal despite tiny drift."""
+    try:
+        distance_m = haversine_distance(
+            float(current_lng), float(current_lat), float(target_lng), float(target_lat)
+        ) * 1000
+    except (TypeError, ValueError):
+        return False
+    return distance_m <= tolerance_m
+
+
+def _participant_location_matches_reference(
+    sid: str,
+    participant: dict,
+    place_name: str,
+    city: str,
+) -> bool:
+    """Fast no-op check using saved POI metadata or this user's confirmed alias."""
+    if participant.get("lng") is None or participant.get("lat") is None:
+        return False
+    alias_norm = _place_norm(place_name)
+    if not alias_norm:
+        return False
+
+    resolution = participant.get("place_resolution")
+    if isinstance(resolution, dict) and _place_norm(resolution.get("alias")) == alias_norm:
+        if _coordinates_match_place(
+            participant.get("lng"), participant.get("lat"),
+            resolution.get("lng"), resolution.get("lat"),
+        ):
+            return True
+
+    session = session_get(sid) or {}
+    device_id = str(session.get("memory_did") or session.get("my_did") or "")
+    target_city = _extract_city(city or "") or str(city or session.get("city") or "").removesuffix("市")
+    mapping = _place_alias_mapping(device_id, place_name, target_city) if device_id and target_city else None
+    # A global mapping is only a ranking hint. It must never suppress a user's
+    # explicit update; only this user's own confirmed alias is authoritative.
+    if not mapping or mapping.get("scope") != "personal":
+        return False
+    return _coordinates_match_place(
+        participant.get("lng"), participant.get("lat"),
+        mapping.get("lng"), mapping.get("lat"),
+    )
+
+
 def _record_place_alias_confirmation_conn(
     conn: sqlite3.Connection,
     device_id: str,
@@ -5039,6 +5092,8 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
                 "name": display_name,
                 "new_nickname": new_nickname,
                 "identity_action": identity_action or None,
+                "location_alias": place_name,
+                "location_city": target_city,
             }
             if _location_graph_enabled():
                 try:
@@ -5143,6 +5198,31 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
 
     old_name = target.get("name", "?")
     display_name = new_nickname or old_name
+    if (
+        location_specified
+        and not new_nickname
+        and not new_prefer
+        and _coordinates_match_place(
+            target.get("lng"), target.get("lat"), lng, lat
+        )
+    ):
+        location_resolution = None
+        if 'resolved' in locals():
+            location_resolution = {
+                "query": resolved.get("query"),
+                "provider": resolved.get("provider"),
+                "candidate_count": resolved.get("candidate_count"),
+                "confidence": resolved.get("confidence"),
+                "reason": resolved.get("reason"),
+                "mapping_scope": resolved.get("mapping_scope"),
+                "global_hint_used": resolved.get("global_hint_used", False),
+            }
+        return {
+            "ok": True,
+            "action": "unchanged",
+            "summary": f"{display_name} 已经在 {address}，无需重复修改",
+            **({"location_resolution": location_resolution} if location_resolution else {}),
+        }, None
     if location_specified and new_nickname:
         label = f"{old_name} → {new_nickname} @ {address}"
         detail = ("换人" if replacing_identity else "改名") + f" + 定位到 {address}"
@@ -9464,6 +9544,15 @@ def _project_location_selection(sid: str, target: dict, selected: dict) -> tuple
         "lng": float(selected["lng"]),
         "lat": float(selected["lat"]),
         "address": f"{selected.get('label')} · {selected.get('address')}",
+        "place_resolution": {
+            "alias": str(target.get("location_alias") or ""),
+            "city": str(target.get("location_city") or s.get("city") or ""),
+            "id": selected.get("id"),
+            "label": selected.get("label"),
+            "address": selected.get("address"),
+            "lng": float(selected["lng"]),
+            "lat": float(selected["lat"]),
+        },
     })
     if target.get("new_nickname"):
         row["name"] = target["new_nickname"]
@@ -9725,6 +9814,15 @@ def _apply_location_choice(sid: str, choice: dict) -> tuple[bool, str, str]:
     row.update({
         "lng": float(selected["lng"]), "lat": float(selected["lat"]),
         "address": f"{selected.get('label')} · {selected.get('address')}",
+        "place_resolution": {
+            "alias": str(task.get("location_alias") or ""),
+            "city": str(task.get("location_city") or s.get("city") or ""),
+            "id": selected.get("id"),
+            "label": selected.get("label"),
+            "address": selected.get("address"),
+            "lng": float(selected["lng"]),
+            "lat": float(selected["lat"]),
+        },
     })
     if target.get("new_nickname"):
         row["name"] = target["new_nickname"]
@@ -9878,6 +9976,20 @@ def _normalize_participant_tool_plan(
             )
         }
 
+        def parsed_location_for(slot: int, final_name: str) -> dict:
+            return location_by_owner.get(final_name) or location_by_slot.get(slot) or {}
+
+        def location_is_unchanged(slot: int, final_name: str, current_name: str) -> bool:
+            if current_name != final_name or not (1 <= slot <= len(participants)):
+                return False
+            expression = str(parsed_location_for(slot, final_name).get("expression") or "").strip()
+            return bool(expression) and _participant_location_matches_reference(
+                sid,
+                participants[slot - 1],
+                expression,
+                city_context or str(session.get("city") or ""),
+            )
+
         def identity_action_for(slot: int, current_name: str, final_name: str) -> str:
             if not current_name or current_name == final_name:
                 return ""
@@ -9924,7 +10036,7 @@ def _normalize_participant_tool_plan(
                 completed.get("place_name")
                 or (completed.get("lng") is not None and completed.get("lat") is not None)
             )
-            parsed_location = location_by_owner.get(final_name) or location_by_slot.get(slot) or {}
+            parsed_location = parsed_location_for(slot, final_name)
             expression = str(parsed_location.get("expression") or "").strip()
             if not has_explicit_location and expression:
                 completed["place_name"] = expression
@@ -9955,11 +10067,33 @@ def _normalize_participant_tool_plan(
                 if slot <= len(participants)
                 else ""
             )
+            parsed_location = parsed_location_for(slot, final_name)
+            expression = str(parsed_location.get("expression") or "").strip()
+            location_unchanged = location_is_unchanged(slot, final_name, current_name)
             if existing_call:
                 call, args = existing_call
+                if location_unchanged:
+                    args = {
+                        key: value for key, value in args.items()
+                        if key not in {
+                            "index", "participant_name", "place_name", "city",
+                            "lng", "lat", "identity_action",
+                        }
+                    }
+                    if args.get("prefer") == (participants[slot - 1].get("prefer") or "auto"):
+                        args.pop("prefer", None)
+                    if not args:
+                        continue
+                    args = {**args, "index": slot, "participant_name": final_name}
+                    normalized.append(_participant_tool_call(
+                        str(call.get("id") or f"slot_{iteration}_{slot}"),
+                        "ensure_participant",
+                        args,
+                    ))
+                    continue
                 args = complete_slot_args(slot, final_name, args)
                 normalized.append(_participant_tool_call(str(call.get("id") or f"slot_{iteration}_{slot}"), "ensure_participant", args))
-            elif current_name != final_name or final_name in location_by_owner:
+            elif current_name != final_name or (expression and not location_unchanged):
                 normalized.append(_participant_tool_call(
                     f"slot_plan_{iteration}_{slot}",
                     "ensure_participant",
@@ -10025,6 +10159,39 @@ def _normalize_participant_tool_plan(
         if target_index is None and mode == "additive":
             target_index = new_name_to_index.get(participant_name)
         if target_index is not None:
+            current = participants[target_index - 1] if 1 <= target_index <= len(participants) else {}
+            parsed_location = next(
+                (
+                    item for item in (utterance.get("locations") or [])
+                    if isinstance(item, dict) and (
+                        str(item.get("owner") or "").strip() == participant_name
+                        or item.get("participant_index") == target_index
+                    )
+                ),
+                {},
+            )
+            expression = str(parsed_location.get("expression") or "").strip()
+            if (
+                str(current.get("name") or "").strip() == participant_name
+                and expression
+                and _participant_location_matches_reference(
+                    sid,
+                    current,
+                    expression,
+                    str(utterance.get("city_context") or session.get("city") or ""),
+                )
+            ):
+                args = {
+                    key: value for key, value in args.items()
+                    if key not in {
+                        "index", "participant_name", "place_name", "city",
+                        "lng", "lat", "identity_action",
+                    }
+                }
+                if args.get("prefer") == (current.get("prefer") or "auto"):
+                    args.pop("prefer", None)
+                if not args:
+                    continue
             args = {**args, "index": target_index, "participant_name": participant_name}
             if slot_change is not None:
                 action = str(slot_change.get("identity_action") or "").strip().lower()
@@ -10370,6 +10537,7 @@ def api_v2_apply_drafts():
             addr = body.get("address") or ""
             new_nickname = (body.get("new_nickname") or "").strip()
             requested_prefer = str(body.get("prefer") or "").strip()
+            resolution = body.get("place_resolution") if isinstance(body.get("place_resolution"), dict) else None
             if pid is not None and (
                 (lng is not None and lat is not None) or new_nickname or requested_prefer
             ):
@@ -10380,6 +10548,8 @@ def api_v2_apply_drafts():
                 if lng is not None and lat is not None:
                     target["lng"] = float(lng); target["lat"] = float(lat)
                     if addr: target["address"] = addr
+                    if resolution:
+                        target["place_resolution"] = dict(resolution)
                 elif body.get("clear_location") is True:
                     target["lng"] = None; target["lat"] = None
                     target["address"] = ""
@@ -10391,7 +10561,6 @@ def api_v2_apply_drafts():
                 elif body.get("reset_prefer") is True:
                     target["prefer"] = "auto"
                 parts_dirty = True
-                resolution = body.get("place_resolution") if isinstance(body.get("place_resolution"), dict) else None
                 if resolution:
                     alias_confirmations.append((
                         str(resolution.get("alias") or ""),
