@@ -479,6 +479,43 @@ def test_utterance_parser_keeps_exact_group_and_new_person(monkeypatch, tmp_path
     assert result["locations"][1]["participant_index"] is None
 
 
+def test_utterance_parser_does_not_replace_new_owner_with_old_slot_name(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    parsed = {
+        "intent": "meeting",
+        "activity": "炒饭",
+        "city_context": "北京",
+        "participant_change": {"mode": "exact", "ordered_names": ["我", "chichi"]},
+        "locations": [
+            {"owner": "我", "participant_index": 1, "expression": "北大", "kind": "named_place"},
+            {
+                "owner": "chichi",
+                "participant_index": 2,
+                "expression": "西单图书大厦",
+                "kind": "named_place",
+            },
+        ],
+        "ignored_text": [],
+    }
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(parsed, ensure_ascii=False)))]
+            )
+
+    module.llm_client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+    result = module._parse_meeting_utterance(
+        "我和chichi分别从北大和西单图书大厦出发，吃炒饭",
+        [{"name": "我"}, {"name": "Lisa"}],
+        1,
+    )
+
+    assert result["locations"][1]["participant_index"] == 2
+    assert result["locations"][1]["owner"] == "chichi"
+    assert result["locations"][1]["expression"] == "西单图书大厦"
+
+
 def test_exact_group_normalizes_slots_and_removes_trailing_people(monkeypatch, tmp_path):
     module = _load_app(monkeypatch, tmp_path)
     sid = module.session_create(
@@ -582,6 +619,37 @@ def test_exact_group_moves_explicit_location_with_person(monkeypatch, tmp_path):
         ),
         ("remove_participant", {"index": 3}),
     ]
+
+
+def test_exact_group_can_recover_location_by_target_slot(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {"id": "me", "name": "我", "lng": 1.0, "lat": 1.0},
+                {"id": "lisa", "name": "Lisa", "lng": 2.0, "lat": 2.0, "address": "国贸"},
+            ],
+            "current_utterance_parse": {
+                "city_context": "北京",
+                "participant_change": {"mode": "exact", "ordered_names": ["我", "chichi"]},
+                # Defensive reproduction of the old postprocessor bug: owner was
+                # overwritten by the old slot name, but the desired slot stayed 2.
+                "locations": [
+                    {"owner": "Lisa", "participant_index": 2, "expression": "西单图书大厦"},
+                ],
+            },
+        }
+    )
+
+    normalized = module._normalize_participant_tool_plan(sid, [], iteration=1)
+    ensure_args = json.loads(normalized[0]["function"]["arguments"])
+
+    assert ensure_args == {
+        "index": 2,
+        "participant_name": "chichi",
+        "place_name": "西单图书大厦",
+        "city": "北京",
+    }
 
 
 def test_exact_group_preserves_existing_location_when_reordering(monkeypatch, tmp_path):

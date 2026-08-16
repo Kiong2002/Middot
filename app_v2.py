@@ -4835,9 +4835,12 @@ city_context 表示这些地点最可信的城市。可根据中国常识解析�
         out.append({
             "participant_index":idx if 1 <= idx <= len(participants) else None,
             "owner":(
-                participants[idx - 1].get("name") or owner
-                if 1 <= idx <= len(participants)
-                else owner
+                owner
+                or (
+                    participants[idx - 1].get("name")
+                    if 1 <= idx <= len(participants)
+                    else ""
+                )
             ),
             "expression":expression,
             "kind":loc.get("kind") if loc.get("kind") in ("area","address","named_place") else "area",
@@ -9779,6 +9782,15 @@ def _normalize_participant_tool_plan(
             for item in (utterance.get("locations") or [])
             if isinstance(item, dict) and str(item.get("owner") or "").strip()
         }
+        location_by_slot = {
+            int(item.get("participant_index")): item
+            for item in (utterance.get("locations") or [])
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("participant_index"), int)
+                and not isinstance(item.get("participant_index"), bool)
+            )
+        }
         current_by_name = {
             str(item.get("name") or "").strip(): item
             for item in participants
@@ -9792,7 +9804,7 @@ def _normalize_participant_tool_plan(
                 completed.get("place_name")
                 or (completed.get("lng") is not None and completed.get("lat") is not None)
             )
-            parsed_location = location_by_owner.get(final_name) or {}
+            parsed_location = location_by_owner.get(final_name) or location_by_slot.get(slot) or {}
             expression = str(parsed_location.get("expression") or "").strip()
             if not has_explicit_location and expression:
                 completed["place_name"] = expression
