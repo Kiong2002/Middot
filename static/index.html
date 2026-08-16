@@ -8021,6 +8021,7 @@
         if (body.lng != null && body.lat != null) {
           p.lng = body.lng; p.lat = body.lat;
           if (body.address) p.address = body.address;
+          if (body.place_resolution) p.place_resolution = {...body.place_resolution};
         } else if (body.clear_location === true) {
           p.lng = null; p.lat = null; p.address = '';
           delete p.place_resolution;

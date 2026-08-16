@@ -417,6 +417,46 @@ def test_apply_drafts_does_not_reference_assistant_message(monkeypatch, tmp_path
     assert response.get_json()["query"] == "日料"
 
 
+def test_apply_location_draft_persists_resolution_metadata(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [{"id": "me", "name": "我", "lng": None, "lat": None}],
+            "city": "北京",
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    resolution = {
+        "alias": "北大",
+        "city": "北京",
+        "id": "B000A816R6",
+        "label": "北京大学",
+        "address": "北京市海淀区 颐和园路5号",
+        "lng": 116.310918,
+        "lat": 39.992873,
+    }
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={
+            "session_id": sid,
+            "drafts": [{
+                "kind": "set_participant_location",
+                "data": {
+                    "participant_id": "me",
+                    "lng": 116.310918,
+                    "lat": 39.992873,
+                    "address": "北京大学 · 北京市海淀区 颐和园路5号",
+                    "place_resolution": resolution,
+                },
+            }],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["participants"][0]["place_resolution"] == resolution
+
+
 def test_agent_exposes_unified_participant_tools(monkeypatch, tmp_path):
     module = _load_app(monkeypatch, tmp_path)
     functions = {tool["function"]["name"]: tool["function"] for tool in module.ASSISTANT_TOOLS}
@@ -586,6 +626,99 @@ def test_exact_group_normalizes_slots_and_removes_trailing_people(monkeypatch, t
         ("set_keyword", {"keyword": "炒饭"}),
     ]
     assert module._normalize_participant_tool_plan(sid, [], iteration=2) == []
+
+
+def test_exact_group_skips_an_already_saved_place_resolution(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {
+                    "id": "me",
+                    "name": "我",
+                    "lng": 116.310918,
+                    "lat": 39.992873,
+                    "address": "北京大学 · 北京市海淀区 颐和园路5号",
+                    "place_resolution": {
+                        "alias": "北大",
+                        "city": "北京",
+                        "id": "B000A816R6",
+                        "lng": 116.310918,
+                        "lat": 39.992873,
+                    },
+                },
+                {"id": "chichi", "name": "chichi", "lng": 116.45, "lat": 39.91, "address": "国贸"},
+            ],
+            "city": "北京",
+            "memory_did": "device-a",
+            "current_utterance_parse": {
+                "city_context": "北京",
+                "participant_change": {
+                    "mode": "exact",
+                    "ordered_names": ["我", "chichi"],
+                    "slot_changes": [],
+                },
+                "locations": [
+                    {"owner": "我", "participant_index": 1, "expression": "北大"},
+                    {"owner": "chichi", "participant_index": 2, "expression": "西单图书大厦"},
+                ],
+            },
+        }
+    )
+
+    normalized = module._normalize_participant_tool_plan(sid, [], iteration=1)
+    assert len(normalized) == 1
+    assert normalized[0]["function"]["name"] == "ensure_participant"
+    assert json.loads(normalized[0]["function"]["arguments"]) == {
+        "index": 2,
+        "participant_name": "chichi",
+        "place_name": "西单图书大厦",
+        "city": "北京",
+    }
+
+
+def test_exact_group_uses_personal_alias_mapping_for_legacy_location_noop(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    module._record_place_alias_confirmation(
+        "device-a",
+        "北大",
+        "北京",
+        {
+            "id": "B000A816R6",
+            "label": "北京大学",
+            "address": "北京市海淀区 颐和园路5号",
+            "lng": 116.310918,
+            "lat": 39.992873,
+        },
+    )
+    sid = module.session_create(
+        {
+            "participants": [
+                {
+                    "id": "me",
+                    "name": "我",
+                    "lng": 116.310918,
+                    "lat": 39.992873,
+                    "address": "北京大学 · 北京市海淀区 颐和园路5号",
+                }
+            ],
+            "city": "北京",
+            "memory_did": "device-a",
+            "current_utterance_parse": {
+                "city_context": "北京",
+                "participant_change": {
+                    "mode": "exact",
+                    "ordered_names": ["我"],
+                    "slot_changes": [],
+                },
+                "locations": [
+                    {"owner": "我", "participant_index": 1, "expression": "北大"}
+                ],
+            },
+        }
+    )
+
+    assert module._normalize_participant_tool_plan(sid, [], iteration=1) == []
 
 
 def test_uncertain_identity_change_asks_before_touching_the_slot(monkeypatch, tmp_path):
@@ -821,6 +954,56 @@ def test_ensure_requires_identity_action_when_existing_name_changes(monkeypatch,
     assert result["ok"] is False
     assert result["error_code"] == "participant_identity_action_required"
     assert patch is None
+
+
+def test_ensure_returns_unchanged_when_resolved_coordinates_match(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {
+                    "id": "me",
+                    "name": "我",
+                    "lng": 116.310918,
+                    "lat": 39.992873,
+                    "address": "北京大学 · 北京市海淀区 颐和园路5号",
+                }
+            ],
+            "city": "北京",
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    monkeypatch.setattr(module, "_location_graph_enabled", lambda: False)
+    monkeypatch.setattr(
+        module,
+        "_resolve_place_candidates",
+        lambda *args, **kwargs: {
+            "success": True,
+            "status": "resolved",
+            "candidate": {
+                "id": "B000A816R6",
+                "label": "北京大学",
+                "address": "北京市海淀区 颐和园路5号",
+                "lng": 116.310918,
+                "lat": 39.992873,
+            },
+            "query": "北大",
+            "provider": "amap_inputtips",
+            "candidate_count": 1,
+            "confidence": 1.0,
+            "reason": "confirmed",
+        },
+    )
+
+    result, patch = module._tool_ensure_participant(
+        sid, {"index": 1, "participant_name": "我", "place_name": "北大"}
+    )
+
+    assert result["ok"] is True
+    assert result["action"] == "unchanged"
+    assert patch is None
+    assert module.session_get(sid).get("agent_task", {}).get("participant_drafts_pending") is not True
 
 
 def test_rename_keeps_existing_location_and_preference(monkeypatch, tmp_path):
