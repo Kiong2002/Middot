@@ -183,7 +183,8 @@ def build_main_agent_graph(
             if result.get("ok"):
                 successful.add(signature)
                 if name == "set_participant_prefer" or (
-                    name == "set_participant_location" and args.get("prefer")
+                    name in {"set_participant_location", "ensure_participant"}
+                    and args.get("prefer")
                 ):
                     prefer_changed = True
             if patch:
@@ -269,7 +270,7 @@ def build_main_agent_graph(
                 "label": "等待你选择",
             }
         )
-        writer({"type": "done"})
+        writer({"type": "done", "outcome": "waiting"})
         return {"status": "waiting_user"}
 
     def finalize(state: MainAgentState) -> Mapping[str, Any]:
@@ -283,7 +284,7 @@ def build_main_agent_graph(
         writer = get_stream_writer()
         if content:
             writer({"type": "token", "delta": content})
-        writer({"type": "done"})
+        writer({"type": "done", "outcome": "completed"})
         return {"final_response": content, "status": "completed"}
 
     def fail(state: MainAgentState) -> Mapping[str, Any]:
@@ -293,7 +294,7 @@ def build_main_agent_graph(
         hooks.mark_failed(state, error)
         writer = get_stream_writer()
         writer({"type": "error", "msg": error})
-        writer({"type": "done"})
+        writer({"type": "done", "outcome": "failed"})
         return {"status": "failed", "error": error}
 
     builder = StateGraph(MainAgentState)
