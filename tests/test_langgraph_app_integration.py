@@ -414,3 +414,190 @@ def test_apply_drafts_does_not_reference_assistant_message(monkeypatch, tmp_path
 
     assert response.status_code == 200
     assert response.get_json()["query"] == "日料"
+
+
+def test_agent_exposes_unified_participant_tools(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    names = {(tool.get("function") or {}).get("name") for tool in module.ASSISTANT_TOOLS}
+    assert "ensure_participant" in names
+    assert "remove_participant" in names
+    assert "set_participant_location" not in names
+    assert "add_participant" not in names
+
+
+def test_ensure_participant_creates_when_list_is_empty(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [],
+            "city": "北京",
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    result, patch = module._tool_ensure_participant(
+        sid,
+        {"index": 1, "participant_name": "我", "lng": 116.326, "lat": 40.003},
+    )
+    assert result["ok"] is True
+    assert result["action"] == "created"
+    assert patch["kind"] == "add_participant"
+    assert patch["data"]["nickname"] == "我"
+    assert module.session_get(sid)["agent_task"]["participant_drafts_pending"] is True
+
+
+def test_search_waits_for_participant_draft_confirmation(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [{"id": "a", "name": "A", "lng": 1.0, "lat": 1.0}],
+            "query": "咖啡",
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    module._tool_ensure_participant(sid, {"index": 1, "participant_name": "E"})
+
+    result, patch = module._tool_search_pois(sid, {"keyword": "咖啡"})
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert patch is None
+
+
+def test_replace_abc_with_ef_and_remove_c_in_one_draft_batch(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {"id": "a", "name": "A", "lng": 1.0, "lat": 1.0, "prefer": "auto"},
+                {"id": "b", "name": "B", "lng": 2.0, "lat": 2.0, "prefer": "auto"},
+                {"id": "c", "name": "C", "lng": 3.0, "lat": 3.0, "prefer": "auto"},
+            ],
+            "city": "北京",
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    _, e_patch = module._tool_ensure_participant(sid, {"index": 1, "participant_name": "E"})
+    _, f_patch = module._tool_ensure_participant(sid, {"index": 2, "participant_name": "F"})
+    _, remove_patch = module._tool_remove_participant(sid, {"index": 3})
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={
+            "session_id": sid,
+            "drafts": [
+                {"kind": e_patch["kind"], "data": e_patch["data"]},
+                {"kind": f_patch["kind"], "data": f_patch["data"]},
+                {"kind": remove_patch["kind"], "data": remove_patch["data"]},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert [item["name"] for item in response.get_json()["participants"]] == ["E", "F"]
+
+
+def test_participant_batch_automatically_searches_after_confirmation(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [{"id": "a", "name": "A", "lng": 1.0, "lat": 1.0}],
+            "query": "咖啡",
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    _, draft = module._tool_ensure_participant(
+        sid, {"index": 1, "participant_name": "E", "lng": 2.0, "lat": 2.0}
+    )
+    calls = []
+
+    def fake_search(search_sid, args):
+        calls.append((search_sid, args))
+        pois = [{"id": "poi-1", "name": "测试咖啡馆", "legs": []}]
+        module.session_update(search_sid, {"last_pois": pois, "pois_base": pois})
+        return {"ok": True, "count": 1, "summary": "找到 1 家"}, None
+
+    monkeypatch.setattr(module, "_tool_search_pois", fake_search)
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={"session_id": sid, "drafts": [{"kind": draft["kind"], "data": draft["data"]}]},
+    )
+
+    assert response.status_code == 200
+    assert calls == [(sid, {"keyword": "咖啡"})]
+    assert response.get_json()["pois"][0]["name"] == "测试咖啡馆"
+
+
+def test_participant_draft_batch_rejects_partial_application(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [{"id": "a", "name": "A", "lng": 1.0, "lat": 1.0}],
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={
+            "session_id": sid,
+            "drafts": [
+                {"kind": "set_participant_location", "data": {"participant_id": "a", "new_nickname": "E"}},
+                {"kind": "remove_participant", "data": {"participant_id": "missing"}},
+            ],
+        },
+    )
+    assert response.status_code == 409
+    assert module.session_get(sid)["participants"][0]["name"] == "A"
+
+
+def test_conversation_detail_replays_sanitized_tool_timeline(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    conversation_id = module._conversation_create("device-a", "规划会面")
+    trace_id = module._trace_start(conversation_id, "device-a", "sid-a", "我从清华出发")
+    module._trace_step(
+        trace_id,
+        "tool_call",
+        "调用 set_participant_location",
+        tool_name="set_participant_location",
+        payload={"runtime": "langgraph", "arguments": {"index": 1, "place_name": "清华"}},
+    )
+    module._trace_step(
+        trace_id,
+        "tool_result",
+        "set_participant_location · 失败",
+        tool_name="set_participant_location",
+        summary="当前没有参与者，用 add_participant 先加人",
+        payload={"runtime": "langgraph", "result": {"ok": False, "error": "当前没有参与者"}},
+    )
+    module._trace_step(
+        trace_id,
+        "tool_call",
+        "调用 add_participant",
+        tool_name="add_participant",
+        payload={"runtime": "langgraph", "arguments": {"nickname": "我", "place_name": "清华"}},
+    )
+    module._trace_step(
+        trace_id,
+        "tool_result",
+        "add_participant · 成功",
+        tool_name="add_participant",
+        summary="已准备新增我",
+        payload={"runtime": "langgraph", "result": {"ok": True, "summary": "已准备新增我"}},
+    )
+    module._trace_step(
+        trace_id,
+        "assistant",
+        "阿觅回复",
+        summary="已经准备好了",
+        payload={"content": "已经准备好了"},
+    )
+    module._trace_finish(trace_id, "done")
+    with module.app.test_request_context():
+        g.device_id = "device-a"
+        detail = module.api_conversation_detail(conversation_id).get_json()
+    assert len(detail["turns"]) == 1
+    assert detail["turns"][0]["tools"][0]["status"] == "recovered"
+    assert detail["turns"][0]["tools"][1]["status"] == "ok"
+    assert detail["turns"][0]["assistant_content"] == "已经准备好了"

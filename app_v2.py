@@ -2308,7 +2308,97 @@ def api_conversation_detail(conversation_id: str):
         "WHERE conversation_id=? ORDER BY seq",
         (conversation_id,),
     ).fetchall()
-    return jsonify({"conversation": dict(conv), "events": [dict(row) for row in rows]})
+    traces = conn.execute(
+        "SELECT id,user_message,status,started_at,finished_at FROM agent_traces "
+        "WHERE conversation_id=? AND device_id=? ORDER BY started_at",
+        (conversation_id, g.device_id),
+    ).fetchall()
+    turns = []
+    for trace in traces:
+        tool_items: list[dict] = []
+        pending_by_name: dict[str, list[int]] = {}
+        assistant_content = ""
+        for step in conn.execute(
+            "SELECT seq,step_type,tool_name,summary,payload_json FROM agent_trace_steps "
+            "WHERE trace_id=? AND step_type IN ('tool_call','tool_result','assistant','waiting') "
+            "ORDER BY seq",
+            (trace["id"],),
+        ).fetchall():
+            try:
+                payload = json.loads(step["payload_json"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if step["step_type"] == "tool_call":
+                args = payload.get("arguments") if isinstance(payload, dict) else {}
+                if not isinstance(args, dict):
+                    args = {
+                        key: value for key, value in payload.items()
+                        if key not in {"runtime", "node"}
+                    } if isinstance(payload, dict) else {}
+                item = {
+                    "name": str(step["tool_name"] or ""),
+                    "args": _trace_safe(args),
+                    "status": "wait",
+                    "summary": "",
+                    "seq": int(step["seq"]),
+                }
+                tool_items.append(item)
+                pending_by_name.setdefault(item["name"], []).append(len(tool_items) - 1)
+            elif step["step_type"] == "tool_result":
+                name = str(step["tool_name"] or "")
+                queue_for_name = pending_by_name.get(name) or []
+                target_index = next(
+                    (index for index in queue_for_name if tool_items[index]["status"] == "wait"),
+                    None,
+                )
+                if target_index is None:
+                    continue
+                raw_result = payload.get("result") if isinstance(payload, dict) else {}
+                if not isinstance(raw_result, dict):
+                    raw_result = payload if isinstance(payload, dict) else {}
+                ok = bool(raw_result.get("ok"))
+                tool_items[target_index].update({
+                    "status": "ok" if ok else "err",
+                    "summary": str(step["summary"] or raw_result.get("summary") or raw_result.get("error") or "")[:1000],
+                    "error_code": str(raw_result.get("error_code") or ""),
+                })
+            elif step["step_type"] == "assistant":
+                content = payload.get("content") if isinstance(payload, dict) else ""
+                assistant_content = str(content or step["summary"] or "")
+
+        # Old traces can contain a failed set on an empty list followed by
+        # successful adds. Preserve the attempt, but present its final meaning.
+        if trace["status"] == "done":
+            for index, item in enumerate(tool_items):
+                if item["status"] != "err":
+                    continue
+                later = tool_items[index + 1:]
+                same_tool = any(x["status"] == "ok" and x["name"] == item["name"] for x in later)
+                empty_then_add = (
+                    item["name"] == "set_participant_location"
+                    and "没有参与者" in item["summary"]
+                    and any(
+                        x["status"] == "ok" and x["name"] in {"add_participant", "ensure_participant"}
+                        for x in later
+                    )
+                )
+                if same_tool or empty_then_add:
+                    item["status"] = "recovered"
+
+        turns.append({
+            "trace_id": trace["id"],
+            "user_message": trace["user_message"] or "",
+            "assistant_content": assistant_content,
+            "status": trace["status"],
+            "started_at": int(trace["started_at"] or 0),
+            "finished_at": int(trace["finished_at"] or 0),
+            "tools": tool_items,
+        })
+    return jsonify({
+        "conversation": dict(conv),
+        "events": [dict(row) for row in rows],
+        "turns": turns,
+    })
 
 
 @app.route("/api/v2/conversations/<conversation_id>/continue", methods=["POST"])
@@ -4099,40 +4189,37 @@ ASSISTANT_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "set_participant_location",
-            "description": "【草稿】提议改某个参与者的位置**或/和昵称**。用 index (1-based) 或 participant_name 定位。可以只改昵称（省略 place_name）、只改位置（省略 new_nickname）、或两个一起改。**不会立刻生效**，进草稿卡等用户确认。",
+            "name": "ensure_participant",
+            "description": "【草稿】确保会面中有这位参与者，并按需设置昵称、位置或交通。服务端会根据当前快照自动选择：修改已有人物、覆盖空位或新增人物；不要再区分 add/set。ABC 切换为 EF 时，可分别把 index=1/2 确保为 E/F，再删除多余的人。不会立刻生效，进入草稿卡统一确认。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "index":            {"type": "integer", "description": "参与者序号（1-based）。和 participant_name 二选一。用户说『我 / 我自己 / 咱』时，**必须**用 [当前会话快照] 里的 `me_index`——**永远别硬编码 1**，房间模式下你可能是 index=2 或更后。"},
-                    "participant_name": {"type": "string",  "description": "参与者姓名精确匹配"},
-                    "place_name":       {"type": "string",  "description": "新位置的地名，如『望京SOHO』。只改昵称时可省略。"},
-                    "city":             {"type": "string",  "description": "跨城市时必填"},
-                    "lng":               {"type": "number"},
-                    "lat":               {"type": "number"},
-                    "new_nickname":     {"type": "string",  "description": "新昵称。用户提到朋友名字（如『我闺蜜 Lisa』『同事小王』）时，把对应参与者的昵称改成那个人名字（Lisa / 小王）。"},
-                },
-            },
-        },
+                    "index": {"type": "integer", "description": "希望复用或修改的参与者序号（1-based）。仅在当前列表明确对应这个位置时传；空列表不要臆造不存在的序号。"},
+                    "participant_name": {"type": "string", "description": "最终应显示的人物名称，如『我』『Lisa』『王明』。新增人物时必填。"},
+                    "existing_name": {"type": "string", "description": "要修改的已有人物姓名；不传时优先按 index，再按 participant_name 匹配。"},
+                    "place_name": {"type": "string", "description": "出发地点。只调整人物名称或交通时可省略。"},
+                    "city": {"type": "string", "description": "地点所在城市；跨城市时必填。"},
+                    "lng": {"type": "number"},
+                    "lat": {"type": "number"},
+                    "prefer": {"type": "string", "enum": ["auto","transit","driving","walking","cycling"], "description": "交通偏好，可省略。"}
+                }
+            }
+        }
     },
     {
         "type": "function",
         "function": {
-            "name": "add_participant",
-            "description": "【草稿】提议**新增**一位参与者。用户说『我闺蜜 Lisa 在对外经贸』『再加个从望京来的同事王小明』时用这个。**不会立刻生效**，进草稿卡等用户确认。房间模式下禁止：让用户分享房间码让本人加入。",
+            "name": "remove_participant",
+            "description": "【草稿】从当前会面中移除一位明确的参与者。用 participant_id、index 或 participant_name 定位；不会立刻生效，进入同一批草稿统一确认。对象不明确时先用 offer_choices 询问。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "nickname":   {"type": "string", "description": "新参与者昵称，如『Lisa』『王小明』；用户没提名字时用『朋友』『同事』等占位。"},
-                    "place_name": {"type": "string", "description": "地名，如『对外经济贸易大学』『望京SOHO』。可省略——那样只加占位人由用户后填。"},
-                    "city":       {"type": "string", "description": "跨城市时必填"},
-                    "lng":        {"type": "number"},
-                    "lat":        {"type": "number"},
-                    "prefer":     {"type": "string", "enum": ["auto","transit","driving","walking","cycling"], "description": "交通偏好，默认 auto"},
-                },
-                "required": ["nickname"],
-            },
-        },
+                    "participant_id": {"type": "string", "description": "快照中的稳定参与者 id，已知时优先使用。"},
+                    "index": {"type": "integer", "description": "参与者序号（1-based）。"},
+                    "participant_name": {"type": "string", "description": "参与者姓名精确匹配。"}
+                }
+            }
+        }
     },
     {
         "type": "function",
@@ -4242,6 +4329,12 @@ def _poi_reason(poi: dict) -> str:
 def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
     st = _assistant_get_state(sid)
     task = dict((session_get(sid) or {}).get("agent_task") or {})
+    if task.get("participant_drafts_pending"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "summary": "参与者修改确认后会自动刷新推荐，本轮不使用旧参与者搜索",
+        }, None
     if task.get("status") == "waiting_location_choice":
         return {
             "ok": False,
@@ -4304,7 +4397,7 @@ def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
         except Exception as e:
             print(f"[assistant search_pois] calculate_routes 失败：{e}")
     # 更新 session
-    session_update(sid, {"last_pois": enriched, "query": keyword})
+    session_update(sid, {"last_pois": enriched, "pois_base": pois, "query": keyword})
     top = [
         {
             "name":            p.get("name"),
@@ -4995,8 +5088,11 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
     elif location_specified:
         label = f"{old_name} → {address}"
         detail = f"{lng:.4f}, {lat:.4f}"
-    else:
+    elif new_nickname:
         label = f"{old_name} → 昵称改为 {new_nickname}"
+        detail = ""
+    else:
+        label = f"{old_name} → 交通方式改为 {new_prefer}"
         detail = ""
 
     data: dict = {"participant_id": target.get("id")}
@@ -5010,11 +5106,16 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
             }
     if new_nickname:
         data["new_nickname"] = new_nickname
+    if new_prefer:
+        data["prefer"] = new_prefer
 
     summary = (
         f"提议把 {old_name} 改名为 {new_nickname}"
         + (f"、位置改为 {address}" if location_specified else "")
-    ) if new_nickname else f"提议把 {old_name} 的位置改为 {address}"
+    ) if new_nickname else (
+        f"提议把 {old_name} 的位置改为 {address}"
+        if location_specified else f"提议把 {old_name} 的交通方式改为 {new_prefer}"
+    )
 
     return (
         {"ok": True, "summary": summary,
@@ -5120,6 +5221,144 @@ def _tool_add_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
             "type": "draft", "kind": "add_participant", "label": label,
             "detail": detail,
             "data": data,
+        },
+    )
+
+
+def _tool_ensure_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
+    """Agent-facing participant upsert; internal add/update rules remain separate."""
+    st = _assistant_get_state(sid)
+    parts = list(st.get("participants") or [])
+    idx = args.get("index")
+    participant_name = str(args.get("participant_name") or "").strip()
+    existing_name = str(args.get("existing_name") or "").strip()
+
+    target_index = None
+    if isinstance(idx, int) and 1 <= idx <= len(parts):
+        target_index = idx
+    else:
+        lookup_name = existing_name or participant_name
+        if lookup_name:
+            for position, participant in enumerate(parts, start=1):
+                if str(participant.get("name") or "").strip() == lookup_name:
+                    target_index = position
+                    break
+
+    # A new named person should reuse an existing empty placeholder before a new
+    # row is created. This is structural state reconciliation, not language parsing.
+    if target_index is None and participant_name:
+        empty = next(
+            (
+                position
+                for position, participant in enumerate(parts, start=1)
+                if participant.get("lng") is None and participant.get("lat") is None
+            ),
+            None,
+        )
+        if empty is not None:
+            target_index = empty
+
+    if target_index is not None:
+        target = parts[target_index - 1]
+        delegated = {
+            key: args[key]
+            for key in ("place_name", "city", "lng", "lat", "prefer")
+            if args.get(key) is not None
+        }
+        delegated["index"] = target_index
+        if participant_name and participant_name != str(target.get("name") or "").strip():
+            delegated["new_nickname"] = participant_name
+        if len(delegated) == 1:
+            return {
+                "ok": True,
+                "action": "unchanged",
+                "summary": f"参与者已经是 {participant_name or target.get('name') or '指定人物'}，不用修改",
+            }, None
+        result, patch = _tool_set_participant_location(sid, delegated)
+        result = dict(result)
+        result.setdefault("action", "updated")
+        if patch and patch.get("type") == "draft":
+            task = dict((session_get(sid) or {}).get("agent_task") or {})
+            task["participant_drafts_pending"] = True
+            session_update(sid, {"agent_task": task})
+        return result, patch
+
+    if isinstance(idx, int) and idx not in (1, len(parts) + 1):
+        return {
+            "ok": False,
+            "error_code": "invalid_participant_index",
+            "error": f"index={idx} 不存在；当前共有 {len(parts)} 位参与者",
+        }, None
+    if not participant_name:
+        return {
+            "ok": False,
+            "error_code": "participant_name_required",
+            "error": "新增参与者时需要 participant_name",
+        }, None
+    delegated = {
+        "nickname": participant_name,
+        **{
+            key: args[key]
+            for key in ("place_name", "city", "lng", "lat", "prefer")
+            if args.get(key) is not None
+        },
+    }
+    result, patch = _tool_add_participant(sid, delegated)
+    result = dict(result)
+    result.setdefault("action", "created")
+    if patch and patch.get("type") == "draft":
+        task = dict((session_get(sid) or {}).get("agent_task") or {})
+        task["participant_drafts_pending"] = True
+        session_update(sid, {"agent_task": task})
+    return result, patch
+
+
+def _tool_remove_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
+    """Create a visible removal draft addressed by stable participant id."""
+    st = _assistant_get_state(sid)
+    parts = list(st.get("participants") or [])
+    participant_id = str(args.get("participant_id") or "").strip()
+    participant_name = str(args.get("participant_name") or "").strip()
+    idx = args.get("index")
+    target = None
+    if participant_id:
+        target = next((p for p in parts if str(p.get("id") or "") == participant_id), None)
+    elif isinstance(idx, int) and 1 <= idx <= len(parts):
+        target = parts[idx - 1]
+    elif participant_name:
+        matches = [p for p in parts if str(p.get("name") or "").strip() == participant_name]
+        if len(matches) == 1:
+            target = matches[0]
+        elif len(matches) > 1:
+            return {
+                "ok": False,
+                "error_code": "ambiguous_participant",
+                "error": f"有多位参与者都叫 {participant_name}，请使用 participant_id 或 index",
+            }, None
+    if target is None:
+        return {
+            "ok": False,
+            "error_code": "participant_not_found",
+            "error": "找不到要移除的参与者",
+        }, None
+    if any(str(p.get("id") or "").startswith("room-") for p in parts):
+        return {
+            "ok": False,
+            "error_code": "room_participant_remove_forbidden",
+            "error": "房间成员不能由 AI 代为移除，请让本人退出房间",
+        }, None
+    name = str(target.get("name") or "参与者")
+    task = dict((session_get(sid) or {}).get("agent_task") or {})
+    task["participant_drafts_pending"] = True
+    session_update(sid, {"agent_task": task})
+    return (
+        {"ok": True, "action": "removed", "summary": f"提议从本次会面移除 {name}"},
+        {
+            "type": "draft",
+            "kind": "remove_participant",
+            "label": f"移除 {name}",
+            "detail": "应用后将按剩余参与者重新规划",
+            "data": {"participant_id": target.get("id"), "participant_name": name},
         },
     )
 
@@ -8459,6 +8698,10 @@ TOOL_HANDLERS = {
     "remember_feedback":       _tool_remember_feedback,
     "search_pois":              _tool_search_pois,
     "shift_center":             _tool_shift_center,
+    "ensure_participant":       _tool_ensure_participant,
+    "remove_participant":       _tool_remove_participant,
+    # Legacy/internal names remain callable for old checkpoints and tests, but
+    # are no longer exposed to the model.
     "set_participant_location": _tool_set_participant_location,
     "add_participant":          _tool_add_participant,
     "set_keyword":              _tool_set_keyword,
@@ -8496,34 +8739,32 @@ _ASSISTANT_SYSTEM = """你叫「阿觅」，是中点 Middot 的 AI 会面助手
 - **【人物记忆草稿】**：人物记忆必须先形成可见确认卡，用户点“确认保存”后才落库。用户第一次已经说过“请记住”后，后续回答“紫金港/杭州”等是在补充同一草稿，禁止要求他重复“请记住”。学校有多校区时先自然追问；信息补齐后调用 `remember_person` 准备确认卡。确认卡出现后停止本轮，不要再口头声称已经记住。
 - 用户问“你记得我什么”时，综合列出个人偏好、人物、店铺反馈，并把旧的搜索数据明确叫作“规划记录（不等于去过）”；说“忘掉/删除”时执行删除。人物地点可以从普通对话形成待确认候选，但第三方位置属于敏感事实，未经用户确认不得自动晋升，也不能从一次规划或搜索结果中偷记。
 - 已确认记忆只属于“我”，不得复制给朋友。本轮明确表达永远优先于旧记忆。使用长期偏好影响规划时，要在最终回复中自然说明，例如“已按你平时的公交方式规划”，但不要暴露内部字段。
-- **『我 / 我自己 / 咱』= [当前会话快照] 里 `me_index` 那一位**（每轮系统会告诉你 me_index 是几）。用户说"我在北大" → `set_participant_location(index=me_index, place_name="北大")`。**永远别硬编码 index=1**——房间模式下你可能是 index=2 或更后。
-- **【硬规则 · 地点先绑定语法主体】**：`X 的朋友/同事/家人` 中，地点 X 属于后面的那个人，不能因为整句话由“我想/我要/我和”开头就绑定给“我”。例如“我想和文三路的朋友吃火锅”表示**朋友在文三路、我的位置没有说**：必须把 `文三路` 用 `set_participant_location` 填到非 `me_index` 的朋友/空位，**绝不允许**写入 `me_index`。前端可能会另行征得定位许可补齐“我”，但这不改变朋友地点的归属。
+- **『我 / 我自己 / 咱』= [当前会话快照] 里 `me_index` 那一位**（每轮系统会告诉你 me_index 是几）。有这位时按 me_index 调 `ensure_participant`；列表为空时传 `participant_name="我"`，由工具新增。**永远别把不存在的 index 当成已有人物**。
+- **【硬规则 · 地点先绑定语法主体】**：`X 的朋友/同事/家人` 中，地点 X 属于后面的那个人，不能因为整句话由“我想/我要/我和”开头就绑定给“我”。例如“我想和文三路的朋友吃火锅”表示**朋友在文三路、我的位置没有说**：必须用 `ensure_participant(participant_name="朋友", place_name="文三路")`，**绝不允许**写入“我”。前端可能会另行征得定位许可补齐“我”，但这不改变朋友地点的归属。
 - **绝不猜测用户的当前位置**：当 me_index 对应参与者的 `lng`/`lat` 为空，而用户说“当前位置”“我和某地的朋友见面”或其他隐含需要本人出发地的表达时，前端会先尝试请求浏览器定位。如果定位仍为空，明确请用户点地图上的“定位到我”或手动填写；**禁止**把用户放到北京、当前 city、IP 定位城市或任意默认坐标。
-- **【硬规则 · 快照位置优先】**：本轮进入主 Agent 前，前端可能已经取得设备定位并写入 `[当前会话快照]`。只要 `me_index` 对应参与者的 `lng` 和 `lat` 非空，就代表“我”的位置**已经设置完成**，即使用户原句没有文字说明“我在哪”。此时禁止回复“你的位置还没设”、禁止再次索取位置，也不要再为“我”调用 `set_participant_location`；直接使用快照坐标继续规划。
+- **【硬规则 · 快照位置优先】**：本轮进入主 Agent 前，前端可能已经取得设备定位并写入 `[当前会话快照]`。只要 `me_index` 对应参与者的 `lng` 和 `lat` 非空，就代表“我”的位置**已经设置完成**，即使用户原句没有文字说明“我在哪”。此时禁止回复“你的位置还没设”、禁止再次索取位置，也不要再为“我”调用 `ensure_participant`；直接使用快照坐标继续规划。
 - 用户问“我在哪 / 你能看到我在哪吗”时，读取 `me_index` 那位的 `address` 回答：地址非空就直接告诉用户页面当前显示的地址；只有 address 为空而坐标非空时，才说明目前只有坐标。快照里的 address 是地图定位和反向解析结果，复述它不属于额外猜测。
-- **空位定义**：participants 里 `lng`/`lat` 为 `null` 的 slot 是**空位**（有名字，没位置）。solo 模式初始就有 2 个空位（「我 / 小伙伴」），随时可能因为用户 add 后没填位置而多出来。
-- **【硬规则 · 空位优先覆盖】**：只要列表里**有任何一个空位**，用户新提到的人**必须**用 `set_participant_location` 覆盖那个空位（配合 `new_nickname` 改名），**禁止**先调 `add_participant`。
-  - 例：solo 模式默认「我(1) / 小伙伴(2)」都是空位。用户说"我在 A，我朋友 Lisa 在 B" → 两次 `set_participant_location`（index=1 定 A、index=2 定 B 并 `new_nickname="Lisa"`），**不要** `add_participant`。这条几乎在 90% 场景都成立，别绕开。
-  - 只有列表**位置真的不够**（如已经 3 个人都有位置，用户又提第 4 位）才 `add_participant`。
-- **【硬规则 · 完事就搜】**：一轮结束时如果满足「keyword 已设 + 所有 participants 都有位置」，你**必须**再多调一次 `search_pois(keyword=当前 keyword)`，让用户立刻看到店铺结果，别让他手动点搜索。同一轮里如果已经 search 过就别再重复。
+- **参与者统一入口**：新增、覆盖空位、改名、改位置都只调用 `ensure_participant`。它会读取真实快照自行选择内部动作；你不要猜 add/set。列表为空时给人物名称即可；列表已有明确槽位时可以传 index。
+- **整组切换用最小修改**：例如当前 A/B/C，用户明确改为 E/F，调用 `ensure_participant(index=1, participant_name="E", ...)`、`ensure_participant(index=2, participant_name="F", ...)`，再 `remove_participant(index=3)`。保留新旧集合里的同一人物，删除多余者；不要额外发明批量工具。
+- **【硬规则 · 确认后再搜】**：本轮没有参与者草稿时，若满足「keyword 已设 + 所有人都有位置」，主动 `search_pois`。只要本轮调用过 `ensure_participant` 或 `remove_participant` 并产生草稿，就不要用旧参与者搜索；用户统一应用草稿后，服务端会自动刷新原推荐或按当前关键词搜索。
 - **锚点（会面中心）默认由系统按参与者中点自动算**——只在下列情形调 `shift_center`：
   - **允许**：用户明确说"锚点挪到 X"、"定在 X"、"约在 X"、"以 X 为中心找"、"就 X 吧"（明确指定会面点）
-  - **不允许**：用户只说自己/朋友在哪（"我在国贸上班"= 我的位置，用 `set_participant_location`，不要 `shift_center`）
+  - **不允许**：用户只说自己/朋友在哪（"我在国贸上班"= 我的位置，用 `ensure_participant`，不要 `shift_center`）
   - **不允许**：用户说"我们在朝阳吃火锅"这种含地区+活动的模糊表达（朝阳太大，不是明确会面点，让系统按中点算）
 - **『我要吃 X』/『我们想吃 X』/『找家 X』**：是搜索关键词，调 `set_keyword`。用户表达**对活动/场所类型的偏好**（吃/喝/玩/看/买/聊）都算，别只匹配"吃 X"字面。
 - **【出发地消歧不是正式推荐】**：用户说“我在西湖边的海底捞”“阿杰在附近某家星巴克”，是在描述参与者出发地；同名门店无法唯一确定时必须调用 `clarify_participant_location`，禁止用 `search_pois`。消歧候选只用于确认位置，不能替换中央推荐面板。
 - “去海底捞吃饭/找海底捞”才是正式搜索目标；“我在海底捞/阿杰从海底捞出发”是参与者位置。必须先绑定语法主体再选工具。
-- **房间模式下 `add_participant` 被禁用**（服务端会拒），要加人请让用户分享房间码给对方，让本人自己加入。
-- **【硬规则 · 改错走 set，别再 add】**：如果发现之前 `add_participant` 或 `set_participant_location` 把某人定错了城市/位置（比如"北航"被解析到深圳而不是北京），**必须**用 `set_participant_location(participant_name="那个名字", place_name=..., city="北京")` 修改原有那位，**禁止**再 `add_participant` 加一个同名的（服务端也会拒）。同名去重是硬约束：同一个名字只能有一位。
+- **房间模式下** `ensure_participant` 只能修改允许操作的现有成员，不能代别人加入；`remove_participant` 也不能代别人退出。需要加入或退出时让本人操作。
+- **同名去重**：修改已有同名人物时仍调用 `ensure_participant(existing_name="那个名字", ...)`，工具会更新原人物，不会重复创建。
 
 ## 工作原则
 0. 当任务因缺少一个适合点击回答的信息而暂停时，优先用 `offer_choices`。**同一个人的交通方式、是否采用记忆地点、预算区间必须用 single**，绝不能让用户同时选“打车”和“开车”；忌口、氛围偏好等可并存答案用 multiple。若要分别设置多人交通，可用 multiple，但每个选项必须明确写人物与方式（如“我坐公交”“阿杰开车”）。给2～5项即可。按钮只有 label，没有隐藏答案；label 必须完整表达该按钮实际回答，绝不能夹带用户看不见的人物、地点或条件。调用后用一句话邀请用户选择或自行输入，本轮不要继续猜测执行。
 1. 用 `get_current_result` 查看当前状态；不要盲猜。
 2. 用户说「换个方向」「以 X 为中心」「再远点」「把小王的位置改到望京」「换成日料」类需求 → **优先调工具**而不是只回复文字。
-3. **草稿档工具（shift_center / set_participant_location / add_participant / set_keyword / set_radius）不会直接改用户的设置**，只是把你的提议塞进一张草稿卡等用户点"应用"。所以：即使用户没明说"你去改"，只要意图明确，就大胆调；用户来把关，不会被你覆盖。
+3. **草稿档工具（shift_center / ensure_participant / remove_participant / set_keyword / set_radius）不会直接改用户的设置**，只是把你的提议塞进一张草稿卡等用户点"应用"。所以：即使用户没明说"你去改"，只要意图明确，就大胆调；用户来把关，不会被你覆盖。
 4. `search_pois` 和 `recompute_routes` 会**立即**刷新地图上的推荐列表，属于「只读式副作用」——探索场景可以自由用；如果用户改了参与者/prefer，主动 `recompute_routes`。
-5. 一轮**可以并行调多个工具**——用户如果一句话里含多件事（加人 + 改多个参与者位置 + 关键词），把全部工具一起调，别一次只做一件让用户等；但同类事情别叠罗汉（不要一次改 3 遍同一个参与者的位置）。有依赖时（如先加人再改这个新人的位置），把两步合并进 `add_participant` 一次搞定，不要分两轮。
-6. 跨城市地名（"杭州文三路"、"上海外滩"、"深圳南山"）→ shift_center / set_participant_location / add_participant 必须传 `city`，否则会被当作默认城市（北京）解析出错。
+5. 一轮**可以并行调多个工具**——用户如果一句话里含多件事（调整多人 + 删除多余者 + 关键词），把全部草稿一起调，别一次只做一件让用户等；同一个人物只调用一次 `ensure_participant`，把名称、位置、交通合在一次调用里。
+6. 跨城市地名（"杭州文三路"、"上海外滩"、"深圳南山"）→ shift_center / ensure_participant 必须传 `city`，否则会被当作默认城市解析出错。
 7. 每次最终回复用**一句到两句**中文概括完成了什么和用户接下来能做什么（如果是草稿，说“我先准备好了，你确认下”）。上方折叠区已经展示执行步骤，所以正文**禁止**复述内部过程，禁止出现函数名、工具名、参数名、索引、JSON、代码块或“我将调用/我调用了”之类实现细节。
 8. 回复用 **Markdown** 格式：粗体用 `**xxx**`、列表用 `-`、代码用反引号。别用 HTML。
 9. Punchy，别啰嗦。中文优先。你的名字叫「阿觅」。
@@ -8534,26 +8775,25 @@ _ASSISTANT_SYSTEM = """你叫「阿觅」，是中点 Middot 的 AI 会面助手
 ## 例子
 
 **用户输**：我在北大，我闺蜜 Lisa 在对外经贸，我俩想去吃火锅
-（假设列表默认是「我(1) / 小伙伴(2)」两位，都是空位；快照里 me_index=1）
 **你的解析**：
-- 列表有 2 个空位 → **禁止** add_participant，两次都用 set_participant_location 覆盖
-- "我在北大" → `set_participant_location(index=1, place_name="北京大学")`（me_index=1）
-- "我闺蜜 Lisa 在对外经贸" → `set_participant_location(index=2, place_name="对外经济贸易大学", new_nickname="Lisa")`（覆盖空位 + 改名）
+- 不猜当前到底是空列表还是占位列表，统一调用 `ensure_participant`
+- "我在北大" → `ensure_participant(participant_name="我", place_name="北京大学")`
+- "我闺蜜 Lisa 在对外经贸" → `ensure_participant(participant_name="Lisa", place_name="对外经济贸易大学")`
 - "想去吃火锅" → `set_keyword(keyword="火锅")`
-- 完事条件满足（keyword 有 + 2 人都定位置）→ **必须再多调一次** `search_pois(keyword="火锅")`
+- 本轮有人物草稿 → 先让用户统一确认；应用后服务端自动按“火锅”搜索
 - 没说见面点 → **别调 shift_center**，中点系统自动算
 **你的回复**：位置都填上了，关键词已换成火锅，也帮你搜过了。
 
 **用户输**：我想和文三路的朋友吃火锅
 **你的解析**：
 - “文三路的朋友”是定中结构 → 文三路属于朋友，不属于“我”
-- 用 `set_participant_location` 把非 `me_index` 的朋友/空位设为文三路
+- 用 `ensure_participant(participant_name="朋友", place_name="文三路")`
 - “我”的位置没有在文字里给出，不得把文三路写给 `me_index`；设备定位由前端 Agent 征求授权后补齐
 - 调 `set_keyword(keyword="火锅")`
 **你的回复**：朋友的位置先设在文三路，火锅也选好了；再用你的当前位置一起找合适的店。
 
 **用户输**：加个从望京出发的同事王小明（solo 模式，列表已有「我(在国贸) / 小伙伴(在西直门) / 张三(在望京)」都有位置，无空位）
-**你的解析**：列表 3 人**都有位置**，无空位 → 允许 `add_participant(nickname="王小明", place_name="望京")`
+**你的解析**：`ensure_participant(participant_name="王小明", place_name="望京")`，由工具新增或复用空位
 **你的回复**：加上啦，王小明从望京出发 ✓
 
 **用户输**：定在国贸吃火锅
@@ -8564,20 +8804,19 @@ _ASSISTANT_SYSTEM = """你叫「阿觅」，是中点 Middot 的 AI 会面助手
 
 **用户输**：我在国贸上班，晚上想找附近吃点
 **你的解析**：
-- "我在国贸上班" = **陈述我的位置**（不是会面点） → `set_participant_location(index=me_index, place_name="国贸")`
+- "我在国贸上班" = **陈述我的位置**（不是会面点） → `ensure_participant(participant_name="我", place_name="国贸")`
 - "吃点" → `set_keyword(keyword="餐厅")` 或按上下文更具体
 - **不要**调 shift_center —— 用户没说定在国贸
 **你的回复**：你的位置已填为国贸，中点系统会按参与者位置自动算锚点。
 
 **用户输**（房间模式）：帮我加个朋友张三
-**你的解析**：房间模式下 `add_participant` 被禁 → 直接回复用户
+**你的解析**：房间模式下工具不能代别人加入 → 直接回复用户
 **你的回复**：房间里加人得让本人自己进来。把顶栏的房间码发给张三，他打开链接输入即可。
 
 **用户输**：再加个 Joe，从北航出发
-**你的解析**（solo，列表已有「我(北大) / Lisa(人大)」都定位置，无空位、无同名）：
-- `add_participant(nickname="Joe", place_name="北航", city="北京")`（跨识别地名，必须带 city）
-- 假设服务端返回 Joe 定位到"深圳北航科技园"（结果错了，我读到 city="深圳"）
-- **【硬规则 · 改错走 set】**：**禁止**再 `add_participant("Joe", ...)`。改用 `set_participant_location(participant_name="Joe", place_name="北京航空航天大学", city="北京")` 覆盖原有那位
+**你的解析**（solo，列表已有「我(北大) / Lisa(人大)」）：
+- `ensure_participant(participant_name="Joe", place_name="北京航空航天大学", city="北京")`
+- 若已有 Joe，工具更新原人物；没有则新增，不会产生同名重复
 **你的回复**：刚才加错到深圳了，我改成北航（北京）✓
 """
 
@@ -9409,7 +9648,7 @@ def _verify_agent_outcome(sid: str, called_names: set[str]) -> list[str]:
     pois = st.get("pois") or []
     if "search_pois" in called_names and not pois:
         issues.append("搜索完成但结果列表为空")
-    if ("set_participant_prefer" in called_names or "set_participant_location" in called_names) and pois:
+    if ({"set_participant_prefer", "set_participant_location", "ensure_participant"} & called_names) and pois:
         for poi in pois[:6]:
             legs = poi.get("legs") or []
             by_name = {str(x.get("name") or ""): x for x in legs}
@@ -9730,8 +9969,12 @@ def api_v2_apply_drafts():
     updates: dict = {}
     applied: list[str] = []
     s = session_get(sid) or {}
-    parts = list(s.get("participants") or [])
+    # Work on detached copies and publish once at the end. A batch such as
+    # A->E, B->F, remove C is therefore never visible in a half-applied state.
+    parts = [dict(item) for item in (s.get("participants") or [])]
     parts_dirty = False
+    participant_error = ""
+    alias_confirmations: list[tuple[str, str, dict]] = []
 
     for d in drafts:
         if not isinstance(d, dict):
@@ -9751,26 +9994,33 @@ def api_v2_apply_drafts():
             lng = body.get("lng"); lat = body.get("lat")
             addr = body.get("address") or ""
             new_nickname = (body.get("new_nickname") or "").strip()
+            requested_prefer = str(body.get("prefer") or "").strip()
             if pid is not None and (
-                (lng is not None and lat is not None) or new_nickname
+                (lng is not None and lat is not None) or new_nickname or requested_prefer
             ):
-                for p in parts:
-                    if p.get("id") == pid:
-                        if lng is not None and lat is not None:
-                            p["lng"] = float(lng); p["lat"] = float(lat)
-                            if addr: p["address"] = addr
-                        if new_nickname:
-                            p["name"] = new_nickname
-                        parts_dirty = True
-                        break
+                target = next((p for p in parts if p.get("id") == pid), None)
+                if target is None:
+                    participant_error = "参与者状态已经变化，请重新生成修改草稿"
+                    break
+                if lng is not None and lat is not None:
+                    target["lng"] = float(lng); target["lat"] = float(lat)
+                    if addr: target["address"] = addr
+                if new_nickname:
+                    target["name"] = new_nickname
+                if requested_prefer in {"auto", "transit", "driving", "walking", "cycling"}:
+                    target["prefer"] = requested_prefer
+                parts_dirty = True
                 resolution = body.get("place_resolution") if isinstance(body.get("place_resolution"), dict) else None
                 if resolution:
-                    _record_place_alias_confirmation(
-                        g.device_id, str(resolution.get("alias") or ""),
-                        str(resolution.get("city") or s.get("city") or ""), resolution,
-                        source="user_draft_apply",
-                    )
+                    alias_confirmations.append((
+                        str(resolution.get("alias") or ""),
+                        str(resolution.get("city") or s.get("city") or ""),
+                        resolution,
+                    ))
                 applied.append(kind)
+            else:
+                participant_error = "参与者修改草稿缺少有效字段"
+                break
         elif kind == "add_participant":
             nickname = (body.get("nickname") or "").strip()
             lng = body.get("lng"); lat = body.get("lat")
@@ -9790,6 +10040,19 @@ def api_v2_apply_drafts():
                 parts.append(new_p)
                 parts_dirty = True
                 applied.append(kind)
+            else:
+                participant_error = "无法新增参与者：名称为空或人数已达上限"
+                break
+        elif kind == "remove_participant":
+            pid = str(body.get("participant_id") or "")
+            before_count = len(parts)
+            parts = [p for p in parts if str(p.get("id") or "") != pid]
+            if len(parts) != before_count:
+                parts_dirty = True
+                applied.append(kind)
+            else:
+                participant_error = "要移除的参与者已经不存在，请重新生成修改草稿"
+                break
         elif kind == "set_keyword":
             kw = (body.get("keyword") or "").strip()
             if kw:
@@ -9808,15 +10071,53 @@ def api_v2_apply_drafts():
                     updates["anchor"] = new_anchor
                 applied.append(kind)
 
+    if participant_error:
+        return jsonify({"ok": False, "error": participant_error}), 409
+
     if parts_dirty:
         updates["participants"] = parts
 
     if updates:
         session_update(sid, updates)
+        for alias, city, resolution in alias_confirmations:
+            _record_place_alias_confirmation(
+                g.device_id, alias, city, resolution, source="user_draft_apply"
+            )
         for kind in applied:
             _conversation_record_operation(
                 sid, kind, {"ok": True, "summary": f"用户已应用 {kind} 修改"}
             )
+        if parts_dirty:
+            refreshed_pois = []
+            latest = session_get(sid) or {}
+            task = dict(latest.get("agent_task") or {})
+            task.pop("participant_drafts_pending", None)
+            session_update(sid, {"agent_task": task})
+            latest = session_get(sid) or {}
+            pois_base = latest.get("pois_base") or []
+            can_route = bool(parts) and all(
+                p.get("lng") is not None and p.get("lat") is not None for p in parts
+            )
+            if pois_base and can_route:
+                try:
+                    refreshed_pois = calculate_routes(
+                        pois_base,
+                        parts,
+                        latest.get("city") or "北京",
+                        latest.get("departure_time"),
+                        sort_weights=(latest.get("plan") or {}).get("sort_weights"),
+                    )
+                except Exception as exc:
+                    app.logger.warning("[apply-drafts] participant route refresh failed: %s", exc)
+            elif can_route and str(latest.get("query") or "").strip():
+                search_result, _ = _tool_search_pois(
+                    sid, {"keyword": str(latest.get("query") or "").strip()}
+                )
+                if search_result.get("ok") and not search_result.get("skipped"):
+                    refreshed_pois = list((session_get(sid) or {}).get("last_pois") or [])
+                    _conversation_record_operation(sid, "search_pois", search_result)
+            # Never leave routes calculated for the removed/replaced group on screen.
+            session_update(sid, {"last_pois": refreshed_pois})
         _conversation_save_state(sid)
 
     snap = session_get(sid) or {}
@@ -9826,6 +10127,7 @@ def api_v2_apply_drafts():
         "anchor": snap.get("anchor"),
         "participants": snap.get("participants"),
         "query": snap.get("query"),
+        "pois": snap.get("last_pois") or [],
     })
 
 
@@ -10131,7 +10433,7 @@ def api_v2_assistant_stream():
         if location_choice:
             # 位置选择已经由服务端校验并通过 Graph 幂等提交。本轮只让模型继续
             # 搜索/总结，不能再次创建同一人的位置草稿或第二张消歧卡。
-            excluded_tools.update({"set_participant_location", "clarify_participant_location"})
+            excluded_tools.update({"ensure_participant", "clarify_participant_location"})
         if memory_confirmation_result:
             # 记忆确认已经由服务端按一次性 token 确定性处理。本轮不再把写入工具
             # 暴露给模型，避免模型重复调用后出现“已保存”与“未保存”并存的假失败。
@@ -10299,7 +10601,7 @@ def api_v2_assistant_stream():
                         _trace_step(trace_id, "tool_result", f"{name} · 已去重", tool_name=name,
                                     summary=duplicate["summary"], payload=duplicate)
                         continue
-                    if name == "set_participant_location":
+                    if name in {"set_participant_location", "ensure_participant"}:
                         target_key: int | str = args.get("index") or str(args.get("participant_name") or "")
                         if target_key in location_targets_seen:
                             tool_msg = {
@@ -10342,7 +10644,7 @@ def api_v2_assistant_stream():
                         if tool_result.get("ok"):
                             successful_tool_signatures.add(signature)
                             if name == "set_participant_prefer" or (
-                                name == "set_participant_location" and args.get("prefer")
+                                name in {"set_participant_location", "ensure_participant"} and args.get("prefer")
                             ):
                                 prefer_changed_this_batch = True
 

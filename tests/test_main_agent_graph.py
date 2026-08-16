@@ -146,7 +146,7 @@ def test_main_graph_stops_at_location_choice_without_running_later_tools():
     assert fake.calls["tool:search_pois"] == 0
     assert events[-2:] == [
         {"type": "waiting", "kind": "location_choice", "label": "等待你选择"},
-        {"type": "done"},
+        {"type": "done", "outcome": "waiting"},
     ]
 
 
@@ -163,7 +163,7 @@ def test_main_graph_deduplicates_successful_tool_signature_across_iterations():
 
     assert fake.calls["tool:set_keyword"] == 1
     assert [event["type"] for event in events].count("tool_call") == 1
-    assert events[-1] == {"type": "done"}
+    assert events[-1] == {"type": "done", "outcome": "completed"}
 
 
 def test_main_graph_auto_recomputes_routes_after_transport_change():
@@ -200,5 +200,5 @@ def test_main_graph_reports_iteration_limit():
 
     assert events[-2]["type"] == "error"
     assert "工具调用上限" in events[-2]["msg"]
-    assert events[-1] == {"type": "done"}
+    assert events[-1] == {"type": "done", "outcome": "failed"}
     assert fake.calls["failed"] == 1

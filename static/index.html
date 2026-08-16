@@ -2627,6 +2627,7 @@
     .assist-tool-strip.wait { border-left: 3px solid var(--brand); }
     .assist-tool-strip.ok   { border-left: 3px solid var(--success); }
     .assist-tool-strip.err  { border-left: 3px solid var(--danger); }
+    .assist-tool-strip.recovered { border-left: 3px solid #d69b2d; }
     .ats-head {
       display: flex; align-items: center; gap: 10px;
       padding: 10px 12px;
@@ -2636,6 +2637,7 @@
     .ats-status-icon.spin { animation: spin 1s linear infinite; }
     .assist-tool-strip.ok  .ats-status-icon { color: var(--success); }
     .assist-tool-strip.err .ats-status-icon { color: var(--danger); }
+    .assist-tool-strip.recovered .ats-status-icon { color: #b7791f; }
     .ats-label-wrap {
       flex: 0 1 auto;
       min-width: 120px;
@@ -2699,6 +2701,7 @@
     .ats-item .ic { width: 14px; height: 14px; margin-top: 2px; flex: 0 0 14px; color: var(--text-3); }
     .ats-item.ok  .ic { color: var(--success); }
     .ats-item.err .ic { color: var(--danger); }
+    .ats-item.recovered .ic { color: #b7791f; }
     .ats-item.wait .ic { color: var(--brand); animation: spin 1s linear infinite; }
     .ats-item .txt { flex: 1; min-width: 0; }
     .ats-item .lbl { color: var(--text-1); font-weight: 500; word-break: break-word; }
@@ -6647,6 +6650,7 @@
       activeChoiceToken: null,
       selectedLocationChoice: null,
       waitingLabel: '',
+      turnOutcome: '',
       pendingMemoryDetail: false,
     };
 
@@ -6820,6 +6824,7 @@
       ASSIST_STATE.currentStripItems = null;
       ASSIST_STATE.currentBotEl = null;
       ASSIST_STATE.currentBotRaw = '';
+      ASSIST_STATE.turnOutcome = '';
       return turn;
     }
 
@@ -6846,8 +6851,24 @@
         if (items.length === 0) {
           try { strip.remove(); } catch (_) {}
         } else {
+          if (ASSIST_STATE.turnOutcome === 'completed') {
+            items.forEach((item, index) => {
+              if (item.status !== 'err') return;
+              const later = items.slice(index + 1);
+              const sameToolRecovered = later.some(x => x.status === 'ok' && x.name === item.name);
+              const emptyParticipantRecovered = item.name === 'set_participant_location' &&
+                /没有参与者/.test(item.summary || '') &&
+                later.some(x => x.status === 'ok' && ['add_participant','ensure_participant'].includes(x.name));
+              if (sameToolRecovered || emptyParticipantRecovered) {
+                item.status = 'recovered';
+                item.label = item.label.replace(/ · 失败$/, '') + ' · 已自动调整';
+              }
+            });
+            _atsBodyRender();
+          }
           const anyErr = items.some(x => x.status === 'err');
           const anyWait = items.some(x => x.status === 'wait');
+          const recoveredCount = items.filter(x => x.status === 'recovered').length;
           // 兜底：即使 done 抢先在最后一个 tool_result 之前到，也必须给个终态 label
           // （否则 strip 头会空着，只剩 check + count + chevron）
           const okCount = items.filter(x => x.status === 'ok').length;
@@ -6858,8 +6879,10 @@
             ? `完成 ${okCount}/${items.length} 项`
             : anyErr
               ? (memoryOnly ? `${errCount} 项档案未保存` : `完成 ${items.length} 项 · 部分失败`)
+              : recoveredCount
+                ? `完成 ${okCount} 项 · 自动纠正 ${recoveredCount} 步`
               : `完成 ${items.length} 项`);
-          _atsSetStripStatus(strip, ASSIST_STATE.waitingLabel ? 'wait' : anyErr ? 'err' : anyWait ? 'wait' : 'ok');
+          _atsSetStripStatus(strip, ASSIST_STATE.waitingLabel ? 'wait' : anyErr ? 'err' : anyWait ? 'wait' : recoveredCount ? 'recovered' : 'ok');
           _atsSetLabel(strip, label);
         }
       }
@@ -6869,6 +6892,7 @@
       ASSIST_STATE.currentStripEl = null;
       ASSIST_STATE.currentStripItems = null;
       ASSIST_STATE.waitingLabel = '';
+      ASSIST_STATE.turnOutcome = '';
     }
 
     function normalizeAssistantMarkdown(text) {
@@ -7095,7 +7119,7 @@
     }
 
     function _atsSetStripStatus(strip, status) {
-      strip.classList.remove('wait', 'ok', 'err');
+      strip.classList.remove('wait', 'ok', 'err', 'recovered');
       strip.classList.add(status);
       const icon = strip.querySelector('.ats-status-icon');
       if (!icon) return;
@@ -7106,6 +7130,8 @@
         fresh.classList.add('spin');
       } else if (status === 'ok') {
         fresh.setAttribute('data-lucide', 'check');
+      } else if (status === 'recovered') {
+        fresh.setAttribute('data-lucide', 'refresh-cw');
       } else {
         fresh.setAttribute('data-lucide', 'alert-circle');
       }
@@ -7120,7 +7146,7 @@
       const body = strip.querySelector('.ats-body');
       body.innerHTML = items.map(it => `
         <div class="ats-item ${it.status}">
-          <i class="ic" data-lucide="${it.status === 'wait' ? 'loader-2' : it.status === 'ok' ? 'check' : 'alert-circle'}"></i>
+          <i class="ic" data-lucide="${it.status === 'wait' ? 'loader-2' : it.status === 'ok' ? 'check' : it.status === 'recovered' ? 'refresh-cw' : 'alert-circle'}"></i>
           <div class="txt">
             <div class="lbl">${escapeHtml(it.label)}</div>
             ${it.summary ? `<div class="sub">${escapeHtml(it.summary)}</div>` : ''}
@@ -7161,6 +7187,16 @@
           return a.nickname
             ? `正在加人「${trunc(a.nickname)}」${a.place_name ? ' @ ' + trunc(a.place_name) : ''}`
             : '正在加人';
+        case 'ensure_participant': {
+          const who = a.participant_name || a.existing_name ||
+                      (a.index ? `第 ${a.index} 位` : '参与者');
+          if (a.place_name) return `正在设置「${trunc(who,8)}」 @ ${trunc(a.place_name)}`;
+          return `正在确保参与者「${trunc(who,8)}」`;
+        }
+        case 'remove_participant': {
+          const who = a.participant_name || (a.index ? `第 ${a.index} 位` : '指定参与者');
+          return `正在移除「${trunc(who,8)}」`;
+        }
         case 'set_keyword':
           return a.keyword ? `正在把关键词换成「${trunc(a.keyword)}」` : '正在改关键词';
         case 'set_radius': {
@@ -7206,7 +7242,9 @@
       target.label = waitingForUser
         ? `等待确认「${String(target.args?.place_name || target.args?.keyword || '候选').slice(0,12)}」的具体位置`
         : patch.ok
-        ? toolDoneLabel(name, target.args)
+        ? (['ensure_participant','remove_participant'].includes(name)
+            ? toolNaturalLabel(name, target.args).replace(/^正在/, '已准备')
+            : toolDoneLabel(name, target.args))
         : (['remember_person','remember_preference','remember_feedback','forget_memory'].includes(name)
             ? toolNaturalLabel(name, target.args).replace(/^正在/, '') + ' · 未保存'
             : toolNaturalLabel(name, target.args) + ' · 失败');
@@ -7283,6 +7321,9 @@
         const nm = data?.nickname || '朋友';
         const addr = data?.address || '';
         return addr ? `+ ${nm} · ${addr}` : `+ ${nm}`;
+      }
+      if (kind === 'remove_participant') {
+        return `− ${data?.participant_name || before?.participant?.name || '参与者'}`;
       }
       return kind;
     }
@@ -7365,11 +7406,19 @@
           refreshMapMarkers && refreshMapMarkers();
           focusRelevantView && focusRelevantView({ excludePois: true });
         }
+      } else if (entry.kind === 'remove_participant') {
+        if (before.participant) {
+          const at = Math.max(0, Math.min(Number(before.index) || 0, state.participants.length));
+          state.participants.splice(at, 0, { ...before.participant });
+          renderParticipantList && renderParticipantList();
+          refreshMapMarkers && refreshMapMarkers();
+          focusRelevantView && focusRelevantView({ excludePois: true });
+        }
       }
       entry.undone = true;
       // 静默同步一次后端 session（add_participant 撤销 = 删人，无对应 backend endpoint；
       // 下次 assistSubmit 的 bootstrap 会用最新 participants 覆盖 session，别在这里回放）
-      if (entry.kind !== 'add_participant') {
+      if (entry.kind !== 'add_participant' && entry.kind !== 'remove_participant') {
         syncApplyDraftsBackend([{kind: entry.kind, data: entry.kind === 'shift_center'
           ? {anchor: before.anchor, city: before.city}
           : (entry.kind === 'set_keyword' ? {keyword: before.keyword || ''}
@@ -7377,7 +7426,8 @@
               : before))}]);
       }
       // room 广播反向（add_participant 房间模式本就禁止，撤销时也不广播）
-      if (typeof ROOM !== 'undefined' && ROOM.code && entry.kind !== 'add_participant') {
+      if (typeof ROOM !== 'undefined' && ROOM.code &&
+          entry.kind !== 'add_participant' && entry.kind !== 'remove_participant') {
         roomBroadcastAfterAi(entry.kind, before);
       }
       renderActivityPanel();
@@ -7406,6 +7456,8 @@
           // 加人是 async render，等下一个 tick 找到卡片再闪
           setTimeout(() => flashEl(document.querySelector(`.participant[data-pid="${CSS.escape(pid)}"]`)), 30);
         }
+      } else if (kind === 'remove_participant') {
+        flashEl(document.getElementById('participantList'));
       }
     }
 
@@ -7413,6 +7465,9 @@
     function isSensitiveDraft(patch) {
       const now = Date.now();
       const kind = patch.kind;
+      if (['set_participant_location','add_participant','remove_participant'].includes(kind)) {
+        return { reason: '参与者名单和出发地会统一确认后应用' };
+      }
       if (kind === 'shift_center' && now - LAST_MANUAL_EDIT.anchor < MANUAL_EDIT_LOCK_MS) return { reason: '你刚手动改过锚点' };
       if (kind === 'set_keyword' && now - LAST_MANUAL_EDIT.keyword < MANUAL_EDIT_LOCK_MS) return { reason: '你刚手动改过关键词' };
       if (kind === 'set_radius' && now - LAST_MANUAL_EDIT.radius < MANUAL_EDIT_LOCK_MS) return { reason: '你刚手动改过半径' };
@@ -7450,6 +7505,12 @@
       if (kind === 'add_participant') {
         // before = 加人前的空态。撤销 = 从列表里删掉这个 id。
         return { participant_id: data?.participant_id || null };
+      }
+      if (kind === 'remove_participant') {
+        const index = state.participants.findIndex(x => x.id === data?.participant_id);
+        return index >= 0
+          ? { participant: { ...state.participants[index] }, index }
+          : null;
       }
       return null;
     }
@@ -7769,6 +7830,7 @@
       set_participant_location: 'user-round',
       set_participant_prefer: 'route',
       add_participant: 'user-round-plus',
+      remove_participant: 'user-round-minus',
       set_keyword: 'search',
       set_radius: 'expand',
     };
@@ -7779,6 +7841,9 @@
       }
       if (d.kind === 'set_participant_prefer') {
         return `set_participant_prefer:${d.data?.participant_id ?? ''}`;
+      }
+      if (d.kind === 'remove_participant') {
+        return `remove_participant:${d.data?.participant_id ?? ''}`;
       }
       return d.kind;
     }
@@ -7883,7 +7948,30 @@
         });
         const data = await resp.json();
         if (!data.ok) throw new Error(data.error || '应用失败');
-        chosen.forEach(applyDraftLocally);
+        const participantKinds = new Set(['set_participant_location','add_participant','remove_participant']);
+        chosen.filter(d => !participantKinds.has(d.kind)).forEach(applyDraftLocally);
+        if (Array.isArray(data.participants)) {
+          state.participants = data.participants.map(item => ({ ...item }));
+          renderParticipantList && renderParticipantList();
+          refreshMapMarkers && refreshMapMarkers();
+        } else {
+          chosen.filter(d => participantKinds.has(d.kind)).forEach(applyDraftLocally);
+        }
+        if (chosen.some(d => participantKinds.has(d.kind)) && Array.isArray(data.pois)) {
+          clearPaths && clearPaths();
+          if (data.pois.length) {
+            state.resultData = {
+              ...(state.resultData || {}),
+              session_id: state.sessionId,
+              participants: state.participants.map(item => ({ ...item })),
+              pois: data.pois,
+            };
+            renderResults && renderResults(state.resultData);
+          } else {
+            state.resultData = null;
+            state.viewPois = null;
+          }
+        }
         ASSIST_STATE.drafts = [];
         ASSIST_STATE.draftCardEl = null;
         collapseDraftCard(cardEl, chosen, snapshot);
@@ -7968,6 +8056,15 @@
         renderParticipantList && renderParticipantList();
         refreshMapMarkers && refreshMapMarkers();
         focusRelevantView && focusRelevantView({ excludePois: true });
+      } else if (d.kind === 'remove_participant') {
+        const before = state.participants.length;
+        state.participants = state.participants.filter(x => x.id !== body.participant_id);
+        if (state.participants.length !== before) {
+          renderParticipantList && renderParticipantList();
+          refreshMapMarkers && refreshMapMarkers();
+          clearPaths && clearPaths();
+          focusRelevantView && focusRelevantView({ excludePois: true });
+        }
       }
     }
 
@@ -8107,8 +8204,8 @@
         location_choice: locationChoice,
         bootstrap: {
           anchor:       state.anchor,
-          // 空位（lng/lat=null）必须一起发给后端 —— AI 才能看到「我/小伙伴」两个默认空位，
-          // 触发"空位优先覆盖"规则；否则 AI 只见空列表，会去调 add_participant 堆人。
+          // 参与者快照完整交给 ensure_participant；空列表、空位和已有人物
+          // 分别如何处理由工具的结构化状态逻辑决定，不再让模型猜 add/set。
           participants: state.participants.map(p => ({
             id: p.id, name: p.name,
             lng: (p.lng != null ? p.lng : null),
@@ -8200,6 +8297,7 @@
           else assistApplyPatch(ev.patch);
           break;
         case 'waiting':
+          ASSIST_STATE.turnOutcome = 'waiting';
           ASSIST_STATE.waitingLabel = ev.label || '等待你选择';
           if (ASSIST_STATE.currentStripEl) {
             _atsSetStripStatus(ASSIST_STATE.currentStripEl, 'wait');
@@ -8207,6 +8305,7 @@
           }
           break;
         case 'error':
+          ASSIST_STATE.turnOutcome = 'failed';
           const err = document.createElement('div');
           err.className = 'assist-msg bot';
           err.innerHTML = `<div class="bubble" style="color:var(--danger)">${escapeHtml(ev.msg || '出错了')}</div>`;
@@ -8214,6 +8313,7 @@
           assistScroll();
           break;
         case 'done':
+          ASSIST_STATE.turnOutcome = ev.outcome || ASSIST_STATE.turnOutcome || 'completed';
           assistTurnEnd();
           if (ASSIST_STATE.drafts.length > 0) assistRenderDraftCard();
           if (ACTIVITY.entries.length) renderActivityPanel();
@@ -8363,6 +8463,82 @@
       }
     }
 
+    function conversationAppendMessage(role, content) {
+      const el = document.createElement('div');
+      el.className = `assist-msg ${role === 'user' ? 'user' : 'bot'}`;
+      el.innerHTML = '<div class="bubble"></div>';
+      const bubble = el.querySelector('.bubble');
+      if (role === 'user') bubble.textContent = content || '';
+      else bubble.innerHTML = renderMarkdown(content || '');
+      ASSIST_STATE.msgsEl.appendChild(el);
+    }
+
+    function conversationRenderToolTurn(turn) {
+      const tools = Array.isArray(turn.tools) ? turn.tools : [];
+      const holder = document.createElement('div');
+      holder.className = 'assist-turn';
+      if (tools.length) {
+        const unresolved = tools.filter(item => item.status === 'err').length;
+        const recovered = tools.filter(item => item.status === 'recovered').length;
+        const completed = tools.filter(item => item.status === 'ok').length;
+        const waiting = turn.status === 'waiting' || tools.some(item => item.status === 'wait');
+        const status = waiting ? 'wait' : unresolved ? 'err' : recovered ? 'recovered' : 'ok';
+        const label = waiting
+          ? `等待处理中 · ${tools.length} 项`
+          : unresolved
+            ? `完成 ${tools.length} 项 · ${unresolved} 项失败`
+            : recovered
+              ? `完成 ${completed} 项 · 自动纠正 ${recovered} 步`
+              : `完成 ${tools.length} 项`;
+        const strip = document.createElement('div');
+        strip.className = `assist-tool-strip ${status}`;
+        strip.innerHTML = `
+          <div class="ats-head">
+            <i data-lucide="${status === 'wait' ? 'loader-2' : status === 'err' ? 'alert-circle' : status === 'recovered' ? 'refresh-cw' : 'check'}" class="ats-status-icon ${status === 'wait' ? 'spin' : ''}"></i>
+            <div class="ats-label-wrap"><div class="ats-label-sizer">${escapeHtml(label)}</div><div class="ats-label current">${escapeHtml(label)}</div></div>
+            <span class="ats-count">${tools.length}</span>
+            <i data-lucide="chevron-down" class="ats-chevron"></i>
+          </div>
+          <div class="ats-body">${tools.map(item => {
+            const base = toolNaturalLabel(item.name, item.args || {});
+            const itemLabel = item.status === 'ok'
+              ? (['ensure_participant','remove_participant'].includes(item.name)
+                  ? base.replace(/^正在/, '已准备')
+                  : toolDoneLabel(item.name, item.args || {}))
+              : item.status === 'recovered'
+                ? base.replace(/^正在/, '') + ' · 已自动调整'
+                : item.status === 'err'
+                  ? base + ' · 失败'
+                  : base;
+            const icon = item.status === 'ok' ? 'check' : item.status === 'recovered' ? 'refresh-cw' : item.status === 'err' ? 'alert-circle' : 'loader-2';
+            return `<div class="ats-item ${escapeHtml(item.status || 'wait')}"><i class="ic" data-lucide="${icon}"></i><div class="txt"><div class="lbl">${escapeHtml(itemLabel)}</div>${item.summary ? `<div class="sub">${escapeHtml(item.summary)}</div>` : ''}</div></div>`;
+          }).join('')}</div>`;
+        strip.querySelector('.ats-head').addEventListener('click', () => strip.classList.toggle('open'));
+        holder.appendChild(strip);
+      }
+      if (turn.assistant_content) {
+        const bot = document.createElement('div');
+        bot.className = 'assist-msg bot';
+        bot.innerHTML = `<div class="bubble">${renderMarkdown(turn.assistant_content)}</div>`;
+        holder.appendChild(bot);
+      }
+      if (holder.childNodes.length) ASSIST_STATE.msgsEl.appendChild(holder);
+    }
+
+    function conversationRenderDetail(detail) {
+      ASSIST_STATE.msgsEl.innerHTML = '';
+      const turns = Array.isArray(detail.turns) ? detail.turns : [];
+      if (turns.length) {
+        turns.forEach(turn => {
+          if (turn.user_message) conversationAppendMessage('user', turn.user_message);
+          conversationRenderToolTurn(turn);
+        });
+      } else {
+        (detail.events || []).forEach(event => conversationAppendMessage(event.role, event.visible_content));
+      }
+      refreshIcons();
+    }
+
     async function conversationContinue(id) {
       try {
         const [detail, resumed] = await Promise.all([
@@ -8374,18 +8550,7 @@
         conversationRestoreMeetingState(resumed.state || {}, resumed.session_id);
         assistTurnEnd();
         assistDeactivateChoiceCards();
-        if (ASSIST_STATE.msgsEl) {
-          ASSIST_STATE.msgsEl.innerHTML = '';
-          (detail.events || []).forEach(event => {
-            const el = document.createElement('div');
-            el.className = `assist-msg ${event.role === 'user' ? 'user' : 'bot'}`;
-            el.innerHTML = `<div class="bubble"></div>`;
-            const bubble=el.querySelector('.bubble');
-            if(event.role==='user')bubble.textContent=event.visible_content||'';
-            else bubble.innerHTML=renderMarkdown(event.visible_content||'');
-            ASSIST_STATE.msgsEl.appendChild(el);
-          });
-        }
+        if (ASSIST_STATE.msgsEl) conversationRenderDetail(detail);
         conversationHistoryClose();
         assistOpen();
         const pendingPatch = resumed.pending_interaction?.patch;
