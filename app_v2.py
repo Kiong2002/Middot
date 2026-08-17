@@ -2133,9 +2133,8 @@ def _conversation_discard_pending_drafts(
     return remaining
 
 
-def _conversation_state_from_session(sid: str) -> dict:
+def _conversation_state_payload(state: dict) -> dict:
     """只持久化能够重建会面页面的业务状态，不保存 Flask/Graph 运行对象。"""
-    state = session_get(sid) or {}
     pois = state.get("last_pois") or state.get("pois") or []
     return {
         "anchor": state.get("anchor"),
@@ -2153,21 +2152,34 @@ def _conversation_state_from_session(sid: str) -> dict:
     }
 
 
-def _conversation_save_state(sid: str) -> None:
-    state = session_get(sid) or {}
+def _conversation_state_from_session(sid: str) -> dict:
+    return _conversation_state_payload(session_get(sid) or {})
+
+
+def _conversation_save_state_conn(conn: sqlite3.Connection, state: dict) -> None:
+    """Write recovery state into an existing transaction."""
     conversation_id = str(state.get("conversation_id") or "")
     device_id = str(state.get("memory_did") or state.get("my_did") or "")
     if not conversation_id or not device_id:
         return
-    payload = _conversation_state_from_session(sid)
+    conn.execute(
+        "INSERT INTO conversation_recovery(conversation_id,device_id,state_json,updated_at) "
+        "VALUES(?,?,?,?) ON CONFLICT(conversation_id) DO UPDATE SET "
+        "device_id=excluded.device_id,state_json=excluded.state_json,updated_at=excluded.updated_at",
+        (
+            conversation_id,
+            device_id,
+            json.dumps(_conversation_state_payload(state), ensure_ascii=False),
+            _now(),
+        ),
+    )
+
+
+def _conversation_save_state(sid: str) -> None:
+    state = session_get(sid) or {}
     conn = _db_connect()
     try:
-        conn.execute(
-            "INSERT INTO conversation_recovery(conversation_id,device_id,state_json,updated_at) "
-            "VALUES(?,?,?,?) ON CONFLICT(conversation_id) DO UPDATE SET "
-            "device_id=excluded.device_id,state_json=excluded.state_json,updated_at=excluded.updated_at",
-            (conversation_id, device_id, json.dumps(payload, ensure_ascii=False), _now()),
-        )
+        _conversation_save_state_conn(conn, state)
         conn.commit()
     finally:
         conn.close()
@@ -4900,7 +4912,8 @@ def _record_place_alias_confirmation_conn(
         "INSERT INTO place_alias_evidence(device_id,city,alias,alias_norm,poi_id,canonical_name,address,lng,lat,"
         "confirmation_count,status,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,'confirmed',?,?,?) "
         "ON CONFLICT(device_id,city,alias_norm,poi_id) DO UPDATE SET "
-        "confirmation_count=confirmation_count+1,canonical_name=excluded.canonical_name,address=excluded.address,"
+        "confirmation_count=place_alias_evidence.confirmation_count+1,"
+        "canonical_name=excluded.canonical_name,address=excluded.address,"
         "lng=excluded.lng,lat=excluded.lat,status='confirmed',source=excluded.source,updated_at=excluded.updated_at",
         (device_id, city, alias, norm, poi_id, str(candidate.get("label") or "")[:160],
          str(candidate.get("address") or "")[:300], float(candidate["lng"]), float(candidate["lat"]),
@@ -11051,22 +11064,77 @@ def api_v2_apply_drafts():
     if parts_dirty:
         updates["participants"] = parts
 
+    # Apply the business patch and remove its draft cards in one Redis write.
+    # This prevents a later failure from leaving an applied location beside a
+    # still-pending copy of the same draft.
+    resolved_drafts = [
+        item for item in [*drafts, *discarded_drafts] if isinstance(item, dict)
+    ]
+    if applied:
+        resolved_keys = {
+            _draft_dedup_key(item)
+            for item in resolved_drafts
+            if str(item.get("kind") or "").strip()
+        }
+        remaining_drafts = [
+            item for item in _pending_drafts_from_state(s)
+            if _draft_dedup_key(item) not in resolved_keys
+        ]
+        task = dict(s.get("agent_task") or {})
+        if any(item.get("kind") in _PARTICIPANT_DRAFT_KINDS for item in remaining_drafts):
+            task["participant_drafts_pending"] = True
+        else:
+            task.pop("participant_drafts_pending", None)
+        updates["pending_drafts"] = remaining_drafts
+        updates["agent_task"] = task
+
     if updates:
-        session_update(sid, updates)
-        for alias, city, resolution in alias_confirmations:
-            _record_place_alias_confirmation(
-                g.device_id, alias, city, resolution, source="user_draft_apply"
-            )
+        # Validate alias evidence and durable recovery in one DB transaction,
+        # then publish Redis. If the DB commit fails, restore the old patch.
+        conn = _db_connect()
+        published = False
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for alias, city, resolution in alias_confirmations:
+                _record_place_alias_confirmation_conn(
+                    conn,
+                    g.device_id,
+                    alias,
+                    city,
+                    resolution,
+                    source="user_draft_apply",
+                )
+            next_state = dict(s)
+            next_state.update(updates)
+            _conversation_save_state_conn(conn, next_state)
+            if not session_update(sid, updates):
+                raise RuntimeError("会话已过期，请刷新后重试")
+            published = True
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            if published:
+                rollback_patch = {key: s.get(key) for key in updates}
+                try:
+                    session_update(sid, rollback_patch)
+                except Exception:
+                    app.logger.exception("[apply-drafts] failed to restore session after DB failure")
+            app.logger.exception("[apply-drafts] atomic apply failed")
+            return jsonify({"ok": False, "error": "应用修改失败，请稍后重试"}), 500
+        finally:
+            conn.close()
+
+        # Audit and route refreshes are derived effects; they must not turn an
+        # already committed draft into a misleading HTTP 500 response.
         for kind in applied:
-            _conversation_record_operation(
-                sid, kind, {"ok": True, "summary": f"用户已应用 {kind} 修改"}
-            )
+            try:
+                _conversation_record_operation(
+                    sid, kind, {"ok": True, "summary": f"用户已应用 {kind} 修改"}
+                )
+            except Exception:
+                app.logger.exception("[apply-drafts] operation audit write failed")
         if parts_dirty:
             refreshed_pois = []
-            latest = session_get(sid) or {}
-            task = dict(latest.get("agent_task") or {})
-            task.pop("participant_drafts_pending", None)
-            session_update(sid, {"agent_task": task})
             latest = session_get(sid) or {}
             pois_base = latest.get("pois_base") or []
             can_route = bool(parts) and all(
@@ -11084,21 +11152,21 @@ def api_v2_apply_drafts():
                 except Exception as exc:
                     app.logger.warning("[apply-drafts] participant route refresh failed: %s", exc)
             elif can_route and str(latest.get("query") or "").strip():
-                search_result, _ = _tool_search_pois(
-                    sid, {"keyword": str(latest.get("query") or "").strip()}
-                )
-                if search_result.get("ok") and not search_result.get("skipped"):
-                    refreshed_pois = list((session_get(sid) or {}).get("last_pois") or [])
-                    _conversation_record_operation(sid, "search_pois", search_result)
+                try:
+                    search_result, _ = _tool_search_pois(
+                        sid, {"keyword": str(latest.get("query") or "").strip()}
+                    )
+                    if search_result.get("ok") and not search_result.get("skipped"):
+                        refreshed_pois = list((session_get(sid) or {}).get("last_pois") or [])
+                        _conversation_record_operation(sid, "search_pois", search_result)
+                except Exception:
+                    app.logger.exception("[apply-drafts] automatic search refresh failed")
             # Never leave routes calculated for the removed/replaced group on screen.
             session_update(sid, {"last_pois": refreshed_pois})
-        _conversation_save_state(sid)
-
-    if applied:
-        _conversation_discard_pending_drafts(
-            sid,
-            [item for item in [*drafts, *discarded_drafts] if isinstance(item, dict)],
-        )
+        try:
+            _conversation_save_state(sid)
+        except Exception:
+            app.logger.exception("[apply-drafts] post-apply recovery refresh failed")
 
     snap = session_get(sid) or {}
     return jsonify({

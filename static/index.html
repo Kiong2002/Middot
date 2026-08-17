@@ -8072,8 +8072,18 @@
             discarded_drafts: discarded.map(d => ({ kind: d.kind, data: d.data })),
           }),
         });
-        const data = await resp.json();
-        if (!data.ok) throw new Error(data.error || '应用失败');
+        const responseText = await resp.text();
+        let data = null;
+        try {
+          data = responseText ? JSON.parse(responseText) : null;
+        } catch (_) {
+          throw new Error(resp.ok
+            ? '服务器返回了无法识别的数据'
+            : `服务端处理失败（HTTP ${resp.status}）`);
+        }
+        if (!resp.ok || !data?.ok) {
+          throw new Error(data?.error || `应用失败（HTTP ${resp.status}）`);
+        }
         const participantKinds = new Set(['set_participant_location','add_participant','remove_participant']);
         chosen.filter(d => !participantKinds.has(d.kind)).forEach(applyDraftLocally);
         if (Array.isArray(data.participants)) {

@@ -549,6 +549,57 @@ def test_apply_location_draft_persists_resolution_metadata(monkeypatch, tmp_path
     assert response.get_json()["participants"][0]["place_resolution"] == resolution
 
 
+def test_apply_location_draft_db_failure_keeps_session_and_pending_card(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    draft = {
+        "type": "draft",
+        "kind": "set_participant_location",
+        "label": "我 → 清华大学",
+        "detail": "116.3269, 40.0032",
+        "data": {
+            "participant_id": "me",
+            "lng": 116.326936,
+            "lat": 40.003213,
+            "address": "清华大学 · 北京市海淀区 双清路30号",
+            "place_resolution": {
+                "alias": "清华",
+                "city": "北京",
+                "id": "B000A7BD6C",
+                "label": "清华大学",
+                "address": "北京市海淀区 双清路30号",
+                "lng": 116.326936,
+                "lat": 40.003213,
+            },
+        },
+    }
+    sid = module.session_create(
+        {
+            "participants": [{"id": "me", "name": "我", "lng": None, "lat": None}],
+            "pending_drafts": [draft],
+            "city": "北京",
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+
+    def fail_confirmation(*args, **kwargs):
+        raise RuntimeError("simulated postgres failure")
+
+    monkeypatch.setattr(module, "_record_place_alias_confirmation_conn", fail_confirmation)
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={"session_id": sid, "drafts": [draft]},
+    )
+
+    assert response.status_code == 500
+    assert response.is_json
+    assert response.get_json()["error"] == "应用修改失败，请稍后重试"
+    state = module.session_get(sid)
+    assert state["participants"][0]["lng"] is None
+    assert state["participants"][0]["lat"] is None
+    assert state["pending_drafts"] == [draft]
+
+
 def test_agent_exposes_unified_participant_tools(monkeypatch, tmp_path):
     module = _load_app(monkeypatch, tmp_path)
     functions = {tool["function"]["name"]: tool["function"] for tool in module.ASSISTANT_TOOLS}

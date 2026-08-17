@@ -10,6 +10,12 @@ ENTITY_ALIAS_UPSERT = (
     "updated_at=excluded.updated_at"
 )
 
+PLACE_ALIAS_UPSERT = (
+    "INSERT INTO place_alias_evidence(device_id,city,alias_norm,poi_id,confirmation_count) "
+    "VALUES(?,?,?,?,1) ON CONFLICT(device_id,city,alias_norm,poi_id) DO UPDATE SET "
+    "confirmation_count=place_alias_evidence.confirmation_count+1"
+)
+
 
 def test_entity_alias_upsert_is_unambiguous_in_postgres():
     translated = _postgres_sql(ENTITY_ALIAS_UPSERT)
@@ -35,5 +41,27 @@ def test_entity_alias_upsert_keeps_highest_confidence_in_sqlite():
             "SELECT confidence,updated_at FROM memory_entity_aliases"
         ).fetchone()
         assert row == (0.9, 2)
+    finally:
+        connection.close()
+
+
+def test_place_alias_upsert_qualifies_current_row_for_both_databases():
+    translated = _postgres_sql(PLACE_ALIAS_UPSERT)
+    assert "place_alias_evidence.confirmation_count+1" in translated
+
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute(
+            "CREATE TABLE place_alias_evidence("
+            "device_id TEXT,city TEXT,alias_norm TEXT,poi_id TEXT,confirmation_count INTEGER,"
+            "UNIQUE(device_id,city,alias_norm,poi_id))"
+        )
+        values = ("device", "北京", "清华", "tsinghua")
+        connection.execute(PLACE_ALIAS_UPSERT, values)
+        connection.execute(PLACE_ALIAS_UPSERT, values)
+        count = connection.execute(
+            "SELECT confirmation_count FROM place_alias_evidence"
+        ).fetchone()[0]
+        assert count == 2
     finally:
         connection.close()
