@@ -7075,6 +7075,18 @@
       ASSIST_STATE.selectedLocationChoice=null;
       assistRenderSelectedChoices();
     }
+    function assistHasActiveChoiceCard() {
+      return !!ASSIST_STATE.msgsEl?.querySelector('.assist-choice-card.active');
+    }
+    function assistDeferDraftCardUntilChoicesFinish() {
+      // 同一轮可能先产生已确定地点的草稿，再遇到需要用户消歧的地点。
+      // 草稿仍保留在 ASSIST_STATE / 服务端 recovery 中，只暂时从消息流隐藏；
+      // 否则“候选选择”和“批量应用”会同时出现，用户很容易误以为人物串位。
+      if (ASSIST_STATE.draftCardEl) {
+        ASSIST_STATE.draftCardEl.remove();
+        ASSIST_STATE.draftCardEl = null;
+      }
+    }
     function assistMarkChoiceCardsSubmitted({locationChoice, choiceAnswers, memoryChoiceLabel}) {
       document.querySelectorAll('.assist-choice-card.active').forEach(card => {
         const strip = card.closest('.assist-turn')?.querySelector('.assist-tool-strip');
@@ -7127,6 +7139,7 @@
       refreshIcons();
     }
     function assistRenderChoices(patch) {
+      assistDeferDraftCardUntilChoicesFinish();
       assistDeactivateChoiceCards();
       const token=String(patch.token||`choice-${Date.now()}-${Math.random().toString(36).slice(2)}`);
       ASSIST_STATE.activeChoiceToken=token;
@@ -7158,6 +7171,7 @@
     }
 
     function assistRenderLocationChoices(patch) {
+      assistDeferDraftCardUntilChoicesFinish();
       assistDeactivateChoiceCards();
       const token=String(patch.token||''); ASSIST_STATE.activeChoiceToken=token;
       const turn=_ensureTurn(); const el=document.createElement('div'); el.className='assist-choice-card assist-location-card active'; el.dataset.choiceToken=token;
@@ -8007,6 +8021,9 @@
 
     function assistRenderDraftCard() {
       if (!ASSIST_STATE.drafts.length) return;
+      // 像 Claude 的连续问答一样，一次只展示当前需要处理的确认项：
+      // 地点/普通选择完成后，才进入本轮草稿的统一确认。
+      if (assistHasActiveChoiceCard()) return;
       // 已有的草稿卡先清掉（新一轮聚合）
       if (ASSIST_STATE.draftCardEl) {
         ASSIST_STATE.draftCardEl.remove();
@@ -8495,7 +8512,9 @@
             assistSearchProgressAbort('搜索结束，但没有收到新的推荐结果');
           }
           assistTurnEnd();
-          if (ASSIST_STATE.drafts.length > 0) assistRenderDraftCard();
+          if (ASSIST_STATE.drafts.length > 0 && !assistHasActiveChoiceCard()) {
+            assistRenderDraftCard();
+          }
           if (ACTIVITY.entries.length) renderActivityPanel();
           if (!document.getElementById('memoryModal')?.hidden && !MEMORY_UI.editing) memoryLoad();
           break;
@@ -8750,7 +8769,9 @@
             _sensReason: sensitive?.reason || '',
           });
         });
-        if (ASSIST_STATE.drafts.length) assistRenderDraftCard();
+        if (ASSIST_STATE.drafts.length && !assistHasActiveChoiceCard()) {
+          assistRenderDraftCard();
+        }
         assistScroll();
         toast(
           pendingPatch

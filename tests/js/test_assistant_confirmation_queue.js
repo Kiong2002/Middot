@@ -1,0 +1,60 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const page = fs.readFileSync(
+  path.join(__dirname, '..', '..', 'static', 'index.html'),
+  'utf8',
+);
+
+function functionSource(name) {
+  const marker = `function ${name}(`;
+  const start = page.indexOf(marker);
+  assert.notEqual(start, -1, `${name} must exist`);
+  const open = page.indexOf('{', start);
+  let depth = 0;
+  for (let index = open; index < page.length; index += 1) {
+    if (page[index] === '{') depth += 1;
+    if (page[index] === '}') depth -= 1;
+    if (depth === 0) return page.slice(start, index + 1);
+  }
+  throw new Error(`${name} is not closed`);
+}
+
+const hasActiveSource = functionSource('assistHasActiveChoiceCard');
+const deferSource = functionSource('assistDeferDraftCardUntilChoicesFinish');
+const renderDraftSource = functionSource('assistRenderDraftCard');
+const renderLocationSource = functionSource('assistRenderLocationChoices');
+
+const state = {
+  drafts: [{ kind: 'set_participant_location' }],
+  draftCardEl: null,
+  msgsEl: { querySelector: () => ({ className: 'assist-choice-card active' }) },
+};
+const helpers = new Function(
+  'ASSIST_STATE',
+  `${hasActiveSource}\n${deferSource}\nreturn { assistHasActiveChoiceCard, assistDeferDraftCardUntilChoicesFinish };`,
+)(state);
+
+assert.equal(helpers.assistHasActiveChoiceCard(), true);
+
+let removed = false;
+state.draftCardEl = { remove: () => { removed = true; } };
+helpers.assistDeferDraftCardUntilChoicesFinish();
+assert.equal(removed, true, 'visible draft card should be removed while a choice is active');
+assert.equal(state.draftCardEl, null);
+assert.equal(state.drafts.length, 1, 'deferred drafts must stay queued');
+
+assert.match(
+  renderDraftSource,
+  /if \(assistHasActiveChoiceCard\(\)\) return;/,
+  'draft rendering must be blocked by an active choice card',
+);
+assert.match(
+  renderLocationSource,
+  /assistDeferDraftCardUntilChoicesFinish\(\);/,
+  'a new location choice must hide an already visible draft card',
+);
+
