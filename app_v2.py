@@ -10429,6 +10429,52 @@ def _normalize_participant_tool_plan(
     return normalized
 
 
+def _normalize_search_tool_plan(sid: str, calls: list[dict]) -> list[dict]:
+    """已具备搜索条件时，把冗余关键词草稿收敛为一次真实搜索。"""
+    session = session_get(sid) or {}
+    pending_goal = session.get("pending_search_goal") or {}
+    desired = str(
+        (pending_goal.get("keyword") or "") if isinstance(pending_goal, dict) else ""
+    ).strip()
+    if not desired or not _can_execute_pending_search(sid):
+        return calls
+
+    parsed: list[tuple[dict, str, dict]] = []
+    for call in calls:
+        function = dict(call.get("function") or {})
+        name = str(function.get("name") or "")
+        try:
+            args = json.loads(str(function.get("arguments") or "{}"))
+        except json.JSONDecodeError:
+            args = {}
+        parsed.append((call, name, args if isinstance(args, dict) else {}))
+
+    # 人物修改仍需用户统一确认，不能抢先按旧名单搜索。
+    if any(name in {"ensure_participant", "remove_participant"} for _, name, _ in parsed):
+        return calls
+
+    desired_key = _search_keyword_key(desired)
+    has_real_search = any(
+        name == "search_pois"
+        and _search_keyword_key(args.get("keyword")) == desired_key
+        for _, name, args in parsed
+    )
+    normalized: list[dict] = []
+    for call, name, args in parsed:
+        if name != "set_keyword" or _search_keyword_key(args.get("keyword")) != desired_key:
+            normalized.append(call)
+            continue
+        if not has_real_search:
+            normalized.append(_participant_tool_call(
+                str(call.get("id") or "search_goal"),
+                "search_pois",
+                {"keyword": desired},
+            ))
+            has_real_search = True
+        # 已有真实 search_pois 时直接丢弃同义草稿，避免留下多余确认卡。
+    return normalized
+
+
 def _main_graph_call_model(state: dict) -> dict:
     iteration = int(state.get("iteration") or 1)
     started_ms = int(time.time() * 1000)
@@ -10491,6 +10537,7 @@ def _main_graph_call_model(state: dict) -> dict:
     normalized = _normalize_participant_tool_plan(
         state["session_id"], serialized, iteration=iteration
     )
+    normalized = _normalize_search_tool_plan(state["session_id"], normalized)
     _trace_step(
         state["trace_id"],
         "llm_response",

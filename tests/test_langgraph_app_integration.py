@@ -643,6 +643,58 @@ def test_search_provenance_only_clears_matching_pending_goal(monkeypatch, tmp_pa
     assert module._verify_agent_outcome(sid, set()) == []
 
 
+def test_ready_search_goal_replaces_redundant_keyword_draft(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {"name": "我", "lng": 116.31, "lat": 39.99},
+                {"name": "chichi", "lng": 116.37, "lat": 39.91},
+            ],
+            "pending_search_goal": {"keyword": "饺子", "status": "pending"},
+        }
+    )
+    calls = [
+        module._participant_tool_call(
+            "keyword-draft", "set_keyword", {"keyword": "饺子"}
+        )
+    ]
+
+    normalized = module._normalize_search_tool_plan(sid, calls)
+
+    assert len(normalized) == 1
+    assert normalized[0]["function"]["name"] == "search_pois"
+    assert json.loads(normalized[0]["function"]["arguments"]) == {"keyword": "饺子"}
+
+
+def test_search_goal_keeps_keyword_draft_while_participant_changes_wait(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {"name": "我", "lng": 116.31, "lat": 39.99},
+                {"name": "chichi", "lng": 116.37, "lat": 39.91},
+            ],
+            "pending_search_goal": {"keyword": "饺子", "status": "pending"},
+        }
+    )
+    calls = [
+        module._participant_tool_call(
+            "person", "ensure_participant", {"index": 2, "participant_name": "Lisa"}
+        ),
+        module._participant_tool_call(
+            "keyword-draft", "set_keyword", {"keyword": "饺子"}
+        ),
+    ]
+
+    normalized = module._normalize_search_tool_plan(sid, calls)
+
+    assert [item["function"]["name"] for item in normalized] == [
+        "ensure_participant",
+        "set_keyword",
+    ]
+
+
 def test_exact_group_normalizes_slots_and_removes_trailing_people(monkeypatch, tmp_path):
     module = _load_app(monkeypatch, tmp_path)
     sid = module.session_create(
