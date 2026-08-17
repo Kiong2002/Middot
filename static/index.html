@@ -4786,7 +4786,12 @@
     // 草稿应用接口会在同一个 HTTP 请求中完成地点刷新与路线计算，无法像
     // /search-stream 一样逐条推送 SSE；但它仍复用同一张真实进度卡，并只在
     // 请求开始/成功/失败这些可验证的边界推进状态，避免按钮变灰后像“卡死”。
-    const DRAFT_APPLY_SEARCH_PROGRESS = { active: false, keyword: '' };
+    const DRAFT_APPLY_SEARCH_PROGRESS = {
+      active: false,
+      keyword: '',
+      previousResultsVisible: false,
+      previousResultCount: '',
+    };
 
     function draftApplySearchProgressStart(drafts) {
       const participantKinds = new Set([
@@ -4798,6 +4803,9 @@
 
       DRAFT_APPLY_SEARCH_PROGRESS.active = true;
       DRAFT_APPLY_SEARCH_PROGRESS.keyword = keyword;
+      DRAFT_APPLY_SEARCH_PROGRESS.previousResultsVisible =
+        !!$('#resultsCard') && !$('#resultsCard').hidden;
+      DRAFT_APPLY_SEARCH_PROGRESS.previousResultCount = $('#resultCount')?.textContent || '';
       showResultsPanel();
       progressReset();
       if ($('#resultsCard')) $('#resultsCard').hidden = true;
@@ -4832,7 +4840,12 @@
       if (!DRAFT_APPLY_SEARCH_PROGRESS.active) return;
       setProgressHeroLabel('这次搜索没有完成');
       progressError(message || '应用修改后刷新推荐失败');
-      if ($('#resultCount')) $('#resultCount').textContent = '';
+      if ($('#resultsCard')) {
+        $('#resultsCard').hidden = !DRAFT_APPLY_SEARCH_PROGRESS.previousResultsVisible;
+      }
+      if ($('#resultCount')) {
+        $('#resultCount').textContent = DRAFT_APPLY_SEARCH_PROGRESS.previousResultCount;
+      }
       DRAFT_APPLY_SEARCH_PROGRESS.active = false;
       DRAFT_APPLY_SEARCH_PROGRESS.keyword = '';
     }
@@ -8158,12 +8171,19 @@
         participants: state.participants.map(p => ({ ...p })),
         query: (document.getElementById('queryInput')?.value || '').trim(),
         currentCity: state.currentCity,
+        resultData: state.resultData,
+        viewPois: state.viewPois,
+        selectedPoiIdx: state.selectedPoiIdx,
+        resultsHidden: !!document.getElementById('resultsCard')?.hidden,
       };
       cardEl.classList.add('applying');
       const titleEl = cardEl.querySelector('.draft-title');
       const applyBtn = cardEl.querySelector('.draft-apply');
       const originalTitle = titleEl?.textContent || '';
       const originalApplyLabel = applyBtn?.textContent || '';
+      // 先把用户刚确认的修改投影到当前画面，再基于新状态展示搜索进度。
+      // 服务端仍负责最终原子提交；失败时下面 catch 会完整恢复 snapshot。
+      chosen.forEach(applyDraftLocally);
       const searchProgressStarted = draftApplySearchProgressStart(chosen);
       if (titleEl) titleEl.textContent = searchProgressStarted
         ? '正在应用修改并刷新推荐…'
@@ -8192,7 +8212,6 @@
           throw new Error(data?.error || `应用失败（HTTP ${resp.status}）`);
         }
         const participantKinds = new Set(['set_participant_location','add_participant','remove_participant']);
-        chosen.filter(d => !participantKinds.has(d.kind)).forEach(applyDraftLocally);
         if (Array.isArray(data.participants)) {
           state.participants = data.participants.map(item => ({ ...item }));
           renderParticipantList && renderParticipantList();
@@ -8221,6 +8240,7 @@
         ASSIST_STATE.draftCardEl = null;
         collapseDraftCard(cardEl, chosen, snapshot);
       } catch (e) {
+        restoreDraftSnapshotLocally(snapshot);
         draftApplySearchProgressFail(e.message || '应用失败');
         cardEl.classList.remove('applying');
         if (titleEl) titleEl.textContent = originalTitle;
@@ -8325,6 +8345,36 @@
       }
     }
 
+    function restoreDraftSnapshotLocally(snapshot) {
+      state.anchor = snapshot.anchor;
+      state.anchorRadiusIdx = snapshot.anchorRadiusIdx;
+      state.participants = snapshot.participants.map(p => ({ ...p }));
+      state.currentCity = snapshot.currentCity;
+      state.resultData = snapshot.resultData;
+      state.viewPois = snapshot.viewPois;
+      state.selectedPoiIdx = snapshot.selectedPoiIdx;
+      const qi = document.getElementById('queryInput');
+      if (qi) {
+        qi.value = snapshot.query;
+        qi.dispatchEvent(new Event('input'));
+      }
+      renderAnchorPanel && renderAnchorPanel();
+      renderAnchorOnMap && renderAnchorOnMap();
+      renderParticipantList && renderParticipantList();
+      refreshMapMarkers && refreshMapMarkers();
+      renderMapContextPill && renderMapContextPill();
+      clearPaths && clearPaths();
+      if (snapshot.resultData) {
+        renderResults && renderResults(snapshot.resultData);
+      } else if (document.getElementById('resultsCard')) {
+        document.getElementById('resultsCard').hidden = true;
+      }
+      if (document.getElementById('resultsCard')) {
+        document.getElementById('resultsCard').hidden = snapshot.resultsHidden;
+      }
+      focusRelevantView && focusRelevantView({ excludePois: true });
+    }
+
     function collapseDraftCard(cardEl, applied, snapshot) {
       cardEl.className = 'assist-draft-applied';
       cardEl.innerHTML = `
@@ -8408,19 +8458,7 @@
         } catch (_) {}
       }
       // 本地强制回滚到 snapshot
-      state.anchor = snapshot.anchor;
-      state.anchorRadiusIdx = snapshot.anchorRadiusIdx;
-      state.participants = snapshot.participants;
-      state.currentCity = snapshot.currentCity;
-      const qi = document.getElementById('queryInput');
-      if (qi) { qi.value = snapshot.query; qi.dispatchEvent(new Event('input')); }
-      renderAnchorPanel && renderAnchorPanel();
-      renderAnchorOnMap && renderAnchorOnMap();
-      renderParticipantList && renderParticipantList();
-      refreshMapMarkers && refreshMapMarkers();
-      renderMapContextPill && renderMapContextPill();
-      clearPaths && clearPaths();
-      focusRelevantView && focusRelevantView({ excludePois: true });
+      restoreDraftSnapshotLocally(snapshot);
     }
 
     async function assistSubmit() {

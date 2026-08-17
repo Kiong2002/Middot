@@ -79,3 +79,18 @@ assert.match(
   /showResultsPanel\(\);[\s\S]*progressReset\(\);/,
   'draft-triggered search must reuse the manual search result panel and progress card',
 );
+
+const optimisticProjectionAt = applyDraftsSource.indexOf('chosen.forEach(applyDraftLocally)');
+const searchStartAt = applyDraftsSource.indexOf('draftApplySearchProgressStart(chosen)');
+const networkRequestAt = applyDraftsSource.indexOf("fetch('/api/v2/session/apply-drafts'");
+assert.ok(
+  optimisticProjectionAt >= 0
+    && optimisticProjectionAt < searchStartAt
+    && searchStartAt < networkRequestAt,
+  'confirmed cards must update locally before search progress and the network request start',
+);
+assert.match(
+  applyDraftsSource,
+  /catch \(e\) \{[\s\S]*restoreDraftSnapshotLocally\(snapshot\);[\s\S]*draftApplySearchProgressFail/,
+  'failed atomic application must roll the optimistic card update back before showing an error',
+);
