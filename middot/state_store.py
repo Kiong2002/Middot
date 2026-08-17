@@ -84,7 +84,10 @@ class RedisSessionStore:
         self.client = client
         self.ttl_seconds = ttl_seconds
         self.prefix = prefix
-        self._update_script = client.register_script(_UPDATE_SESSION_LUA)
+        # 不能用 Lua cjson 对整个 session 做 decode/encode：Redis 内置 cjson
+        # 会把空 JSON 数组 [] 解码为 Lua 空 table，并在编码时变成 {}，从而把
+        # chat_history / participants 等列表悄悄破坏。WATCH/MULTI 仍保证原子更新，
+        # 同时由 Python json 保留数组与对象的类型。
 
     def _key(self, sid: str) -> str:
         return self.prefix + sid
@@ -108,10 +111,31 @@ class RedisSessionStore:
         return value if isinstance(value, dict) else None
 
     def update(self, sid: str, patch: dict[str, Any]) -> bool:
-        result = self._update_script(
-            keys=[self._key(sid)], args=[self._dumps(patch), self.ttl_seconds]
-        )
-        return bool(result)
+        from redis.exceptions import WatchError
+
+        key = self._key(sid)
+        for _ in range(8):
+            pipe = self.client.pipeline()
+            try:
+                pipe.watch(key)
+                raw = pipe.get(key)
+                if raw is None:
+                    pipe.unwatch()
+                    return False
+                current = json.loads(raw)
+                if not isinstance(current, dict):
+                    pipe.unwatch()
+                    return False
+                current.update(patch)
+                pipe.multi()
+                pipe.set(key, self._dumps(current), ex=self.ttl_seconds)
+                pipe.execute()
+                return True
+            except WatchError:
+                continue
+            finally:
+                pipe.reset()
+        raise StateStoreUnavailable("session update conflicted too many times")
 
     def cleanup(self) -> None:
         # Redis removes expired keys itself.

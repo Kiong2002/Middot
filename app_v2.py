@@ -9229,7 +9229,8 @@ def _assistant_history(sid: str) -> list[dict]:
     s = session_get(sid)
     if not s:
         return []
-    return s.setdefault("chat_history", [])
+    history = s.get("chat_history")
+    return history if isinstance(history, list) else []
 
 
 _ASSISTANT_HISTORY_TRIGGER = 40
@@ -9320,9 +9321,18 @@ def _assistant_append_history(sid: str, msg: dict) -> None:
     s = session_get(sid)
     if not s:
         return
-    hist = s.setdefault("chat_history", [])
+    hist = s.get("chat_history")
+    if not isinstance(hist, list):
+        hist = []
+        s["chat_history"] = hist
     hist.append(msg)
     _compact_assistant_history(s, sid)
+    # Redis get() 返回反序列化后的副本，不能像旧进程内 store 一样依赖原地 list
+    # 修改。把压缩后的历史与摘要显式写回共享 session。
+    update = {"chat_history": hist}
+    if "chat_summary" in s:
+        update["chat_summary"] = s.get("chat_summary") or ""
+    session_update(sid, update)
 
 
 def _agent_task_begin(sid: str, message: str) -> dict:
