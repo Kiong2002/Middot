@@ -3625,13 +3625,36 @@
     const COLOR_BGS = ['#E6F4FE','#FFEDD5','#F3E7FC','#DDF3EE','#FCE5F0','#FFF3D6'];
 
     let pidSeed = 100;
-    function makeParticipant(name) {
+    function makeParticipant(name, identityStatus = 'placeholder') {
       pidSeed += 1;
-      return { id: 'p' + pidSeed, name, lng: null, lat: null, address: '', prefer: 'auto' };
+      return {
+        id: 'p' + pidSeed,
+        name,
+        lng: null,
+        lat: null,
+        address: '',
+        prefer: 'auto',
+        identity_status: identityStatus,
+      };
+    }
+
+    function normalizeParticipantIdentity(item, index = -1) {
+      const participant = { ...(item || {}) };
+      if (!['placeholder', 'confirmed'].includes(participant.identity_status)) {
+        // One-time compatibility for the original system-created second slot.
+        const legacyDefaultSlot = index === 1
+          && participant.id === 'p102'
+          && participant.name === '小伙伴'
+          && participant.lng == null
+          && participant.lat == null
+          && !String(participant.address || '').trim();
+        participant.identity_status = legacyDefaultSlot ? 'placeholder' : 'confirmed';
+      }
+      return participant;
     }
 
     const state = {
-      participants: [ makeParticipant('我'), makeParticipant('小伙伴') ],
+      participants: [ makeParticipant('我', 'confirmed'), makeParticipant('小伙伴') ],
       anchor: null,
       anchorRadiusIdx: 3,
       mapClickMode: null,
@@ -3994,7 +4017,7 @@
       if (ROOM._soloBackup && ROOM._soloBackup.length) {
         state.participants = ROOM._soloBackup;
       } else {
-        state.participants = [makeParticipant('我'), makeParticipant('朋友')];
+        state.participants = [makeParticipant('我', 'confirmed'), makeParticipant('朋友')];
       }
       ROOM._soloBackup = null;
       if (typeof ROOM_BANNER !== 'undefined') {
@@ -4074,6 +4097,7 @@
           roomDid: m.member_id,
           roomIsMe: !!m.is_me,
           roomRole: m.role || 'member',
+          identity_status: 'confirmed',
         };
       });
       // 处理 AI 归因广播（他人的 AI 改动 → 弹顶部 banner + 60s undo）
@@ -5637,7 +5661,10 @@
       $$('#participantList .p-name-input').forEach(el => {
         el.addEventListener('input', () => {
           const p = state.participants.find(x => x.id === el.dataset.pid);
-          if (p) p.name = el.value;
+          if (p) {
+            p.name = el.value;
+            if (el.value.trim()) p.identity_status = 'confirmed';
+          }
         });
       });
       $$('#participantList .p-remove').forEach(el => {
@@ -8153,7 +8180,10 @@
           p.lng = null; p.lat = null; p.address = '';
           delete p.place_resolution;
         }
-        if (body.new_nickname) p.name = body.new_nickname;
+        if (body.new_nickname) {
+          p.name = body.new_nickname;
+          p.identity_status = 'confirmed';
+        }
         if (body.prefer) p.prefer = body.prefer;
         else if (body.reset_prefer === true) p.prefer = 'auto';
         renderParticipantList && renderParticipantList();
@@ -8190,6 +8220,7 @@
           lat: body.lat != null ? body.lat : null,
           address: body.address || '',
           prefer: body.prefer || 'auto',
+          identity_status: 'confirmed',
         };
         state.participants.push(p);
         // 把 id 回写到 data 让 activity/chip/revert 都能定位到这一位
@@ -8353,6 +8384,7 @@
             lat: (p.lat != null ? p.lat : null),
             address: p.address || '',
             prefer: p.prefer || 'auto',
+            identity_status: p.identity_status || 'confirmed',
           })),
           pois:         state.resultData?.pois || [],
           query:        (document.getElementById('queryInput')?.value || '').trim(),
@@ -8570,7 +8602,7 @@
       if (!snapshot || typeof snapshot !== 'object') return;
       state.anchor = snapshot.anchor || null;
       state.participants = Array.isArray(snapshot.participants)
-        ? snapshot.participants.map(item => ({...item}))
+        ? snapshot.participants.map((item, index) => normalizeParticipantIdentity(item, index))
         : [];
       state.currentCity = snapshot.city || state.currentCity || '北京';
       const query = String(snapshot.query || '');

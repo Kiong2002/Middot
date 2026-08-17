@@ -1017,6 +1017,61 @@ def test_uncertain_identity_change_asks_before_touching_the_slot(monkeypatch, tm
     ]
 
 
+def test_uncertain_identity_change_fills_placeholder_without_asking(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {
+                    "id": "me",
+                    "name": "我",
+                    "identity_status": "confirmed",
+                    "lng": 116.37,
+                    "lat": 39.91,
+                },
+                {
+                    "id": "partner-slot",
+                    "name": "小伙伴",
+                    "identity_status": "placeholder",
+                    "lng": None,
+                    "lat": None,
+                    "address": "",
+                    "prefer": "auto",
+                },
+            ],
+            "current_utterance_parse": {
+                "city_context": "北京",
+                "participant_change": {
+                    "mode": "exact",
+                    "ordered_names": ["我", "Diva"],
+                    "slot_changes": [
+                        {
+                            "index": 2,
+                            "from_name": "小伙伴",
+                            "to_name": "Diva",
+                            "identity_action": "uncertain",
+                        }
+                    ],
+                },
+                "locations": [
+                    {"owner": "Diva", "participant_index": 2, "expression": "大栅栏"}
+                ],
+            },
+        }
+    )
+
+    normalized = module._normalize_participant_tool_plan(sid, [], iteration=1)
+    assert len(normalized) == 1
+    assert normalized[0]["function"]["name"] == "ensure_participant"
+    args = json.loads(normalized[0]["function"]["arguments"])
+    assert args == {
+        "index": 2,
+        "participant_name": "Diva",
+        "place_name": "大栅栏",
+        "city": "北京",
+    }
+
+
 def test_exact_group_moves_explicit_location_with_person(monkeypatch, tmp_path):
     module = _load_app(monkeypatch, tmp_path)
     sid = module.session_create(
@@ -1222,6 +1277,52 @@ def test_ensure_requires_identity_action_when_existing_name_changes(monkeypatch,
     assert patch is None
 
 
+def test_ensure_fills_placeholder_and_confirms_its_identity(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {
+                    "id": "partner-slot",
+                    "name": "小伙伴",
+                    "identity_status": "placeholder",
+                    "lng": None,
+                    "lat": None,
+                    "address": "",
+                    "prefer": "auto",
+                }
+            ],
+            "memory_did": "device-a",
+            "my_did": "device-a",
+        }
+    )
+
+    result, patch = module._tool_ensure_participant(
+        sid,
+        {
+            "index": 1,
+            "participant_name": "Diva",
+            "lng": 116.39,
+            "lat": 39.90,
+            "place_name": "大栅栏",
+        },
+    )
+
+    assert result["ok"] is True
+    assert "空白槽位" in result["summary"]
+    assert patch["kind"] == "set_participant_location"
+    assert patch["data"]["new_nickname"] == "Diva"
+    assert patch["data"].get("replace_identity") is None
+
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={"session_id": sid, "drafts": [{"kind": patch["kind"], "data": patch["data"]}]},
+    )
+    participant = response.get_json()["participants"][0]
+    assert participant["name"] == "Diva"
+    assert participant["identity_status"] == "confirmed"
+
+
 def test_ensure_returns_unchanged_when_resolved_coordinates_match(monkeypatch, tmp_path):
     module = _load_app(monkeypatch, tmp_path)
     sid = module.session_create(
@@ -1308,6 +1409,7 @@ def test_rename_keeps_existing_location_and_preference(monkeypatch, tmp_path):
         "lat": 39.9,
         "address": "国贸",
         "prefer": "cycling",
+        "identity_status": "confirmed",
     }
 
 

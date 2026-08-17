@@ -4426,13 +4426,13 @@ ASSISTANT_TOOLS = [
         "type": "function",
         "function": {
             "name": "ensure_participant",
-            "description": "【草稿】确保指定槽位最终是这位参与者，并按需设置位置或交通。index 必填：已有槽位就修改该槽位，index=当前规划人数+1 就在末尾新增；工具绝不会自行寻找或覆盖其他未定位人物。已有槽位改成不同姓名时，必须用 identity_action 明确是同一人改名还是换人。ABC 切换为 EF 时，确保 index=1/2 为 E/F，再删除 index=3。不会立刻生效，进入草稿卡统一确认。",
+            "description": "【草稿】确保指定槽位最终是这位参与者，并按需设置位置或交通。index 必填：已有槽位就修改该槽位，index=当前规划人数+1 就在末尾新增；工具绝不会自行寻找或覆盖其他未定位人物。只有 identity_status=confirmed 的已有槽位改成不同姓名时，才必须用 identity_action 明确是同一人改名还是换人；placeholder 空槽可以直接填入。ABC 切换为 EF 时，确保 index=1/2 为 E/F，再删除 index=3。不会立刻生效，进入草稿卡统一确认。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "index": {"type": "integer", "minimum": 1, "description": "最终名单中的槽位序号（1-based），必填。已有槽位表示修改该槽位；紧接当前规划末尾表示新增。"},
                     "participant_name": {"type": "string", "description": "该槽位最终应显示的人物名称，如『我』『Lisa』『王明』，必填。"},
-                    "identity_action": {"type": "string", "enum": ["rename", "replace"], "description": "仅当已有槽位换成不同姓名时使用：rename=同一个人改称呼并保留原位置；replace=换成另一个人，不继承原人的位置和交通偏好。语义不明确时不要调用本工具，先用 offer_choices 询问。"},
+                    "identity_action": {"type": "string", "enum": ["rename", "replace"], "description": "仅当 identity_status=confirmed 的已有槽位换成不同姓名时使用：rename=同一个人改称呼并保留原位置；replace=换成另一个人，不继承原人的位置和交通偏好。placeholder 空槽直接填写，不传此字段。语义不明确时不要调用本工具，先用 offer_choices 询问。"},
                     "place_name": {"type": "string", "description": "出发地点。只调整人物名称或交通时可省略。"},
                     "city": {"type": "string", "description": "地点所在城市；跨城市时必填。"},
                     "lng": {"type": "number"},
@@ -5117,7 +5117,7 @@ def _parse_meeting_utterance(message: str, participants: list[dict], me_index: i
 {"intent":"meeting|location_update|other","activity":"","search_keyword":"","city_context":"","participant_change":{"mode":"additive|exact|patch|uncertain","ordered_names":[],"slot_changes":[{"index":2,"from_name":"Lisa","to_name":"chichi","identity_action":"rename|replace|uncertain"}]},"locations":[{"owner":"我或人物名","participant_index":1,"expression":"","kind":"area|address|named_place","area_hint":"","raw_entity":"","canonical_candidates":[],"needs_disambiguation":false}],"ignored_text":[]}。
 search_keyword 是用户本轮明确要查找的场所、餐饮或活动关键词，必须是可直接提交给地图搜索的简洁目标，由你根据整句语义生成，不使用代码截词。例：“我俩要吃饺子”→activity=吃饺子, search_keyword=饺子；“换成日料”→search_keyword=日料；只是在更新人物位置、没有提出搜索目标时留空。不得从旧结果或上下文臆造本轮没有表达的新关键词。
 participant_change 由你根据整句语义判断，不使用关键词硬匹配：additive=明确在原名单上再加人；exact=用户完整重述本次会面的参与者集合；patch=只修改已有人物且未表示重组选人；uncertain=无法判断未提及的人是否继续参加。exact 的 ordered_names 必须按用户表达顺序给出最终完整名单；additive/patch 给出本轮明确涉及的人物。不确定时不得擅自删除人物。
-当已有槽位的姓名发生变化时，slot_changes 必须逐槽给出人物连续性：rename=用户明确表示同一个人只是改名/改昵称，必须保留原人的位置；replace=用户明确换成另一位参与者，不得继承原人的位置或交通偏好；uncertain=仅凭原话无法判断是改名还是换人，必须交给用户确认。不得用姓名相似度或槽位相同来猜。
+当 identity_status=confirmed 的已有槽位姓名发生变化时，slot_changes 必须逐槽给出人物连续性：rename=用户明确表示同一个人只是改名/改昵称，必须保留原人的位置；replace=用户明确换成另一位参与者，不得继承原人的位置或交通偏好；uncertain=仅凭原话无法判断是改名还是换人，必须交给用户确认。identity_status=placeholder 是系统创建、尚未绑定真实人物的空槽，填入姓名不属于改名或换人，不得追问。不得用姓名相似度或槽位相同来猜。
 例：已有“我/Lisa/dviad”时，“Lisa以后叫chichi”是 patch，slot_changes=[{index:2,from_name:"Lisa",to_name:"chichi",identity_action:"rename"}]；“Lisa不去了，换chichi”是 replace；“第二位改成chichi”若没有其他上下文则是 uncertain；“我和chichi分别从北大和西单图书大厦出发，吃炒饭”是 exact，ordered_names=["我","chichi"]，且第2槽是 Lisa→chichi 的 replace。
 expression 是直接交给地图候选搜索的纯地点实体，不是原句片段。必须由你完成语义提取：去掉人物、位置关系、出发/到达等动作和句末语气，但保留真实地名中有意义的组成部分，例如“清华大学东门”的“东门”不能删除。后端不会替你裁剪中文。
 规则：先绑定人物再绑定地点；同一人物最多一个位置；范围宽泛不等于歧义，杭州市/西湖/文三路可直接接受；俗名、简称、多门店品牌才需消歧并给正式名称候选；网络梗或无关尾巴放 ignored_text，不得拼进位置。输入若同时含选择回答与“用户原文（若与选择冲突，以此为准）”，冲突事实必须采用用户原文。
@@ -5130,7 +5130,14 @@ city_context 表示这些地点最可信的城市。可根据中国常识解析�
     request_payload = {
         "message": message,
         "me_index": me_index,
-        "participants": [{"index": i + 1, "name": p.get("name")} for i, p in enumerate(participants)],
+        "participants": [
+            {
+                "index": i + 1,
+                "name": p.get("name"),
+                "identity_status": p.get("identity_status") or "confirmed",
+            }
+            for i, p in enumerate(participants)
+        ],
     }
     trace_meta = {"parser_request": {"model":"deepseek-chat", "system":system,
                                       "input":request_payload, "temperature":0}}
@@ -5325,6 +5332,11 @@ def _tool_shift_center(sid: str, args: dict) -> tuple[dict, dict | None]:
     )
 
 
+def _participant_is_placeholder(participant: dict) -> bool:
+    """Whether this UI slot has never been bound to a real participant."""
+    return str(participant.get("identity_status") or "").strip().lower() == "placeholder"
+
+
 def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | None]:
     """草稿档：改某个参与者的位置。用 index (1-based) 或 name 定位；地名会自动地理编码。"""
     st = _assistant_get_state(sid)
@@ -5361,6 +5373,7 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
     session_city = st.get("city") or "北京"
     new_nickname = (args.get("new_nickname") or "").strip() or None
     identity_action = str(args.get("identity_action") or "").strip().lower()
+    filling_placeholder = bool(new_nickname and _participant_is_placeholder(target))
     replacing_identity = bool(new_nickname and identity_action == "replace")
     new_prefer = (args.get("prefer") or "").strip().lower() or None
     if new_prefer and new_prefer not in {"auto", "transit", "driving", "walking", "cycling"}:
@@ -5534,12 +5547,16 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
         }, None
     if location_specified and new_nickname:
         label = f"{old_name} → {new_nickname} @ {address}"
-        detail = ("换人" if replacing_identity else "改名") + f" + 定位到 {address}"
+        action_label = "填写空槽" if filling_placeholder else ("换人" if replacing_identity else "改名")
+        detail = action_label + f" + 定位到 {address}"
     elif location_specified:
         label = f"{old_name} → {address}"
         detail = f"{lng:.4f}, {lat:.4f}"
     elif new_nickname:
-        if replacing_identity:
+        if filling_placeholder:
+            label = f"{old_name} → 填为 {new_nickname}"
+            detail = "补全空白参与者"
+        elif replacing_identity:
             label = f"{old_name} → 换成 {new_nickname}"
             detail = "新参与者位置待补，不继承原位置"
         else:
@@ -5571,6 +5588,9 @@ def _tool_set_participant_location(sid: str, args: dict) -> tuple[dict, dict | N
 
     summary = (
         (
+            f"提议把空白槽位填为 {new_nickname}"
+            + (f"、位置设为 {address}" if location_specified else "")
+        ) if filling_placeholder else (
             f"提议把 {old_name} 换成 {new_nickname}"
             + (f"、位置设为 {address}" if location_specified else "；新参与者不继承原位置")
         ) if replacing_identity else (
@@ -5739,7 +5759,8 @@ def _tool_ensure_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
         target = parts[idx - 1]
         current_name = str(target.get("name") or "").strip()
         name_changes = participant_name != current_name
-        if name_changes and identity_action not in {"rename", "replace"}:
+        target_is_placeholder = _participant_is_placeholder(target)
+        if name_changes and not target_is_placeholder and identity_action not in {"rename", "replace"}:
             return {
                 "ok": False,
                 "error_code": "participant_identity_action_required",
@@ -5757,7 +5778,8 @@ def _tool_ensure_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
         delegated["index"] = idx
         if name_changes:
             delegated["new_nickname"] = participant_name
-            delegated["identity_action"] = identity_action
+            if not target_is_placeholder:
+                delegated["identity_action"] = identity_action
         if len(delegated) == 1:
             task["participant_planned_indices"] = sorted(planned_indices | {idx})
             session_update(sid, {"agent_task": task})
@@ -9242,8 +9264,8 @@ _ASSISTANT_SYSTEM = """你叫「阿觅」，是中点 Middot 的 AI 会面助手
 - **绝不猜测用户的当前位置**：当 me_index 对应参与者的 `lng`/`lat` 为空，而用户说“当前位置”“我和某地的朋友见面”或其他隐含需要本人出发地的表达时，前端会先尝试请求浏览器定位。如果定位仍为空，明确请用户点地图上的“定位到我”或手动填写；**禁止**把用户放到北京、当前 city、IP 定位城市或任意默认坐标。
 - **【硬规则 · 快照位置优先】**：本轮进入主 Agent 前，前端可能已经取得设备定位并写入 `[当前会话快照]`。只要 `me_index` 对应参与者的 `lng` 和 `lat` 非空，就代表“我”的位置**已经设置完成**，即使用户原句没有文字说明“我在哪”。此时禁止回复“你的位置还没设”、禁止再次索取位置，也不要再为“我”调用 `ensure_participant`；直接使用快照坐标继续规划。
 - 用户问“我在哪 / 你能看到我在哪吗”时，读取 `me_index` 那位的 `address` 回答：地址非空就直接告诉用户页面当前显示的地址；只有 address 为空而坐标非空时，才说明目前只有坐标。快照里的 address 是地图定位和反向解析结果，复述它不属于额外猜测。
-- **参与者统一入口是槽位驱动的**：新增、改名、改位置都只调用 `ensure_participant`，而且每次都必须同时传 `index` 和 `participant_name`。工具只修改指定槽位；`index=当前规划人数+1` 才是末尾新增。禁止省略 index，禁止让工具寻找未定位人物，禁止把“没地点”当作“空人”。
-- **姓名变化必须说明人物连续性**：已有槽位改成不同姓名时，严格采用 `[本轮整句结构化解析].participant_change.slot_changes[].identity_action`。`rename` 表示同一个人改名，保留原位置；`replace` 表示换成另一个人，不继承原位置和交通偏好。若为 `uncertain` 或解析中缺失，先用 `offer_choices` 问用户，禁止自行猜测，也禁止调用缺少 `identity_action` 的 `ensure_participant`。
+- **参与者统一入口是槽位驱动的**：新增、改名、改位置都只调用 `ensure_participant`，而且每次都必须同时传 `index` 和 `participant_name`。工具只修改指定槽位；`index=当前规划人数+1` 才是末尾新增。禁止省略 index，禁止让工具寻找未定位人物。`identity_status=placeholder` 才表示系统创建且尚未绑定人物的空槽；普通 confirmed 人物没有地点也绝不等于空人。
+- **姓名变化必须说明人物连续性**：只有 `identity_status=confirmed` 的已有槽位改成不同姓名时，才严格采用 `[本轮整句结构化解析].participant_change.slot_changes[].identity_action`。`rename` 表示同一个人改名，保留原位置；`replace` 表示换成另一个人，不继承原位置和交通偏好。若为 `uncertain` 或解析中缺失，先用 `offer_choices` 问用户，禁止自行猜测，也禁止调用缺少 `identity_action` 的 `ensure_participant`。`identity_status=placeholder` 的空槽直接填入用户本轮人物，不得询问改名还是换人。
 - **先规划最终名单，再调用工具**：结合 `[本轮整句结构化解析].participant_change` 判断是追加、局部修改、完整换组还是不确定。`exact` 时按 ordered_names 依次占用 index=1..N，并移除所有 index>N 的旧槽位；`additive` 时从当前末尾继续编号；`patch` 时使用该人物当前 index；`uncertain` 时先询问，不能擅自删人。
 - **整组切换用最小修改**：例如当前 A/B/C，用户明确改为 E/F，调用 `ensure_participant(index=1, participant_name="E", ...)`、`ensure_participant(index=2, participant_name="F", ...)`，再 `remove_participant(index=3)`。当前“我/Lisa/dviad”，用户说“我和 chichi 分别从北大和西单图书大厦出发，吃炒饭”时，本轮完整名单是“我/chichi”：确保 index=1/2，删除 index=3，不能保留 Lisa 后又声称只有两人。
 - **【硬规则 · 搜索必须有真实结果】**：`[本轮整句结构化解析].search_keyword` 非空、且本轮没有参与者草稿、所有人都有位置时，必须直接调用 `search_pois(keyword=search_keyword)`。不得只调用 `set_keyword`，更不得只用文字说“已换关键词/已准备好”。只有调用成功且结果来源关键词一致，才可声称搜索完成。若本轮调用过 `ensure_participant` 或 `remove_participant` 并产生草稿，就不要用旧参与者搜索；用户统一应用草稿后，服务端会自动刷新原推荐或按当前关键词搜索。
@@ -9877,6 +9899,7 @@ def _project_location_selection(sid: str, target: dict, selected: dict) -> tuple
     })
     if target.get("new_nickname"):
         row["name"] = target["new_nickname"]
+        row["identity_status"] = "confirmed"
     if target.get("identity_action") == "replace":
         row["prefer"] = "auto"
     answer = f"{target.get('name','参与者')}在{selected.get('label')}（{selected.get('address')}）"
@@ -10143,6 +10166,7 @@ def _apply_location_choice(sid: str, choice: dict) -> tuple[bool, str, str]:
     })
     if target.get("new_nickname"):
         row["name"] = target["new_nickname"]
+        row["identity_status"] = "confirmed"
     task.update({
         "status": "running",
         "answer": f"{target.get('name','参与者')}在{selected.get('label')}（{selected.get('address')}）",
@@ -10320,6 +10344,10 @@ def _normalize_participant_tool_plan(
         def identity_action_for(slot: int, current_name: str, final_name: str) -> str:
             if not current_name or current_name == final_name:
                 return ""
+            if 1 <= slot <= len(participants) and _participant_is_placeholder(
+                participants[slot - 1]
+            ):
+                return ""
             item = slot_change_by_slot.get(slot) or {}
             if (
                 str(item.get("from_name") or "").strip() != current_name
@@ -10442,6 +10470,10 @@ def _normalize_participant_tool_plan(
         if str(item.get("identity_action") or "uncertain").strip().lower() != "uncertain":
             continue
         slot = int(item["index"])
+        if 1 <= slot <= len(participants) and _participant_is_placeholder(
+            participants[slot - 1]
+        ):
+            continue
         from_name = str(item.get("from_name") or "").strip()
         to_name = str(item.get("to_name") or "").strip()
         return [_participant_tool_call(
@@ -10993,6 +11025,7 @@ def api_v2_apply_drafts():
                     target.pop("place_resolution", None)
                 if new_nickname:
                     target["name"] = new_nickname
+                    target["identity_status"] = "confirmed"
                 if requested_prefer in {"auto", "transit", "driving", "walking", "cycling"}:
                     target["prefer"] = requested_prefer
                 elif body.get("reset_prefer") is True:
@@ -11019,6 +11052,7 @@ def api_v2_apply_drafts():
                 new_p = {
                     "id": new_id,
                     "name": nickname,
+                    "identity_status": "confirmed",
                     "prefer": prefer,
                     "lng": float(lng) if lng is not None else None,
                     "lat": float(lat) if lat is not None else None,
@@ -11472,7 +11506,7 @@ def api_v2_assistant_stream():
             f"me_index={me_idx}  me_name={me_name!r}  "
             f"me_has_location={me_has_location}  "
             f"anchor={state['anchor']}  "
-            f"participants={[{'idx':i+1,'name':p.get('name'),'lng':p.get('lng'),'lat':p.get('lat'),'address':p.get('address') or ''} for i,p in enumerate(state['participants'])]}  "
+            f"participants={[{'idx':i+1,'name':p.get('name'),'identity_status':p.get('identity_status') or 'confirmed','lng':p.get('lng'),'lat':p.get('lat'),'address':p.get('address') or ''} for i,p in enumerate(state['participants'])]}  "
             f"query={state['query']!r}  pois_count={len(state['pois'])}  "
             f"last_search={state.get('last_search') or {}}  "
             f"pending_search_goal={state.get('pending_search_goal') or {}}"
