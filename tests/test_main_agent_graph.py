@@ -18,6 +18,7 @@ class FakeHooks:
         self.history = []
         self.tool_results = {}
         self.pois = False
+        self.search_needed = False
 
     def call_model(self, state):
         self.calls["planner"] += 1
@@ -43,6 +44,18 @@ class FakeHooks:
         self.calls["auto_recompute"] += 1
         return {"ok": True, "summary": "路线已重算"}, {"type": "routes"}
 
+    def needs_search(self, sid, keyword):
+        self.calls["needs_search"] += 1
+        return self.search_needed
+
+    def auto_search(self, state, keyword):
+        self.calls["auto_search"] += 1
+        self.search_needed = False
+        return (
+            {"ok": True, "summary": f"已搜索{keyword}", "count": 2},
+            {"type": "pois_replaced", "pois": [{"name": "饺子馆"}]},
+        )
+
     def finalize(self, state, content):
         self.calls["finalize"] += 1
         return content
@@ -61,6 +74,8 @@ class FakeHooks:
             verify=self.verify,
             has_pois=self.has_pois,
             auto_recompute_routes=self.auto_recompute,
+            needs_search=self.needs_search,
+            auto_search=self.auto_search,
             finalize=self.finalize,
             mark_waiting=self.mark_waiting,
             mark_failed=self.mark_failed,
@@ -82,6 +97,9 @@ def _state(**updates):
         "successful_tool_signatures": [],
         "routes_recomputed_after_prefer": False,
         "me_has_location": True,
+        "desired_search_keyword": "",
+        "search_compensated": False,
+        "repair_attempts": 0,
     }
     state.update(updates)
     return state
@@ -120,7 +138,8 @@ def test_main_graph_runs_planner_tool_verify_and_finalize():
     ]
     assert fake.calls["planner"] == 2
     assert fake.calls["tool:set_keyword"] == 1
-    assert fake.calls["verify"] == 1
+    # 一次在工具批次后，一次在模型准备结束时；后者用于拦截“只说不做”。
+    assert fake.calls["verify"] == 2
     assert fake.calls["finalize"] == 1
 
 
@@ -202,3 +221,36 @@ def test_main_graph_reports_iteration_limit():
     assert "工具调用上限" in events[-2]["msg"]
     assert events[-1] == {"type": "done", "outcome": "failed"}
     assert fake.calls["failed"] == 1
+
+
+def test_main_graph_compensates_when_model_claims_search_without_tool_call():
+    fake = FakeHooks(
+        [
+            {"content": "关键词已经换成饺子。", "tool_calls": []},
+            {"content": "已经找到两家饺子馆。", "tool_calls": []},
+        ]
+    )
+    fake.search_needed = True
+
+    events = list(
+        _runtime(fake).stream(
+            _state(desired_search_keyword="饺子"),
+            thread_id="agent:thread-search-compensation",
+        )
+    )
+
+    assert fake.calls["auto_search"] == 1
+    assert fake.calls["planner"] == 2
+    assert any(
+        event.get("type") == "tool_call" and event.get("name") == "search_pois"
+        for event in events
+    )
+    assert any(
+        event.get("type") == "state_patch"
+        and event.get("patch", {}).get("type") == "pois_replaced"
+        for event in events
+    )
+    assert events[-2:] == [
+        {"type": "token", "delta": "已经找到两家饺子馆。"},
+        {"type": "done", "outcome": "completed"},
+    ]

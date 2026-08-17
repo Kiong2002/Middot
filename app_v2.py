@@ -2063,6 +2063,8 @@ def _conversation_state_from_session(sid: str) -> dict:
         "participants": [dict(item) for item in (state.get("participants") or [])[:12]],
         "pois": [dict(item) for item in pois[:30]],
         "query": str(state.get("query") or "")[:500],
+        "last_search": dict(state.get("last_search") or {}),
+        "pending_search_goal": dict(state.get("pending_search_goal") or {}),
         "city": str(state.get("city") or "")[:80],
         "center": state.get("center"),
         "search_radius_m": state.get("search_radius_m"),
@@ -2574,6 +2576,8 @@ def api_conversation_continue(conversation_id: str):
         "participants": restored_state.get("participants") or [],
         "last_pois": restored_state.get("pois") or [],
         "query": restored_state.get("query") or "",
+        "last_search": restored_state.get("last_search") or {},
+        "pending_search_goal": restored_state.get("pending_search_goal") or {},
         "city": restored_state.get("city") or "",
         "anchor": restored_state.get("anchor"),
         "center": restored_state.get("center"),
@@ -4428,9 +4432,49 @@ def _assistant_get_state(sid: str) -> dict:
         "participants": s.get("participants") or [],
         "pois":         s.get("last_pois") or s.get("pois") or [],
         "query":        s.get("query", ""),
+        "last_search":  s.get("last_search") or {},
+        "pending_search_goal": s.get("pending_search_goal") or {},
         "city":         s.get("city", "北京"),
         "my_did":       s.get("my_did") or "",
     }
+
+
+def _search_keyword_key(value: object) -> str:
+    """只做字符串等值规范化；搜索语义仍由整句 AI 解析。"""
+    return re.sub(r"\s+", "", str(value or "")).casefold()
+
+
+def _current_result_keyword(sid: str) -> str:
+    state = session_get(sid) or {}
+    last_search = state.get("last_search") if isinstance(state.get("last_search"), dict) else {}
+    keyword = str((last_search or {}).get("keyword") or "").strip()
+    if keyword:
+        return keyword
+    # 兼容升级前已经存在的会话。只有页面确实带有结果时，旧 query 才可作为来源推断。
+    if state.get("last_pois") or state.get("pois"):
+        return str(state.get("query") or "").strip()
+    return ""
+
+
+def _can_execute_pending_search(sid: str) -> bool:
+    state = session_get(sid) or {}
+    task = state.get("agent_task") if isinstance(state.get("agent_task"), dict) else {}
+    if task.get("participant_drafts_pending") or task.get("status") in {
+        "waiting_user", "waiting_location_choice"
+    }:
+        return False
+    participants = state.get("participants") or []
+    return bool(participants) and all(
+        item.get("lng") is not None and item.get("lat") is not None
+        for item in participants
+    )
+
+
+def _search_goal_needs_execution(sid: str, keyword: str) -> bool:
+    desired = _search_keyword_key(keyword)
+    if not desired or not _can_execute_pending_search(sid):
+        return False
+    return desired != _search_keyword_key(_current_result_keyword(sid))
 
 
 def _poi_reason(poi: dict) -> str:
@@ -4535,8 +4579,33 @@ def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
             enriched = _apply_feedback_ranking(_memory_device_id(sid), enriched)
         except Exception as e:
             print(f"[assistant search_pois] calculate_routes 失败：{e}")
-    # 更新 session
-    session_update(sid, {"last_pois": enriched, "pois_base": pois, "query": keyword})
+    # POI 列表必须携带来源。这样 Agent 能证明“当前结果是由哪个关键词搜出的”，
+    # 而不是看到旧列表后凭文字猜测已经完成了新搜索。
+    last_search = {
+        "id": uuid.uuid4().hex,
+        "keyword": keyword,
+        "result_count": len(enriched),
+        "center_lng": float(center_lng),
+        "center_lat": float(center_lat),
+        "radius_m": radius,
+        "completed_at": _now(),
+    }
+    pending_goal = (session_get(sid) or {}).get("pending_search_goal") or {}
+    pending_keyword = str(
+        pending_goal.get("keyword") if isinstance(pending_goal, dict) else ""
+    ).strip()
+    remaining_goal = (
+        {}
+        if pending_keyword and _search_keyword_key(pending_keyword) == _search_keyword_key(keyword)
+        else pending_goal
+    )
+    session_update(sid, {
+        "last_pois": enriched,
+        "pois_base": pois,
+        "query": keyword,
+        "last_search": last_search,
+        "pending_search_goal": remaining_goal,
+    })
     top = [
         {
             "name":            p.get("name"),
@@ -4554,6 +4623,7 @@ def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
         "participants": participants_for_routes,
         "anchor": st["anchor"],
         "center": {"lng": float(center_lng), "lat": float(center_lat), "radius_m": radius},
+        "search_meta": last_search,
     }
 
 
@@ -4948,7 +5018,8 @@ canonical_candidates最多4个，不得扩展成其他品牌。只输出JSON。"
 def _parse_meeting_utterance(message: str, participants: list[dict], me_index: int) -> dict:
     """整句先解析一次，避免逐工具理解把人物、地点和噪声粘连。"""
     system = """你是会面规划的整句语义解析器。只抽取用户明确表达的事实，输出JSON：
-{"intent":"meeting|location_update|other","activity":"","city_context":"","participant_change":{"mode":"additive|exact|patch|uncertain","ordered_names":[],"slot_changes":[{"index":2,"from_name":"Lisa","to_name":"chichi","identity_action":"rename|replace|uncertain"}]},"locations":[{"owner":"我或人物名","participant_index":1,"expression":"","kind":"area|address|named_place","area_hint":"","raw_entity":"","canonical_candidates":[],"needs_disambiguation":false}],"ignored_text":[]}。
+{"intent":"meeting|location_update|other","activity":"","search_keyword":"","city_context":"","participant_change":{"mode":"additive|exact|patch|uncertain","ordered_names":[],"slot_changes":[{"index":2,"from_name":"Lisa","to_name":"chichi","identity_action":"rename|replace|uncertain"}]},"locations":[{"owner":"我或人物名","participant_index":1,"expression":"","kind":"area|address|named_place","area_hint":"","raw_entity":"","canonical_candidates":[],"needs_disambiguation":false}],"ignored_text":[]}。
+search_keyword 是用户本轮明确要查找的场所、餐饮或活动关键词，必须是可直接提交给地图搜索的简洁目标，由你根据整句语义生成，不使用代码截词。例：“我俩要吃饺子”→activity=吃饺子, search_keyword=饺子；“换成日料”→search_keyword=日料；只是在更新人物位置、没有提出搜索目标时留空。不得从旧结果或上下文臆造本轮没有表达的新关键词。
 participant_change 由你根据整句语义判断，不使用关键词硬匹配：additive=明确在原名单上再加人；exact=用户完整重述本次会面的参与者集合；patch=只修改已有人物且未表示重组选人；uncertain=无法判断未提及的人是否继续参加。exact 的 ordered_names 必须按用户表达顺序给出最终完整名单；additive/patch 给出本轮明确涉及的人物。不确定时不得擅自删除人物。
 当已有槽位的姓名发生变化时，slot_changes 必须逐槽给出人物连续性：rename=用户明确表示同一个人只是改名/改昵称，必须保留原人的位置；replace=用户明确换成另一位参与者，不得继承原人的位置或交通偏好；uncertain=仅凭原话无法判断是改名还是换人，必须交给用户确认。不得用姓名相似度或槽位相同来猜。
 例：已有“我/Lisa/dviad”时，“Lisa以后叫chichi”是 patch，slot_changes=[{index:2,from_name:"Lisa",to_name:"chichi",identity_action:"rename"}]；“Lisa不去了，换chichi”是 replace；“第二位改成chichi”若没有其他上下文则是 uncertain；“我和chichi分别从北大和西单图书大厦出发，吃炒饭”是 exact，ordered_names=["我","chichi"]，且第2槽是 Lisa→chichi 的 replace。
@@ -4956,7 +5027,7 @@ expression 是直接交给地图候选搜索的纯地点实体，不是原句片
 规则：先绑定人物再绑定地点；同一人物最多一个位置；范围宽泛不等于歧义，杭州市/西湖/文三路可直接接受；俗名、简称、多门店品牌才需消歧并给正式名称候选；网络梗或无关尾巴放 ignored_text，不得拼进位置。输入若同时含选择回答与“用户原文（若与选择冲突，以此为准）”，冲突事实必须采用用户原文。
 city_context 表示这些地点最可信的城市。可根据中国常识解析明确地标或行政区，例如“西湖旁边”是杭州、“外滩”是上海；确实无法判断才留空。不得沿用调用方默认城市。
 地点实体示例：“我从清华出发”→expression=清华；“Lisa 在国贸”→expression=国贸；“我住在望京SOHO附近”→expression=望京SOHO；“我从清华大学东门出发”→expression=清华大学东门。
-例：“我要和阿杰吃烧烤。我在西湖边的v我50，阿杰在浙大紫金港”→我=西湖边(false)，阿杰=浙大紫金港(false)，activity=烧烤，ignored_text=[v我50]。
+例：“我要和阿杰吃烧烤。我在西湖边的v我50，阿杰在浙大紫金港”→我=西湖边(false)，阿杰=浙大紫金港(false)，activity=烧烤，search_keyword=烧烤，ignored_text=[v我50]。
 “我在西湖旁边的麦麦”→city_context=杭州，我，area_hint=西湖，raw_entity=麦麦，候选=[麦当劳,McDonald's]，true。
 “我在文三路这边的星爸爸”→city_context=杭州，我，area_hint=文三路，raw_entity=星爸爸，候选=[星巴克,Starbucks]，true。
 输出前逐项自检 expression 能否原样作为地图检索词。不要输出解释，只输出JSON。"""
@@ -4979,6 +5050,7 @@ city_context 表示这些地点最可信的城市。可根据中国常识解析�
         trace_meta.update({"parser_response": raw_response,
                            "parser_duration_ms": int((time.time() - started) * 1000)})
         parsed = json.loads(raw_response)
+        initial_search_keyword = str(parsed.get("search_keyword") or "").strip()
 
         # 地点边界的复核仍由 AI 完成。代码仅验证 JSON 结构，不使用中文词表或
         # 正则去猜“从、在、出发、附近”等词在当前句子里的语义。
@@ -5003,13 +5075,15 @@ city_context 表示这些地点最可信的城市。可根据中国常识解析�
                 verified = json.loads(verified_raw)
                 if isinstance(verified, dict) and isinstance(verified.get("locations"), list):
                     parsed = verified
+                    if not str(parsed.get("search_keyword") or "").strip():
+                        parsed["search_keyword"] = initial_search_keyword
             except Exception as verify_exc:
                 app.logger.warning("[utterance-parse] verifier failed, keeping initial parse: %s", verify_exc)
                 trace_meta["verifier_error"] = f"{type(verify_exc).__name__}: {verify_exc}"
     except Exception as exc:
         app.logger.warning("[utterance-parse] failed: %s", exc)
         trace_meta["error"] = f"{type(exc).__name__}: {exc}"
-        return {"intent":"other","activity":"","participant_change":{"mode":"uncertain","ordered_names":[]},
+        return {"intent":"other","activity":"","search_keyword":"","participant_change":{"mode":"uncertain","ordered_names":[]},
                 "locations":[],"ignored_text":[],
                 "_trace_meta":trace_meta}
     out = []; seen = set()
@@ -5083,6 +5157,7 @@ city_context 表示这些地点最可信的城市。可根据中国常识解析�
             "identity_action": action,
         })
     return {"intent":parsed.get("intent") or "other","activity":str(parsed.get("activity") or "").strip(),
+            "search_keyword":str(parsed.get("search_keyword") or "").strip()[:120],
             "city_context":parsed_city or _landmark_city(message) or "",
             "participant_change":{"mode":change_mode,"ordered_names":ordered_names[:6],
                                   "slot_changes":slot_changes},
@@ -9075,12 +9150,12 @@ _ASSISTANT_SYSTEM = """你叫「阿觅」，是中点 Middot 的 AI 会面助手
 - **姓名变化必须说明人物连续性**：已有槽位改成不同姓名时，严格采用 `[本轮整句结构化解析].participant_change.slot_changes[].identity_action`。`rename` 表示同一个人改名，保留原位置；`replace` 表示换成另一个人，不继承原位置和交通偏好。若为 `uncertain` 或解析中缺失，先用 `offer_choices` 问用户，禁止自行猜测，也禁止调用缺少 `identity_action` 的 `ensure_participant`。
 - **先规划最终名单，再调用工具**：结合 `[本轮整句结构化解析].participant_change` 判断是追加、局部修改、完整换组还是不确定。`exact` 时按 ordered_names 依次占用 index=1..N，并移除所有 index>N 的旧槽位；`additive` 时从当前末尾继续编号；`patch` 时使用该人物当前 index；`uncertain` 时先询问，不能擅自删人。
 - **整组切换用最小修改**：例如当前 A/B/C，用户明确改为 E/F，调用 `ensure_participant(index=1, participant_name="E", ...)`、`ensure_participant(index=2, participant_name="F", ...)`，再 `remove_participant(index=3)`。当前“我/Lisa/dviad”，用户说“我和 chichi 分别从北大和西单图书大厦出发，吃炒饭”时，本轮完整名单是“我/chichi”：确保 index=1/2，删除 index=3，不能保留 Lisa 后又声称只有两人。
-- **【硬规则 · 确认后再搜】**：本轮没有参与者草稿时，若满足「keyword 已设 + 所有人都有位置」，主动 `search_pois`。只要本轮调用过 `ensure_participant` 或 `remove_participant` 并产生草稿，就不要用旧参与者搜索；用户统一应用草稿后，服务端会自动刷新原推荐或按当前关键词搜索。
+- **【硬规则 · 搜索必须有真实结果】**：`[本轮整句结构化解析].search_keyword` 非空、且本轮没有参与者草稿、所有人都有位置时，必须直接调用 `search_pois(keyword=search_keyword)`。不得只调用 `set_keyword`，更不得只用文字说“已换关键词/已准备好”。只有调用成功且结果来源关键词一致，才可声称搜索完成。若本轮调用过 `ensure_participant` 或 `remove_participant` 并产生草稿，就不要用旧参与者搜索；用户统一应用草稿后，服务端会自动刷新原推荐或按当前关键词搜索。
 - **锚点（会面中心）默认由系统按参与者中点自动算**——只在下列情形调 `shift_center`：
   - **允许**：用户明确说"锚点挪到 X"、"定在 X"、"约在 X"、"以 X 为中心找"、"就 X 吧"（明确指定会面点）
   - **不允许**：用户只说自己/朋友在哪（"我在国贸上班"= 我的位置，用 `ensure_participant`，不要 `shift_center`）
   - **不允许**：用户说"我们在朝阳吃火锅"这种含地区+活动的模糊表达（朝阳太大，不是明确会面点，让系统按中点算）
-- **『我要吃 X』/『我们想吃 X』/『找家 X』**：是搜索关键词，调 `set_keyword`。用户表达**对活动/场所类型的偏好**（吃/喝/玩/看/买/聊）都算，别只匹配"吃 X"字面。
+- **『我要吃 X』/『我们想吃 X』/『找家 X』**：以 `[本轮整句结构化解析].search_keyword` 为准。有完整参与者位置时直接调 `search_pois`；只有还需等待参与者草稿确认时，才用 `set_keyword` 把关键词并入同一批草稿。用户表达**对活动/场所类型的偏好**（吃/喝/玩/看/买/聊）都算，别只匹配"吃 X"字面。
 - **【出发地消歧不是正式推荐】**：用户说“我在西湖边的海底捞”“阿杰在附近某家星巴克”，是在描述参与者出发地；同名门店无法唯一确定时必须调用 `clarify_participant_location`，禁止用 `search_pois`。消歧候选只用于确认位置，不能替换中央推荐面板。
 - “去海底捞吃饭/找海底捞”才是正式搜索目标；“我在海底捞/阿杰从海底捞出发”是参与者位置。必须先绑定语法主体再选工具。
 - **房间模式下** `ensure_participant` 只能修改允许操作的现有成员，不能代别人加入；`remove_participant` 也不能代别人退出。需要加入或退出时让本人操作。
@@ -9108,7 +9183,7 @@ _ASSISTANT_SYSTEM = """你叫「阿觅」，是中点 Middot 的 AI 会面助手
 - 先形成最终名单 [我, Lisa]，再统一调用 `ensure_participant`
 - "我在北大" → `ensure_participant(index=1, participant_name="我", place_name="北京大学")`
 - "我闺蜜 Lisa 在对外经贸" → `ensure_participant(index=2, participant_name="Lisa", place_name="对外经济贸易大学")`
-- "想去吃火锅" → `set_keyword(keyword="火锅")`
+- 本轮同时产生人物位置草稿，所以“想去吃火锅” → `set_keyword(keyword="火锅")`，与人物草稿一起确认；若人物位置原本就已完整，则直接 `search_pois(keyword="火锅")`
 - 本轮有人物草稿 → 先让用户统一确认；应用后服务端自动按“火锅”搜索
 - 没说见面点 → **别调 shift_center**，中点系统自动算
 **你的回复**：位置都填上了，关键词已换成火锅，也帮你搜过了。
@@ -9990,6 +10065,16 @@ def _verify_agent_outcome(sid: str, called_names: set[str]) -> list[str]:
     pois = st.get("pois") or []
     if "search_pois" in called_names and not pois:
         issues.append("搜索完成但结果列表为空")
+    pending_goal = (session_get(sid) or {}).get("pending_search_goal") or {}
+    desired_keyword = str(
+        pending_goal.get("keyword") if isinstance(pending_goal, dict) else ""
+    ).strip()
+    if desired_keyword and _search_goal_needs_execution(sid, desired_keyword):
+        current_keyword = _current_result_keyword(sid) or "无结果"
+        issues.append(
+            f"用户要求搜索「{desired_keyword}」，但当前结果仍来自「{current_keyword}」；"
+            f"必须执行 search_pois(keyword=「{desired_keyword}」)"
+        )
     if ({"set_participant_prefer", "set_participant_location", "ensure_participant"} & called_names) and pois:
         for poi in pois[:6]:
             legs = poi.get("legs") or []
@@ -10502,6 +10587,55 @@ def _main_graph_auto_recompute(state: dict) -> tuple[dict, dict | None]:
     return result, patch
 
 
+def _main_graph_needs_search(sid: str, keyword: str) -> bool:
+    return _search_goal_needs_execution(sid, keyword)
+
+
+def _main_graph_auto_search(state: dict, keyword: str) -> tuple[dict, dict | None]:
+    """模型只说不做时，对用户明确的只读搜索目标做确定性补偿。"""
+    started_ms = int(time.time() * 1000)
+    _trace_step(
+        state["trace_id"],
+        "tool_call",
+        "自动调用 search_pois",
+        tool_name="search_pois",
+        payload={
+            "runtime": "langgraph",
+            "node": "deterministic_search_compensation",
+            "arguments": {"keyword": keyword},
+        },
+    )
+    result, patch = _tool_search_pois(state["session_id"], {"keyword": keyword})
+    _agent_task_record(state["session_id"], "search_pois", result)
+    _trace_step(
+        state["trace_id"],
+        "tool_result",
+        "search_pois · 自动补做",
+        tool_name="search_pois",
+        summary=result.get("summary") or result.get("error") or "",
+        payload={
+            "runtime": "langgraph",
+            "node": "deterministic_search_compensation",
+            "result": result,
+        },
+        duration_ms=int(time.time() * 1000) - started_ms,
+    )
+    if patch:
+        _trace_step(
+            state["trace_id"],
+            "state_patch",
+            "界面状态更新",
+            tool_name="search_pois",
+            summary=str(patch.get("type") or ""),
+            payload={
+                "runtime": "langgraph",
+                "node": "deterministic_search_compensation",
+                "patch": patch,
+            },
+        )
+    return result, patch
+
+
 def _main_graph_finalize(state: dict, content: str) -> str:
     content = _guard_assistant_location_claim(content, bool(state.get("me_has_location")))
     final_issues = _verify_agent_outcome(state["session_id"], set())
@@ -10607,6 +10741,8 @@ def _get_main_agent_graph_runtime():
             verify=_verify_agent_outcome,
             has_pois=_main_graph_has_pois,
             auto_recompute_routes=_main_graph_auto_recompute,
+            needs_search=_main_graph_needs_search,
+            auto_search=_main_graph_auto_search,
             finalize=_main_graph_finalize,
             mark_waiting=_main_graph_mark_waiting,
             mark_failed=_main_graph_mark_failed,
@@ -10892,11 +11028,18 @@ def api_v2_assistant_stream():
 
     # 没有 session 时用 bootstrap 建一个（第一次开对话就发起搜索的场景）
     if not sid or not session_get(sid):
+        bootstrap_query = str(bootstrap.get("query") or "").strip()
+        bootstrap_pois = bootstrap.get("pois") or []
         sid = session_create({
             "anchor":       bootstrap.get("anchor"),
             "participants": bootstrap.get("participants") or [],
-            "last_pois":    bootstrap.get("pois") or [],
-            "query":        bootstrap.get("query", ""),
+            "last_pois":    bootstrap_pois,
+            "query":        bootstrap_query,
+            "last_search": ({
+                "keyword": bootstrap_query,
+                "result_count": len(bootstrap_pois),
+                "source": "client_bootstrap",
+            } if bootstrap_query and bootstrap_pois else {}),
             "city":         initial_city,
             "chat_history": [],
             "my_did": g.device_id,
@@ -10909,6 +11052,20 @@ def api_v2_assistant_stream():
         if "participants" in bootstrap: updates["participants"] = bootstrap["participants"]
         if "pois" in bootstrap:         updates["last_pois"] = bootstrap["pois"]
         if "query" in bootstrap:        updates["query"] = bootstrap["query"]
+        if (
+            str(bootstrap.get("query") or "").strip()
+            and isinstance(bootstrap.get("pois"), list)
+            and bootstrap.get("pois")
+        ):
+            current_last_search = (existing or {}).get("last_search") or {}
+            if _search_keyword_key(current_last_search.get("keyword")) != _search_keyword_key(
+                bootstrap.get("query")
+            ):
+                updates["last_search"] = {
+                    "keyword": str(bootstrap.get("query") or "").strip(),
+                    "result_count": len(bootstrap.get("pois") or []),
+                    "source": "client_bootstrap",
+                }
         if initial_city:                 updates["city"] = initial_city
         session_update(sid, updates)
 
@@ -10983,10 +11140,26 @@ def api_v2_assistant_stream():
     )
     utterance_trace = utterance_parse.pop("_trace_meta", None)
     turn_city = utterance_parse.get("city_context") or inferred_city
-    session_update(sid, {"current_user_message": visible_user_msg,
-                         "current_memory_source_ref": f"chat:{sid}:{uuid.uuid4().hex}",
-                         "current_utterance_parse": utterance_parse,
-                         **({"city": turn_city} if turn_city else {})})
+    desired_search_keyword = str(utterance_parse.get("search_keyword") or "").strip()
+    turn_updates = {
+        "current_user_message": visible_user_msg,
+        "current_memory_source_ref": f"chat:{sid}:{uuid.uuid4().hex}",
+        "current_utterance_parse": utterance_parse,
+        **({"city": turn_city} if turn_city else {}),
+    }
+    if desired_search_keyword:
+        if _search_keyword_key(desired_search_keyword) == _search_keyword_key(
+            _current_result_keyword(sid)
+        ):
+            turn_updates["pending_search_goal"] = {}
+        else:
+            turn_updates["pending_search_goal"] = {
+                "keyword": desired_search_keyword,
+                "source_message": visible_user_msg[:500],
+                "created_at": _now(),
+                "status": "pending",
+            }
+    session_update(sid, turn_updates)
     _agent_task_begin(sid, semantic_user_msg)
     conversation_id = _conversation_for_session(sid, caller_did, visible_user_msg)
     _conversation_append_event(
@@ -11048,7 +11221,9 @@ def api_v2_assistant_stream():
             f"me_has_location={me_has_location}  "
             f"anchor={state['anchor']}  "
             f"participants={[{'idx':i+1,'name':p.get('name'),'lng':p.get('lng'),'lat':p.get('lat'),'address':p.get('address') or ''} for i,p in enumerate(state['participants'])]}  "
-            f"query={state['query']!r}  pois_count={len(state['pois'])}"
+            f"query={state['query']!r}  pois_count={len(state['pois'])}  "
+            f"last_search={state.get('last_search') or {}}  "
+            f"pending_search_goal={state.get('pending_search_goal') or {}}"
         )
         messages: list[dict] = [
             {"role": "system", "content": _ASSISTANT_SYSTEM},
@@ -11122,6 +11297,7 @@ def api_v2_assistant_stream():
             if (tool.get("function") or {}).get("name") not in excluded_tools
         ]
         if _main_agent_graph_enabled():
+            pending_search_goal = state.get("pending_search_goal") or {}
             graph_thread_id = f"agent:{conversation_id}:{trace_id}"
             graph_state = {
                 "request_id": trace_id,
@@ -11137,6 +11313,12 @@ def api_v2_assistant_stream():
                 "successful_tool_signatures": [],
                 "routes_recomputed_after_prefer": False,
                 "me_has_location": me_has_location,
+                "desired_search_keyword": str(
+                    pending_search_goal.get("keyword")
+                    if isinstance(pending_search_goal, dict) else ""
+                ).strip(),
+                "search_compensated": False,
+                "repair_attempts": 0,
                 "status": "planning",
             }
             try:

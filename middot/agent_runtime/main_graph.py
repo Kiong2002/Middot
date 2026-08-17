@@ -29,6 +29,8 @@ class MainAgentHooks:
     verify: Callable[[str, set[str]], list[str]]
     has_pois: Callable[[str], bool]
     auto_recompute_routes: Callable[[MainAgentState], ToolExecution]
+    needs_search: Callable[[str, str], bool]
+    auto_search: Callable[[MainAgentState, str], ToolExecution]
     finalize: Callable[[MainAgentState, str], str]
     mark_waiting: Callable[[MainAgentState, str], None]
     mark_failed: Callable[[MainAgentState, str], None]
@@ -76,6 +78,36 @@ def build_main_agent_graph(
             span.set_outputs({"content": content, "tool_calls": tool_calls})
 
         if not tool_calls:
+            desired_keyword = str(state.get("desired_search_keyword") or "").strip()
+            if (
+                desired_keyword
+                and not state.get("search_compensated")
+                and hooks.needs_search(state["session_id"], desired_keyword)
+            ):
+                return {
+                    "iteration": iteration,
+                    "planner_content": content,
+                    "pending_tool_calls": [],
+                    "status": "compensating_search",
+                }
+            issues = hooks.verify(state["session_id"], set())
+            repair_attempts = int(state.get("repair_attempts") or 0)
+            if issues and repair_attempts < 2 and iteration < int(state.get("max_iterations") or 7):
+                repair_message = {
+                    "role": "system",
+                    "content": "结束前校验发现尚未闭环："
+                    + "；".join(issues)
+                    + "。不得只用文字声称完成；请立即调用必要工具，或如实说明阻塞原因。",
+                }
+                return {
+                    "iteration": iteration,
+                    "planner_content": "",
+                    "pending_tool_calls": [],
+                    "messages": [*(state.get("messages") or []), repair_message],
+                    "verification_issues": issues,
+                    "repair_attempts": repair_attempts + 1,
+                    "status": "repairing",
+                }
             return {
                 "iteration": iteration,
                 "planner_content": content,
@@ -102,7 +134,52 @@ def build_main_agent_graph(
             return "fail"
         if state.get("pending_tool_calls"):
             return "execute_tools"
+        if state.get("status") == "compensating_search":
+            return "compensate_search"
+        if state.get("status") == "repairing":
+            return "planner"
         return "finalize"
+
+    def compensate_search(state: MainAgentState) -> Mapping[str, Any]:
+        writer = get_stream_writer()
+        keyword = str(state.get("desired_search_keyword") or "").strip()
+        call_id = f"auto_search_{state.get('iteration', 0)}"
+        args = {"keyword": keyword}
+        writer({"type": "tool_call", "id": call_id, "name": "search_pois", "args": args})
+        with sink.span(
+            "agent.tool.search_pois.compensation",
+            inputs={"arguments": args},
+            metadata={"request_id": state["request_id"]},
+        ) as span:
+            result, patch = hooks.auto_search(state, keyword)
+            span.set_outputs({"result": result, "state_patch": patch})
+        writer(
+            {
+                "type": "tool_result",
+                "id": call_id,
+                "name": "search_pois",
+                "ok": bool(result.get("ok")) and not bool(result.get("skipped")),
+                "summary": result.get("summary") or result.get("error") or "",
+                "data": result,
+            }
+        )
+        if patch:
+            writer({"type": "state_patch", "patch": patch})
+        messages = list(state.get("messages") or [])
+        messages.append(
+            {
+                "role": "system",
+                "content": "系统已按结构化搜索目标补做地点搜索。真实结果："
+                + json.dumps(result, ensure_ascii=False)
+                + "。最终回复只能依据这个结果，不得引用旧关键词的推荐。",
+            }
+        )
+        return {
+            "messages": messages,
+            "search_compensated": True,
+            "called_names": sorted(set(state.get("called_names") or []) | {"search_pois"}),
+            "status": "planning" if result.get("ok") and not result.get("skipped") else "repairing",
+        }
 
     def execute_tools(state: MainAgentState) -> Mapping[str, Any]:
         writer = get_stream_writer()
@@ -300,6 +377,7 @@ def build_main_agent_graph(
     builder = StateGraph(MainAgentState)
     builder.add_node("planner", planner)
     builder.add_node("execute_tools", execute_tools)
+    builder.add_node("compensate_search", compensate_search)
     builder.add_node("wait", wait)
     builder.add_node("finalize", finalize)
     builder.add_node("fail", fail)
@@ -307,8 +385,15 @@ def build_main_agent_graph(
     builder.add_conditional_edges(
         "planner",
         route_after_planner,
-        {"execute_tools": "execute_tools", "finalize": "finalize", "fail": "fail"},
+        {
+            "execute_tools": "execute_tools",
+            "compensate_search": "compensate_search",
+            "planner": "planner",
+            "finalize": "finalize",
+            "fail": "fail",
+        },
     )
+    builder.add_edge("compensate_search", "planner")
     builder.add_conditional_edges(
         "execute_tools",
         route_after_tools,

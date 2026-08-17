@@ -572,6 +572,76 @@ def test_utterance_parser_does_not_replace_new_owner_with_old_slot_name(monkeypa
     assert result["locations"][1]["expression"] == "西单图书大厦"
 
 
+def test_utterance_parser_returns_ai_structured_search_keyword(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    parsed = {
+        "intent": "meeting",
+        "activity": "吃饺子",
+        "search_keyword": "饺子",
+        "city_context": "",
+        "participant_change": {"mode": "uncertain", "ordered_names": []},
+        "locations": [],
+        "ignored_text": [],
+    }
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(parsed, ensure_ascii=False)))]
+            )
+
+    module.llm_client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+    result = module._parse_meeting_utterance(
+        "我俩要吃饺子",
+        [{"name": "我"}, {"name": "chichi"}],
+        1,
+    )
+
+    assert result["activity"] == "吃饺子"
+    assert result["search_keyword"] == "饺子"
+
+
+def test_search_provenance_only_clears_matching_pending_goal(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create(
+        {
+            "participants": [
+                {"name": "我", "lng": 116.31, "lat": 39.99},
+                {"name": "chichi", "lng": 116.37, "lat": 39.91},
+            ],
+            "query": "咖啡",
+            "last_pois": [{"name": "旧咖啡馆"}],
+            "last_search": {"keyword": "咖啡", "result_count": 1},
+            "pending_search_goal": {"keyword": "饺子", "status": "pending"},
+            "city": "北京",
+        }
+    )
+    monkeypatch.setattr(
+        module,
+        "amap_search_nearby",
+        lambda *args, **kwargs: {
+            "success": True,
+            "pois": [{"name": f"{args[2]}店", "lng": 116.34, "lat": 39.95}],
+        },
+    )
+    monkeypatch.setattr(module, "calculate_routes", lambda pois, *args, **kwargs: pois)
+    monkeypatch.setattr(module, "_apply_feedback_ranking", lambda device_id, pois: pois)
+
+    wrong_result, _ = module._tool_search_pois(sid, {"keyword": "咖啡"})
+    assert wrong_result["ok"] is True
+    assert module.session_get(sid)["pending_search_goal"]["keyword"] == "饺子"
+    assert module._verify_agent_outcome(sid, set()) == [
+        "用户要求搜索「饺子」，但当前结果仍来自「咖啡」；必须执行 search_pois(keyword=「饺子」)"
+    ]
+
+    right_result, patch = module._tool_search_pois(sid, {"keyword": "饺子"})
+    state = module.session_get(sid)
+    assert right_result["ok"] is True
+    assert state["last_search"]["keyword"] == "饺子"
+    assert state["pending_search_goal"] == {}
+    assert patch["search_meta"]["keyword"] == "饺子"
+
+
 def test_exact_group_normalizes_slots_and_removes_trailing_people(monkeypatch, tmp_path):
     module = _load_app(monkeypatch, tmp_path)
     sid = module.session_create(

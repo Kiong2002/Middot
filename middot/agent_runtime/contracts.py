@@ -97,6 +97,9 @@ class MainAgentState(TypedDict, total=False):
     successful_tool_signatures: list[str]
     routes_recomputed_after_prefer: bool
     me_has_location: bool
+    desired_search_keyword: str
+    search_compensated: bool
+    repair_attempts: int
     planner_content: str
     pending_tool_calls: list[dict[str, Any]]
     called_names: list[str]
