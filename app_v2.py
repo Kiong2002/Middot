@@ -4592,7 +4592,7 @@ def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
     }
     pending_goal = (session_get(sid) or {}).get("pending_search_goal") or {}
     pending_keyword = str(
-        pending_goal.get("keyword") if isinstance(pending_goal, dict) else ""
+        (pending_goal.get("keyword") or "") if isinstance(pending_goal, dict) else ""
     ).strip()
     remaining_goal = (
         {}
@@ -10077,7 +10077,7 @@ def _verify_agent_outcome(sid: str, called_names: set[str]) -> list[str]:
         issues.append("搜索完成但结果列表为空")
     pending_goal = (session_get(sid) or {}).get("pending_search_goal") or {}
     desired_keyword = str(
-        pending_goal.get("keyword") if isinstance(pending_goal, dict) else ""
+        (pending_goal.get("keyword") or "") if isinstance(pending_goal, dict) else ""
     ).strip()
     if desired_keyword and _search_goal_needs_execution(sid, desired_keyword):
         current_keyword = _current_result_keyword(sid) or "无结果"
@@ -11324,7 +11324,7 @@ def api_v2_assistant_stream():
                 "routes_recomputed_after_prefer": False,
                 "me_has_location": me_has_location,
                 "desired_search_keyword": str(
-                    pending_search_goal.get("keyword")
+                    (pending_search_goal.get("keyword") or "")
                     if isinstance(pending_search_goal, dict) else ""
                 ).strip(),
                 "search_compensated": False,

@@ -640,6 +640,7 @@ def test_search_provenance_only_clears_matching_pending_goal(monkeypatch, tmp_pa
     assert state["last_search"]["keyword"] == "饺子"
     assert state["pending_search_goal"] == {}
     assert patch["search_meta"]["keyword"] == "饺子"
+    assert module._verify_agent_outcome(sid, set()) == []
 
 
 def test_exact_group_normalizes_slots_and_removes_trailing_people(monkeypatch, tmp_path):
