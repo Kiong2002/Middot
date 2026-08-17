@@ -4783,6 +4783,60 @@
       ASSIST_SEARCH_PROGRESS.active = false;
     }
 
+    // 草稿应用接口会在同一个 HTTP 请求中完成地点刷新与路线计算，无法像
+    // /search-stream 一样逐条推送 SSE；但它仍复用同一张真实进度卡，并只在
+    // 请求开始/成功/失败这些可验证的边界推进状态，避免按钮变灰后像“卡死”。
+    const DRAFT_APPLY_SEARCH_PROGRESS = { active: false, keyword: '' };
+
+    function draftApplySearchProgressStart(drafts) {
+      const participantKinds = new Set([
+        'set_participant_location', 'add_participant', 'remove_participant',
+      ]);
+      const changesParticipants = (drafts || []).some(d => participantKinds.has(d.kind));
+      const keyword = (document.getElementById('queryInput')?.value || '').trim();
+      if (!changesParticipants || !keyword) return false;
+
+      DRAFT_APPLY_SEARCH_PROGRESS.active = true;
+      DRAFT_APPLY_SEARCH_PROGRESS.keyword = keyword;
+      showResultsPanel();
+      progressReset();
+      if ($('#resultsCard')) $('#resultsCard').hidden = true;
+      if ($('#resultCount')) $('#resultCount').textContent = '搜索中…';
+      if ($('#resultToolbar')) $('#resultToolbar').hidden = true;
+      if ($('#resultMeta')) $('#resultMeta').hidden = true;
+      if ($('#recalcBtn')) $('#recalcBtn').hidden = true;
+      progressSet('plan', 'done', `已确认参与者位置和关键词「${keyword}」`);
+      progressAdvanceTo('search');
+      progressSet('search', 'active', `正在按最新位置刷新「${keyword}」推荐并计算路线…`);
+      return true;
+    }
+
+    function draftApplySearchProgressFinish(pois) {
+      if (!DRAFT_APPLY_SEARCH_PROGRESS.active) return;
+      const count = Array.isArray(pois) ? pois.length : 0;
+      progressSet('search', 'done', `找到 ${count} 个候选地点`);
+      progressSet('routes', 'done', '已计算每位参与者的出行路线');
+      progressAdvanceTo('summary');
+      progressSet('summary', 'active', '正在整理并展示推荐结果…');
+    }
+
+    function draftApplySearchProgressComplete() {
+      if (!DRAFT_APPLY_SEARCH_PROGRESS.active) return;
+      progressSet('summary', 'done', '推荐结果已更新');
+      DRAFT_APPLY_SEARCH_PROGRESS.active = false;
+      DRAFT_APPLY_SEARCH_PROGRESS.keyword = '';
+      progressComplete();
+    }
+
+    function draftApplySearchProgressFail(message) {
+      if (!DRAFT_APPLY_SEARCH_PROGRESS.active) return;
+      setProgressHeroLabel('这次搜索没有完成');
+      progressError(message || '应用修改后刷新推荐失败');
+      if ($('#resultCount')) $('#resultCount').textContent = '';
+      DRAFT_APPLY_SEARCH_PROGRESS.active = false;
+      DRAFT_APPLY_SEARCH_PROGRESS.keyword = '';
+    }
+
     let map, anchorCircle = null;
     const markers = { participants: new Map(), pois: [], anchor: null };
     let currentPaths = [];
@@ -8106,6 +8160,15 @@
         currentCity: state.currentCity,
       };
       cardEl.classList.add('applying');
+      const titleEl = cardEl.querySelector('.draft-title');
+      const applyBtn = cardEl.querySelector('.draft-apply');
+      const originalTitle = titleEl?.textContent || '';
+      const originalApplyLabel = applyBtn?.textContent || '';
+      const searchProgressStarted = draftApplySearchProgressStart(chosen);
+      if (titleEl) titleEl.textContent = searchProgressStarted
+        ? '正在应用修改并刷新推荐…'
+        : '正在应用修改…';
+      if (applyBtn) applyBtn.textContent = searchProgressStarted ? '正在搜索…' : '正在应用…';
       try {
         const resp = await fetch('/api/v2/session/apply-drafts', {
           method: 'POST',
@@ -8138,6 +8201,7 @@
           chosen.filter(d => participantKinds.has(d.kind)).forEach(applyDraftLocally);
         }
         if (chosen.some(d => participantKinds.has(d.kind)) && Array.isArray(data.pois)) {
+          draftApplySearchProgressFinish(data.pois);
           clearPaths && clearPaths();
           if (data.pois.length) {
             state.resultData = {
@@ -8152,11 +8216,15 @@
             state.viewPois = null;
           }
         }
+        draftApplySearchProgressComplete();
         ASSIST_STATE.drafts = [];
         ASSIST_STATE.draftCardEl = null;
         collapseDraftCard(cardEl, chosen, snapshot);
       } catch (e) {
+        draftApplySearchProgressFail(e.message || '应用失败');
         cardEl.classList.remove('applying');
+        if (titleEl) titleEl.textContent = originalTitle;
+        if (applyBtn) applyBtn.textContent = originalApplyLabel;
         let errEl = cardEl.querySelector('.draft-err');
         if (!errEl) {
           errEl = document.createElement('div');

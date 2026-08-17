@@ -27,6 +27,8 @@ const hasActiveSource = functionSource('assistHasActiveChoiceCard');
 const deferSource = functionSource('assistDeferDraftCardUntilChoicesFinish');
 const renderDraftSource = functionSource('assistRenderDraftCard');
 const renderLocationSource = functionSource('assistRenderLocationChoices');
+const applyDraftsSource = functionSource('applyDrafts');
+const searchProgressStartSource = functionSource('draftApplySearchProgressStart');
 
 const state = {
   drafts: [{ kind: 'set_participant_location' }],
@@ -57,4 +59,23 @@ assert.match(
   /assistDeferDraftCardUntilChoicesFinish\(\);/,
   'a new location choice must hide an already visible draft card',
 );
-
+assert.match(
+  applyDraftsSource,
+  /draftApplySearchProgressStart\(chosen\)/,
+  'applying participant drafts must start visible recommendation progress',
+);
+assert.match(
+  applyDraftsSource,
+  /draftApplySearchProgressComplete\(\)/,
+  'successful draft application must complete visible recommendation progress',
+);
+assert.match(
+  applyDraftsSource,
+  /draftApplySearchProgressFail\(e\.message \|\| '应用失败'\)/,
+  'failed draft application must expose a visible progress error',
+);
+assert.match(
+  searchProgressStartSource,
+  /showResultsPanel\(\);[\s\S]*progressReset\(\);/,
+  'draft-triggered search must reuse the manual search result panel and progress card',
+);
