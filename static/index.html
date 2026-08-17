@@ -8031,6 +8031,14 @@
       });
       updateBtn();
       cancelBtn.addEventListener('click', () => {
+        const discarded = ASSIST_STATE.drafts.map(d => ({ kind: d.kind, data: d.data }));
+        if (discarded.length && state.sessionId) {
+          fetch('/api/v2/session/discard-drafts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: state.sessionId, drafts: discarded }),
+          }).catch(() => {});
+        }
         ASSIST_STATE.drafts = [];
         ASSIST_STATE.draftCardEl = null;
         el.remove();
@@ -8044,6 +8052,7 @@
 
     async function applyDrafts(cardEl) {
       const chosen = ASSIST_STATE.drafts.filter(d => d.selected);
+      const discarded = ASSIST_STATE.drafts.filter(d => !d.selected);
       if (!chosen.length) return;
       const snapshot = {
         anchor: state.anchor ? { ...state.anchor } : null,
@@ -8060,6 +8069,7 @@
           body: JSON.stringify({
             session_id: state.sessionId || '',
             drafts: chosen.map(d => ({ kind: d.kind, data: d.data })),
+            discarded_drafts: discarded.map(d => ({ kind: d.kind, data: d.data })),
           }),
         });
         const data = await resp.json();
@@ -8654,6 +8664,8 @@
     }
 
     function conversationRenderDetail(detail) {
+      ASSIST_STATE.drafts = [];
+      ASSIST_STATE.draftCardEl = null;
       ASSIST_STATE.msgsEl.innerHTML = '';
       const turns = Array.isArray(detail.turns) ? detail.turns : [];
       if (turns.length) {
@@ -8684,8 +8696,27 @@
         const pendingPatch = resumed.pending_interaction?.patch;
         if (pendingPatch?.type === 'choices') assistRenderChoices(pendingPatch);
         else if (pendingPatch?.type === 'location_choices') assistRenderLocationChoices(pendingPatch);
+        const pendingDrafts = Array.isArray(resumed.pending_drafts)
+          ? resumed.pending_drafts
+          : (Array.isArray(resumed.state?.pending_drafts) ? resumed.state.pending_drafts : []);
+        pendingDrafts.forEach(raw => {
+          const patch = { ...raw, type: 'draft' };
+          const sensitive = isSensitiveDraft(patch);
+          addDraft({
+            ...patch,
+            _sensitive: !!sensitive,
+            _sensReason: sensitive?.reason || '',
+          });
+        });
+        if (ASSIST_STATE.drafts.length) assistRenderDraftCard();
         assistScroll();
-        toast(pendingPatch ? '已恢复对话和待处理选择' : '已恢复这段对话的会面状态');
+        toast(
+          pendingPatch
+            ? '已恢复对话和待处理选择'
+            : ASSIST_STATE.drafts.length
+              ? '已恢复对话和待确认草稿'
+              : '已恢复这段对话的会面状态'
+        );
       } catch (e) {
         toast('打开对话失败：' + (e.message || e), true);
       }

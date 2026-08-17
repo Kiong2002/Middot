@@ -2054,6 +2054,85 @@ def _conversation_for_session(sid: str, device_id: str, first_text: str = "") ->
     return conversation_id
 
 
+_PARTICIPANT_DRAFT_KINDS = {
+    "set_participant_location", "add_participant", "remove_participant",
+}
+
+
+def _draft_dedup_key(draft: dict) -> str:
+    kind = str(draft.get("kind") or "")
+    data = draft.get("data") if isinstance(draft.get("data"), dict) else {}
+    if kind in {"set_participant_location", "set_participant_prefer"}:
+        return f"{kind}:{data.get('participant_id') or ''}"
+    if kind == "add_participant":
+        return f"{kind}:{data.get('participant_index') or data.get('nickname') or ''}"
+    if kind == "remove_participant":
+        return f"{kind}:{data.get('participant_id') or ''}"
+    return kind
+
+
+def _normalize_pending_draft(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    kind = str(value.get("kind") or "").strip()
+    data = value.get("data")
+    if not kind or not isinstance(data, dict):
+        return None
+    return {
+        "type": "draft",
+        "kind": kind[:80],
+        "label": str(value.get("label") or kind)[:500],
+        "detail": str(value.get("detail") or "")[:1000],
+        "data": _trace_safe(data),
+    }
+
+
+def _pending_drafts_from_state(state: dict) -> list[dict]:
+    drafts: list[dict] = []
+    for value in list(state.get("pending_drafts") or [])[-24:]:
+        normalized = _normalize_pending_draft(value)
+        if normalized:
+            drafts.append(normalized)
+    return drafts
+
+
+def _conversation_store_pending_draft(sid: str, patch: dict) -> None:
+    normalized = _normalize_pending_draft(patch)
+    if not normalized:
+        return
+    state = session_get(sid) or {}
+    drafts = _pending_drafts_from_state(state)
+    key = _draft_dedup_key(normalized)
+    drafts = [item for item in drafts if _draft_dedup_key(item) != key]
+    drafts.append(normalized)
+    session_update(sid, {"pending_drafts": drafts[-24:]})
+    _conversation_save_state(sid)
+
+
+def _conversation_discard_pending_drafts(
+    sid: str, resolved: list[dict] | None = None
+) -> list[dict]:
+    state = session_get(sid) or {}
+    current = _pending_drafts_from_state(state)
+    if resolved is None:
+        remaining: list[dict] = []
+    else:
+        keys = {
+            _draft_dedup_key(item)
+            for item in resolved
+            if isinstance(item, dict) and str(item.get("kind") or "").strip()
+        }
+        remaining = [item for item in current if _draft_dedup_key(item) not in keys]
+    task = dict(state.get("agent_task") or {})
+    if any(item.get("kind") in _PARTICIPANT_DRAFT_KINDS for item in remaining):
+        task["participant_drafts_pending"] = True
+    else:
+        task.pop("participant_drafts_pending", None)
+    session_update(sid, {"pending_drafts": remaining, "agent_task": task})
+    _conversation_save_state(sid)
+    return remaining
+
+
 def _conversation_state_from_session(sid: str) -> dict:
     """只持久化能够重建会面页面的业务状态，不保存 Flask/Graph 运行对象。"""
     state = session_get(sid) or {}
@@ -2070,6 +2149,7 @@ def _conversation_state_from_session(sid: str) -> dict:
         "search_radius_m": state.get("search_radius_m"),
         "plan": state.get("plan"),
         "departure_time": state.get("departure_time"),
+        "pending_drafts": _pending_drafts_from_state(state),
     }
 
 
@@ -2584,6 +2664,7 @@ def api_conversation_continue(conversation_id: str):
         "search_radius_m": restored_state.get("search_radius_m"),
         "plan": restored_state.get("plan"),
         "departure_time": restored_state.get("departure_time"),
+        "pending_drafts": _pending_drafts_from_state(restored_state),
     })
     if restored_summary and not (recovery and recovery["summary_text"]):
         _conversation_save_summary(sid, restored_summary)
@@ -2592,6 +2673,7 @@ def api_conversation_continue(conversation_id: str):
         "session_id": sid,
         "state": restored_state,
         "pending_interaction": pending,
+        "pending_drafts": _pending_drafts_from_state(restored_state),
         "operation_summaries": operation_summaries,
         "has_summary": bool(restored_summary),
     })
@@ -4726,7 +4808,8 @@ def _place_alias_mapping(device_id: str, alias: str, city: str) -> dict | None:
         if personal:
             return dict(personal)
         rows = conn.execute(
-            "SELECT poi_id,canonical_name,address,lng,lat,COUNT(DISTINCT device_id) AS users,"
+            "SELECT poi_id,MAX(canonical_name) AS canonical_name,MAX(address) AS address,"
+            "MAX(lng) AS lng,MAX(lat) AS lat,COUNT(DISTINCT device_id) AS users,"
             "SUM(confirmation_count) AS confirmations FROM place_alias_evidence "
             "WHERE city=? AND alias_norm=? AND status='confirmed' GROUP BY poi_id "
             "ORDER BY users DESC,confirmations DESC",
@@ -9359,6 +9442,11 @@ def _agent_task_begin(sid: str, message: str) -> dict:
             "failures": [],
             "updated_at": now,
         }
+    if any(
+        item.get("kind") in _PARTICIPANT_DRAFT_KINDS
+        for item in _pending_drafts_from_state(s)
+    ):
+        task["participant_drafts_pending"] = True
     session_update(sid, {"agent_task": task})
     return task
 
@@ -10580,12 +10668,23 @@ def _main_graph_execute_tool(state: dict, name: str, args: dict) -> tuple[dict, 
     )
     handler = TOOL_HANDLERS.get(name)
     if not handler:
-        result, patch = {"ok": False, "error": f"未知工具: {name}"}, None
+        result, patch = {
+            "ok": False,
+            "error": f"未知工具: {name}",
+            "error_code": "unknown_tool",
+            "retryable": False,
+        }, None
     else:
         try:
             result, patch = handler(state["session_id"], args)
         except Exception as exc:
-            result, patch = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, None
+            result, patch = {
+                "ok": False,
+                "error": "系统内部错误，已停止重复尝试",
+                "error_code": "internal_tool_error",
+                "retryable": False,
+                "debug_error": f"{type(exc).__name__}: {exc}",
+            }, None
     _agent_task_record(state["session_id"], name, result)
     _trace_step(
         state["trace_id"],
@@ -10597,6 +10696,8 @@ def _main_graph_execute_tool(state: dict, name: str, args: dict) -> tuple[dict, 
         duration_ms=int(time.time() * 1000) - started_ms,
     )
     if patch:
+        if patch.get("type") == "draft":
+            _conversation_store_pending_draft(state["session_id"], patch)
         _trace_step(
             state["trace_id"],
             "state_patch",
@@ -10823,10 +10924,13 @@ def api_v2_apply_drafts():
     data = request.json or {}
     sid = data.get("session_id") or ""
     drafts = data.get("drafts") or []
+    discarded_drafts = data.get("discarded_drafts") or []
     if not sid or not session_get(sid):
         return jsonify({"ok": False, "error": "会话不存在"}), 404
     if not isinstance(drafts, list) or not drafts:
         return jsonify({"ok": False, "error": "drafts 空"}), 400
+    if not isinstance(discarded_drafts, list):
+        discarded_drafts = []
 
     updates: dict = {}
     applied: list[str] = []
@@ -10990,6 +11094,12 @@ def api_v2_apply_drafts():
             session_update(sid, {"last_pois": refreshed_pois})
         _conversation_save_state(sid)
 
+    if applied:
+        _conversation_discard_pending_drafts(
+            sid,
+            [item for item in [*drafts, *discarded_drafts] if isinstance(item, dict)],
+        )
+
     snap = session_get(sid) or {}
     return jsonify({
         "ok": True,
@@ -10999,6 +11109,23 @@ def api_v2_apply_drafts():
         "query": snap.get("query"),
         "pois": snap.get("last_pois") or [],
     })
+
+
+@app.route("/api/v2/session/discard-drafts", methods=["POST"])
+def api_v2_discard_drafts():
+    data = request.json or {}
+    sid = str(data.get("session_id") or "")
+    state = session_get(sid) if sid else None
+    if not state:
+        return jsonify({"ok": False, "error": "会话不存在"}), 404
+    drafts = data.get("drafts")
+    if drafts is not None and not isinstance(drafts, list):
+        return jsonify({"ok": False, "error": "drafts 格式错误"}), 400
+    remaining = _conversation_discard_pending_drafts(
+        sid,
+        [item for item in drafts if isinstance(item, dict)] if isinstance(drafts, list) else None,
+    )
+    return jsonify({"ok": True, "pending_drafts": remaining})
 
 
 @app.route("/api/v2/assistant/location-intent", methods=["POST"])
@@ -11368,6 +11495,7 @@ def api_v2_assistant_stream():
                 "iteration": 0,
                 "max_iterations": MAX_ITERS,
                 "successful_tool_signatures": [],
+                "non_retryable_tool_failures": [],
                 "routes_recomputed_after_prefer": False,
                 "me_has_location": me_has_location,
                 "desired_search_keyword": str(
@@ -11549,13 +11677,24 @@ def api_v2_assistant_stream():
                     _trace_step(trace_id, "tool_call", f"调用 {name}", tool_name=name, payload=args)
                     handler = TOOL_HANDLERS.get(name)
                     if not handler:
-                        tool_result = {"ok": False, "error": f"未知工具: {name}"}
+                        tool_result = {
+                            "ok": False,
+                            "error": f"未知工具: {name}",
+                            "error_code": "unknown_tool",
+                            "retryable": False,
+                        }
                         state_patch = None
                     else:
                         try:
                             tool_result, state_patch = handler(sid, args)
                         except Exception as e:
-                            tool_result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                            tool_result = {
+                                "ok": False,
+                                "error": "系统内部错误，已停止重复尝试",
+                                "error_code": "internal_tool_error",
+                                "retryable": False,
+                                "debug_error": f"{type(e).__name__}: {e}",
+                            }
                             state_patch = None
                         if tool_result.get("ok"):
                             successful_tool_signatures.add(signature)
@@ -11581,6 +11720,8 @@ def api_v2_assistant_stream():
                         "data": tool_result,
                     })
                     if state_patch:
+                        if state_patch.get("type") == "draft":
+                            _conversation_store_pending_draft(sid, state_patch)
                         yield _sse({"type": "state_patch", "patch": state_patch})
                         _trace_step(trace_id, "state_patch", "界面状态更新",
                                     tool_name=name, summary=str(state_patch.get("type") or ""), payload=state_patch)

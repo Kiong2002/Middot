@@ -95,6 +95,7 @@ class MainAgentState(TypedDict, total=False):
     iteration: int
     max_iterations: int
     successful_tool_signatures: list[str]
+    non_retryable_tool_failures: list[str]
     routes_recomputed_after_prefer: bool
     me_has_location: bool
     desired_search_keyword: str

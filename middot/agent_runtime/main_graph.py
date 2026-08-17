@@ -42,6 +42,13 @@ def _signature(name: str, args: Mapping[str, Any]) -> str:
     )
 
 
+def _failure_key(name: str, args: Mapping[str, Any]) -> str:
+    if name in {"ensure_participant", "set_participant_location"}:
+        target = args.get("index") or args.get("participant_id") or args.get("participant_name")
+        return f"{name}\x1fparticipant:{target or ''}"
+    return _signature(name, args)
+
+
 def _tool_message(call_id: str, name: str, result: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "role": "tool",
@@ -185,6 +192,7 @@ def build_main_agent_graph(
         writer = get_stream_writer()
         messages = list(state.get("messages") or [])
         successful = set(state.get("successful_tool_signatures") or [])
+        non_retryable_failures = set(state.get("non_retryable_tool_failures") or [])
         called_names: set[str] = set()
         location_targets: set[str] = set()
         prefer_changed = False
@@ -203,11 +211,24 @@ def build_main_agent_graph(
                 args = {}
 
             signature = _signature(name, args)
+            failure_key = _failure_key(name, args)
             if signature in successful:
                 result = {
                     "ok": True,
                     "summary": "相同动作本轮已经完成，无需重复执行",
                     "duplicate": True,
+                }
+                message = _tool_message(call_id, name, result)
+                messages.append(message)
+                hooks.append_history(state["session_id"], message)
+                continue
+
+            if failure_key in non_retryable_failures:
+                result = {
+                    "ok": False,
+                    "error": "相同内部错误本轮已经记录，已停止重复尝试",
+                    "error_code": "non_retryable_failure_already_reported",
+                    "retryable": False,
                 }
                 message = _tool_message(call_id, name, result)
                 messages.append(message)
@@ -264,6 +285,16 @@ def build_main_agent_graph(
                     and args.get("prefer")
                 ):
                     prefer_changed = True
+            elif result.get("retryable") is False:
+                non_retryable_failures.add(failure_key)
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        f"工具 {name} 对当前目标发生不可重试的系统内部错误。"
+                        "本轮不得再次调用同一工具处理同一目标；请如实简短说明一次，"
+                        "不要让用户反复重试同一个故障。"
+                    ),
+                })
             if patch:
                 writer({"type": "state_patch", "patch": patch})
                 if patch.get("type") == "location_choices":
@@ -322,6 +353,7 @@ def build_main_agent_graph(
             "messages": messages,
             "pending_tool_calls": [],
             "successful_tool_signatures": sorted(successful),
+            "non_retryable_tool_failures": sorted(non_retryable_failures),
             "called_names": sorted(called_names),
             "verification_issues": issues,
             "waiting_kind": waiting_kind,

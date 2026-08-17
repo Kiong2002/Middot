@@ -352,6 +352,19 @@ def test_history_continue_restores_state_summary_operations_and_pending_choice(m
     module._conversation_append_event(conversation_id, "device-a", "assistant", "可以")
     module._conversation_save_summary(sid, "用户正在规划国贸附近的安静咖啡馆。")
     module._conversation_save_state(sid)
+    pending_draft = {
+        "type": "draft",
+        "kind": "set_participant_location",
+        "label": "我 → 清华大学",
+        "detail": "北京市海淀区双清路30号",
+        "data": {
+            "participant_id": "me",
+            "lng": 116.3269,
+            "lat": 40.0032,
+            "address": "清华大学 · 北京市海淀区双清路30号",
+        },
+    }
+    module._conversation_store_pending_draft(sid, pending_draft)
     module._conversation_record_operation(
         sid, "set_keyword", {"ok": True, "summary": "关键词已改为安静咖啡馆"}
     )
@@ -377,8 +390,10 @@ def test_history_continue_restores_state_summary_operations_and_pending_choice(m
     assert response["has_summary"] is True
     assert "关键词已改为安静咖啡馆" in response["operation_summaries"][0]
     assert response["pending_interaction"]["patch"]["token"] == patch["token"]
+    assert response["pending_drafts"] == [pending_draft]
 
     resumed_sid = response["session_id"]
+    assert module.session_get(resumed_sid)["pending_drafts"] == [pending_draft]
     question, labels = module._consume_offer_choice_answers(
         resumed_sid, [{"token": patch["token"], "label": "坐地铁"}]
     )
@@ -393,6 +408,83 @@ def test_history_continue_restores_state_summary_operations_and_pending_choice(m
         assert recovery["pending_interrupt_id"] is None
     finally:
         conn.close()
+
+
+def test_applying_or_discarding_draft_clears_recovery_state(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    conversation_id = module._conversation_create("device-a", "设置位置")
+    sid = module.session_create({
+        "conversation_id": conversation_id,
+        "participants": [{"id": "me", "name": "我", "lng": None, "lat": None}],
+        "city": "北京",
+        "memory_did": "device-a",
+        "my_did": "device-a",
+        "agent_task": {"id": "task-draft", "status": "running"},
+    })
+    draft = {
+        "type": "draft",
+        "kind": "set_participant_location",
+        "label": "我 → 清华大学",
+        "detail": "北京市海淀区双清路30号",
+        "data": {
+            "participant_id": "me",
+            "lng": 116.3269,
+            "lat": 40.0032,
+            "address": "清华大学 · 北京市海淀区双清路30号",
+        },
+    }
+    module._conversation_store_pending_draft(sid, draft)
+
+    with module.app.test_request_context(json={
+        "session_id": sid,
+        "drafts": [{"kind": draft["kind"], "data": draft["data"]}],
+    }):
+        g.device_id = "device-a"
+        response = module.api_v2_apply_drafts().get_json()
+
+    assert response["ok"] is True
+    assert module.session_get(sid)["pending_drafts"] == []
+    conn = module._db_connect()
+    try:
+        recovery = conn.execute(
+            "SELECT state_json FROM conversation_recovery WHERE conversation_id=?",
+            (conversation_id,),
+        ).fetchone()
+        assert json.loads(recovery["state_json"])["pending_drafts"] == []
+    finally:
+        conn.close()
+
+    module._conversation_store_pending_draft(sid, draft)
+    with module.app.test_request_context(json={"session_id": sid, "drafts": [draft]}):
+        g.device_id = "device-a"
+        discarded = module.api_v2_discard_drafts().get_json()
+    assert discarded == {"ok": True, "pending_drafts": []}
+
+
+def test_global_place_alias_aggregation_is_valid_for_postgres_shape(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    conn = module._db_connect()
+    try:
+        now = module._now()
+        for index in range(3):
+            conn.execute(
+                "INSERT INTO place_alias_evidence(device_id,city,alias,alias_norm,poi_id,"
+                "canonical_name,address,lng,lat,confirmation_count,status,source,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,1,'confirmed','test',?,?)",
+                (
+                    f"device-{index}", "北京", "对外经贸", "对外经贸", "uibe",
+                    "对外经济贸易大学", "北京市朝阳区惠新东街10号",
+                    116.424, 39.98, now, now,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    mapping = module._place_alias_mapping("new-device", "对外经贸", "北京")
+    assert mapping["scope"] == "global"
+    assert mapping["poi_id"] == "uibe"
+    assert mapping["users"] == 3
 
 
 def test_apply_drafts_does_not_reference_assistant_message(monkeypatch, tmp_path):

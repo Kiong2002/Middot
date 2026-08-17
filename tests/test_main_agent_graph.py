@@ -95,6 +95,7 @@ def _state(**updates):
         "iteration": 0,
         "max_iterations": 7,
         "successful_tool_signatures": [],
+        "non_retryable_tool_failures": [],
         "routes_recomputed_after_prefer": False,
         "me_has_location": True,
         "desired_search_keyword": "",
@@ -182,6 +183,42 @@ def test_main_graph_deduplicates_successful_tool_signature_across_iterations():
 
     assert fake.calls["tool:set_keyword"] == 1
     assert [event["type"] for event in events].count("tool_call") == 1
+    assert events[-1] == {"type": "done", "outcome": "completed"}
+
+
+def test_main_graph_does_not_repeat_non_retryable_failure_for_same_target():
+    first = _tool_call(
+        "ensure_participant",
+        '{"index":2,"participant_name":"Lisa","place_name":"对外经济贸易大学","city":"北京"}',
+        "first",
+    )
+    repeated_with_fewer_args = _tool_call(
+        "ensure_participant",
+        '{"index":2,"participant_name":"Lisa","place_name":"对外经济贸易大学"}',
+        "second",
+    )
+    fake = FakeHooks(
+        [
+            {"content": "", "tool_calls": [first]},
+            {"content": "再试一次", "tool_calls": [repeated_with_fewer_args]},
+            {"content": "系统内部错误，暂时无法设置 Lisa 的位置。", "tool_calls": []},
+        ]
+    )
+    fake.tool_results["ensure_participant"] = (
+        {
+            "ok": False,
+            "error": "系统内部错误，已停止重复尝试",
+            "error_code": "internal_tool_error",
+            "retryable": False,
+        },
+        None,
+    )
+
+    events = list(_runtime(fake).stream(_state(), thread_id="agent:thread-no-retry"))
+
+    assert fake.calls["tool:ensure_participant"] == 1
+    assert [event["type"] for event in events].count("tool_call") == 1
+    assert [event["type"] for event in events].count("tool_result") == 1
     assert events[-1] == {"type": "done", "outcome": "completed"}
 
 
