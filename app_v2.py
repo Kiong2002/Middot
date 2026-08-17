@@ -34,6 +34,7 @@ from middot.state_store import (
     redis_client,
     session_store,
 )
+from middot.redis_admin import redis_key_page, redis_overview
 from middot.db_compat import (
     acquire_schema_lock,
     connect as database_connect,
@@ -2675,6 +2676,40 @@ def api_admin_memory_overview():
         "oldest_wait_seconds": max(0, now - int(oldest)) if oldest and oldest <= now else 0,
         "database_bytes": os.path.getsize(MIDDOT_DB_PATH) if os.path.exists(MIDDOT_DB_PATH) else 0,
     })
+
+
+@app.route("/api/admin/redis/overview")
+@_admin_required
+def api_admin_redis_overview():
+    client = redis_client()
+    if client is None:
+        return jsonify({"available": False, "error": "Redis 尚未配置"})
+    try:
+        return jsonify(redis_overview(client))
+    except Exception as exc:
+        app.logger.warning("[admin] redis overview failed: %s", exc)
+        return jsonify({"available": False, "error": "Redis 暂时不可用"})
+
+
+@app.route("/api/admin/redis/keys")
+@_admin_required
+def api_admin_redis_keys():
+    client = redis_client()
+    if client is None:
+        return jsonify({"available": False, "error": "Redis 尚未配置", "items": [], "cursor": "0"})
+    category = str(request.args.get("category") or "all")
+    try:
+        cursor = max(0, int(request.args.get("cursor") or 0))
+        limit = min(80, max(1, int(request.args.get("limit") or 40)))
+    except ValueError:
+        return jsonify({"error": "分页参数无效"}), 400
+    try:
+        page = redis_key_page(client, category=category, cursor=cursor, limit=limit)
+        page["available"] = True
+        return jsonify(page)
+    except Exception as exc:
+        app.logger.warning("[admin] redis key scan failed: %s", exc)
+        return jsonify({"available": False, "error": "Redis 数据读取失败", "items": [], "cursor": "0"})
 
 
 @app.route("/api/admin/agent-traces")

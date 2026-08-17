@@ -11,6 +11,8 @@ import threading
 from flask import Blueprint, jsonify, request, send_from_directory
 from ..config import ADMIN_USERNAME, ADMIN_PASSWORD, ADMIN_COOKIE, ADMIN_COOKIE_MAX_AGE, _admin_login_lock, _admin_login_attempts
 from ..models.db import get_db, _now
+from ..redis_admin import redis_key_page, redis_overview
+from ..state_store import redis_client
 from ..utils.cookie import _admin_cookie_encode, _admin_cookie_valid
 
 admin_bp = Blueprint('admin', __name__)
@@ -85,3 +87,35 @@ def api_admin_logout():
     response = jsonify({"ok": True})
     response.delete_cookie(ADMIN_COOKIE, path="/")
     return response
+
+
+@admin_bp.route("/api/admin/redis/overview")
+@_admin_required
+def api_admin_redis_overview():
+    client = redis_client()
+    if client is None:
+        return jsonify({"available": False, "error": "Redis 尚未配置"})
+    try:
+        return jsonify(redis_overview(client))
+    except Exception:
+        return jsonify({"available": False, "error": "Redis 暂时不可用"})
+
+
+@admin_bp.route("/api/admin/redis/keys")
+@_admin_required
+def api_admin_redis_keys():
+    client = redis_client()
+    if client is None:
+        return jsonify({"available": False, "error": "Redis 尚未配置", "items": [], "cursor": "0"})
+    category = str(request.args.get("category") or "all")
+    try:
+        cursor = max(0, int(request.args.get("cursor") or 0))
+        limit = min(80, max(1, int(request.args.get("limit") or 40)))
+    except ValueError:
+        return jsonify({"error": "分页参数无效"}), 400
+    try:
+        result = redis_key_page(client, category=category, cursor=cursor, limit=limit)
+        result["available"] = True
+        return jsonify(result)
+    except Exception:
+        return jsonify({"available": False, "error": "Redis 数据读取失败", "items": [], "cursor": "0"})
