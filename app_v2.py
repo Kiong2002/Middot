@@ -2136,10 +2136,13 @@ def _conversation_discard_pending_drafts(
 def _conversation_state_payload(state: dict) -> dict:
     """只持久化能够重建会面页面的业务状态，不保存 Flask/Graph 运行对象。"""
     pois = state.get("last_pois") or state.get("pois") or []
+    pois_base = state.get("pois_base") or []
     return {
         "anchor": state.get("anchor"),
         "participants": [dict(item) for item in (state.get("participants") or [])[:12]],
         "pois": [dict(item) for item in pois[:30]],
+        # 重开历史对话后，“重算路线”仍需使用未附带旧路线的原始候选。
+        "pois_base": [dict(item) for item in pois_base[:30]],
         "query": str(state.get("query") or "")[:500],
         "last_search": dict(state.get("last_search") or {}),
         "pending_search_goal": dict(state.get("pending_search_goal") or {}),
@@ -2667,6 +2670,7 @@ def api_conversation_continue(conversation_id: str):
         "restored_operation_summaries": operation_summaries,
         "participants": restored_state.get("participants") or [],
         "last_pois": restored_state.get("pois") or [],
+        "pois_base": restored_state.get("pois_base") or restored_state.get("pois") or [],
         "query": restored_state.get("query") or "",
         "last_search": restored_state.get("last_search") or {},
         "pending_search_goal": restored_state.get("pending_search_goal") or {},
@@ -2986,13 +2990,22 @@ def _compact_poi(p: dict) -> dict:
     }
 
 
-def _persist_run_history(anchor, participants, keyword, city, enriched):
+def _persist_run_history(
+    anchor, participants, keyword, city, enriched, device_id: str | None = None
+):
     """在 run_pipeline 成功后调，把这次搜索存到 run_history。"""
+    conn = None
     try:
-        did = getattr(g, "device_id", None)
+        did = device_id
+        if not did:
+            try:
+                did = getattr(g, "device_id", None)
+            except RuntimeError:
+                did = None
         if not did:
             return
-        conn = _db()
+        # 流式搜索在线程中完成，不能依赖 Flask request-local 的连接。
+        conn = _db_connect()
         # 参与者也精简，避免存太多冗余
         parts_min = [
             {
@@ -3027,6 +3040,9 @@ def _persist_run_history(anchor, participants, keyword, city, enriched):
         conn.commit()
     except Exception as e:
         app.logger.warning("[history] persist failed: %s", e)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @app.route("/api/v2/history")
@@ -3745,12 +3761,20 @@ def _normalize_participants(data: dict) -> list[dict]:
     for i, p in enumerate(raw):
         if "lng" not in p or "lat" not in p:
             continue
-        out.append({
+        normalized = {
             "name":   p.get("name") or f"P{i + 1}",
             "lng":    float(p["lng"]),
             "lat":    float(p["lat"]),
             "prefer": p.get("prefer", "auto") or "auto",
-        })
+        }
+        # 路线算法不依赖这些字段，但前端槽位对应和历史恢复依赖它们。
+        if p.get("id") is not None:
+            normalized["id"] = str(p.get("id"))[:120]
+        if p.get("address") is not None:
+            normalized["address"] = str(p.get("address"))[:500]
+        if p.get("identity_status") is not None:
+            normalized["identity_status"] = str(p.get("identity_status"))[:40]
+        out.append(normalized)
     return out
 
 
@@ -3761,6 +3785,8 @@ def run_pipeline(
     departure_time: str | None = None,
     anchor_hint: dict | None = None,
     progress_cb=None,
+    reuse_session_id: str | None = None,
+    device_id: str | None = None,
 ) -> dict:
     """
     运行完整多 Agent 流水线（N 人 + 可选锚点）。
@@ -3824,7 +3850,9 @@ def run_pipeline(
     cb("summary_done", "总结完成")
 
     # ── Session ──
-    session_id = session_create({
+    # 手动搜索来自正在进行的 AI 对话时，更新原 Session。否则页面虽然能显示
+    # 结果，但对话恢复快照与后续 AI 上下文都看不到这次搜索。
+    session_patch = {
         "participants":    participants,
         "city":            city,
         "query":           user_query,
@@ -3834,9 +3862,53 @@ def run_pipeline(
         "anchor":          anchor,
         "pois_base":       top_pois,
         "last_pois":       enriched,
+        "last_search": {
+            "id": uuid.uuid4().hex,
+            "keyword": str(plan.get("keyword") or user_query),
+            "result_count": len(enriched),
+            "center": center,
+            "radius_m": search_radius_m,
+            "source": "manual",
+            "completed_at": _now(),
+        },
         "departure_time":  departure_time,
-        "chat_history":    [],
-    })
+    }
+    existing = session_get(str(reuse_session_id or "")) if reuse_session_id else None
+    existing_owner = str(
+        (existing or {}).get("memory_did") or (existing or {}).get("my_did") or ""
+    )
+    can_reuse = bool(
+        existing
+        and device_id
+        and existing_owner
+        and hmac.compare_digest(existing_owner, str(device_id))
+    )
+    if can_reuse:
+        session_id = str(reuse_session_id)
+        session_update(session_id, session_patch)
+    else:
+        session_id = session_create({
+            **session_patch,
+            "memory_did": str(device_id or ""),
+            "my_did": str(device_id or ""),
+            "chat_history": [],
+        })
+
+    _conversation_record_operation(
+        session_id,
+        "manual_search",
+        {
+            "ok": True,
+            "summary": (
+                f"用户手动按“{str(plan.get('keyword') or user_query)}”完成搜索，"
+                f"当前页面有 {len(enriched)} 个候选地点"
+            ),
+        },
+    )
+    _conversation_save_state(session_id)
+    _persist_run_history(
+        anchor, participants, user_query, city, enriched, device_id=device_id
+    )
 
     result = {
         "success":         True,
@@ -3891,6 +3963,7 @@ def api_v2_search():
     city           = data.get("city", "北京")
     departure_time = data.get("departure_time") or None
     anchor         = data.get("anchor") or None
+    reuse_session_id = str(data.get("session_id") or "").strip() or None
     # 老字段兼容：如果传的还是 target_area，忽略并打日志（新模型下无意义）
     if anchor is None and data.get("target_area"):
         print(f"[Compat] 收到旧字段 target_area={data.get('target_area')}，已忽略（请改传 anchor）")
@@ -3912,6 +3985,8 @@ def api_v2_search():
             city=city,
             departure_time=departure_time,
             anchor_hint=anchor,
+            reuse_session_id=reuse_session_id,
+            device_id=g.device_id,
         )
         return jsonify(result), (200 if result.get("success") else 500)
     except Exception as e:
@@ -3933,6 +4008,9 @@ def api_v2_search_stream():
     city           = data.get("city", "北京")
     departure_time = data.get("departure_time") or None
     anchor         = data.get("anchor") or None
+    reuse_session_id = str(data.get("session_id") or "").strip() or None
+    # worker 在线程中运行，不能再读取 Flask request-local 的 g。
+    caller_device_id = str(g.device_id)
     if anchor is None and data.get("target_area"):
         print(f"[Compat] search-stream 收到旧字段 target_area={data.get('target_area')}，已忽略")
 
@@ -3967,6 +4045,8 @@ def api_v2_search_stream():
                 departure_time=departure_time,
                 anchor_hint=anchor,
                 progress_cb=cb,
+                reuse_session_id=reuse_session_id,
+                device_id=caller_device_id,
             )
             if r.get("success"):
                 events.put({"stage": "result", "msg": "完成", "data": r})
@@ -4024,10 +4104,16 @@ def api_v2_routes():
     if not pois_base:
         return jsonify({"success": False, "error": "缓存的搜索结果为空"}), 400
 
-    participants = [dict(p) for p in session.get("participants", [])]
+    # 左侧卡片是用户此刻看到并编辑的事实源；请求携带 participants 时必须
+    # 使用最新坐标，而不是继续读取 Redis Session 中的旧出发地。
+    requested_participants = _normalize_participants(data) if data.get("participants") else []
+    participants = requested_participants or [dict(p) for p in session.get("participants", [])]
+    if len(participants) < 2:
+        return jsonify({"success": False, "error": "至少需要 2 位参与者设定位置"}), 400
     # 合并 prefer 覆盖
     for i, person in enumerate(participants):
-        override = prefer_overrides.get(person.get("name")) \
+        override = prefer_overrides.get(person.get("id")) \
+                or prefer_overrides.get(person.get("name")) \
                 or prefer_overrides.get(str(i))
         if override:
             person["prefer"] = override
@@ -4055,7 +4141,7 @@ def api_v2_routes():
         _conversation_record_operation(
             session_id,
             "recompute_routes",
-            {"ok": True, "summary": f"已按最新出行方式重算 {len(enriched)} 个地点的路线"},
+            {"ok": True, "summary": f"已按当前参与者地点和出行方式重算 {len(enriched)} 个地点的路线"},
         )
         _conversation_save_state(session_id)
         resp = {

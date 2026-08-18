@@ -1728,6 +1728,111 @@ def test_participant_draft_batch_rejects_partial_application(monkeypatch, tmp_pa
     assert module.session_get(sid)["participants"][0]["name"] == "A"
 
 
+def test_routes_use_latest_client_locations_instead_of_stale_session(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create({
+        "participants": [
+            {"id": "p1", "name": "我", "lng": 116.1, "lat": 39.1, "prefer": "auto"},
+            {"id": "p2", "name": "Diva", "lng": 116.2, "lat": 39.2, "prefer": "auto"},
+        ],
+        "pois_base": [{"id": "poi-1", "name": "候选店", "lng": 116.4, "lat": 39.4}],
+        "city": "北京",
+        "plan": {"sort_weights": {}},
+    })
+    captured = {}
+
+    def fake_calculate(pois, participants, *args, **kwargs):
+        captured["participants"] = participants
+        return [{**pois[0], "routes": []}]
+
+    monkeypatch.setattr(module, "calculate_routes", fake_calculate)
+    response = module.app.test_client().post("/api/v2/routes", json={
+        "session_id": sid,
+        "participants": [
+            {
+                "id": "p1", "name": "我", "address": "新地点甲",
+                "lng": 116.31, "lat": 39.91, "prefer": "walking",
+            },
+            {
+                "id": "p2", "name": "Diva", "address": "新地点乙",
+                "lng": 116.42, "lat": 39.82, "prefer": "transit",
+            },
+        ],
+    })
+
+    assert response.status_code == 200
+    assert [p["lng"] for p in captured["participants"]] == [116.31, 116.42]
+    assert [p["address"] for p in captured["participants"]] == ["新地点甲", "新地点乙"]
+    saved = module.session_get(sid)["participants"]
+    assert saved[0]["prefer"] == "walking"
+    assert saved[1]["prefer"] == "transit"
+
+
+def test_manual_search_reuses_conversation_session_and_persists_results(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    conversation_id = module._conversation_create("device-a", "一起找咖啡")
+    sid = module.session_create({
+        "conversation_id": conversation_id,
+        "memory_did": "device-a",
+        "my_did": "device-a",
+        "chat_history": [{"role": "user", "content": "一起找咖啡"}],
+        "participants": [],
+    })
+    poi = {"id": "poi-1", "name": "手动搜到的店", "lng": 116.4, "lat": 39.9}
+    monkeypatch.setattr(module, "agent_plan", lambda query: {
+        "keyword": "烧烤", "min_rating": 3.0, "top_n": 10, "sort_weights": {},
+    })
+
+    def fake_search(participants, plan, city, search_ctx, **kwargs):
+        search_ctx["pois"] = [poi]
+        return {
+            "success": True,
+            "center": {"lng": 116.35, "lat": 39.85},
+            "anchor": {"lng": 116.35, "lat": 39.85, "name": "中点"},
+            "search_radius_m": 3000,
+        }
+
+    monkeypatch.setattr(module, "agent_search", fake_search)
+    monkeypatch.setattr(module, "filter_and_rank_pois", lambda pois, **kwargs: pois)
+    monkeypatch.setattr(module, "calculate_routes", lambda pois, *args, **kwargs: [
+        {**pois[0], "routes": [{"participant": "我", "time_minutes": 12}]}
+    ])
+    monkeypatch.setattr(module, "agent_summarize", lambda *args, **kwargs: "手动搜索完成")
+    monkeypatch.setattr(module, "_persist_run_history", lambda *args, **kwargs: None)
+    participants = [
+        {"id": "p1", "name": "我", "address": "甲", "lng": 116.3, "lat": 39.8, "prefer": "auto"},
+        {"id": "p2", "name": "Diva", "address": "乙", "lng": 116.4, "lat": 39.9, "prefer": "auto"},
+    ]
+
+    result = module.run_pipeline(
+        "烧烤", participants, reuse_session_id=sid, device_id="device-a"
+    )
+
+    assert result["session_id"] == sid
+    state = module.session_get(sid)
+    assert state["chat_history"][0]["content"] == "一起找咖啡"
+    assert state["last_search"]["source"] == "manual"
+    assert state["last_search"]["keyword"] == "烧烤"
+    assert state["last_pois"][0]["name"] == "手动搜到的店"
+    conn = module._db_connect()
+    try:
+        recovery = conn.execute(
+            "SELECT state_json FROM conversation_recovery WHERE conversation_id=?",
+            (conversation_id,),
+        ).fetchone()
+        recovered = json.loads(recovery["state_json"])
+        assert recovered["pois"][0]["name"] == "手动搜到的店"
+        assert recovered["pois_base"][0]["name"] == "手动搜到的店"
+        operation = conn.execute(
+            "SELECT tool_name,summary FROM conversation_operation_events WHERE conversation_id=?",
+            (conversation_id,),
+        ).fetchone()
+        assert operation["tool_name"] == "manual_search"
+        assert "烧烤" in operation["summary"]
+    finally:
+        conn.close()
+
+
 def test_conversation_detail_replays_sanitized_tool_timeline(monkeypatch, tmp_path):
     module = _load_app(monkeypatch, tmp_path)
     conversation_id = module._conversation_create("device-a", "规划会面")

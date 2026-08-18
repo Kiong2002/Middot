@@ -3322,8 +3322,9 @@
               <span class="dim" id="resultCount"></span>
             </div>
             <div style="display:flex; gap:4px;">
-              <button class="btn btn-ghost btn-sm" id="recalcBtn" hidden>
-                <i data-lucide="refresh-cw"></i><span>重算</span>
+              <button class="btn btn-ghost btn-sm" id="recalcBtn" hidden
+                      title="保留当前候选地点，按左侧最新出发地和交通方式重新计算路线用时">
+                <i data-lucide="refresh-cw"></i><span>重算路线</span>
               </button>
               <button class="results-header-close" id="resultsClose" title="收起">
                 <i data-lucide="chevron-left"></i>
@@ -5692,7 +5693,8 @@
           el.classList.add('active');
           // 老路径立刻擦掉——不然用户以为已生效但地图还是旧线
           clearPaths();
-          toast('已切换出行方式，点『重算路线』或选一个 POI 生效');
+          toast('已切换出行方式，正在自动重算路线用时…');
+          scheduleRouteRecalculation();
           roomDebouncedUpdate({ my_prefer: p.prefer });
         });
       });
@@ -5781,7 +5783,8 @@
           el.parentElement.querySelectorAll('.mode-chip').forEach(x => x.classList.remove('active'));
           el.classList.add('active');
           clearPaths();
-          toast('已切换出行方式，点『重算路线』或选一个 POI 生效');
+          toast('已切换出行方式，正在自动重算路线用时…');
+          scheduleRouteRecalculation();
         });
       });
       $$('#participantList .p-loc-fav').forEach(el => {
@@ -5882,12 +5885,21 @@
       searchBtn.querySelector('span').textContent = '正在找中点…';
 
       const payload = {
+        // 若当前页面属于一段 AI 对话，复用同一 Session，让手动搜索结果进入
+        // 对话恢复快照和后续 AI 上下文。
+        session_id: state.sessionId || null,
         query,
         city: '北京',
         departure_time: $('#departureTime').value || null,
         sort_preference: state.sortPreference || 'balanced',
         participants: validPs.map(p => ({
-          name: p.name, lng: p.lng, lat: p.lat, prefer: p.prefer,
+          id: p.id,
+          name: p.name,
+          address: p.address || '',
+          lng: p.lng,
+          lat: p.lat,
+          prefer: p.prefer,
+          identity_status: p.identity_status || 'confirmed',
         })),
         anchor: state.anchor ? {
           lng: state.anchor.lng,
@@ -6034,9 +6046,18 @@
       return null;
     }
 
-    async function doRecalculate() {
+    let routeRecalcTimer = null;
+
+    function scheduleRouteRecalculation() {
+      clearTimeout(routeRecalcTimer);
+      if (!state.sessionId || !Array.isArray(state.resultData?.pois) || !state.resultData.pois.length) return;
+      routeRecalcTimer = setTimeout(() => doRecalculate({ automatic: true }), 260);
+    }
+
+    async function doRecalculate(options = {}) {
       if (!state.sessionId) return;
       const btn = $('#recalcBtn');
+      if (btn.disabled) return;
       const resultsCard = $('#resultsCard');
       const recalcState = $('#recalcState');
       const startedAt = performance.now();
@@ -6050,6 +6071,7 @@
       refreshIcons();
       try {
         const validPs = state.participants.filter(p => p.lng !== null);
+        if (validPs.length < 2) throw new Error('至少需要 2 位参与者设定位置');
         // 用 p.id 而不是 name：name 可能重复或被改，name-based 匹配会误落
         const prefer_overrides = {};
         validPs.forEach(p => {
@@ -6061,16 +6083,31 @@
           body: JSON.stringify({
             session_id: state.sessionId,
             departure_time: $('#departureTime').value || null,
+            participants: validPs.map(p => ({
+              id: p.id,
+              name: p.name,
+              address: p.address || '',
+              lng: p.lng,
+              lat: p.lat,
+              prefer: p.prefer,
+              identity_status: p.identity_status || 'confirmed',
+            })),
             prefer_overrides,
           }),
         });
         const data = await r.json();
         if (!data.success) throw new Error(data.error || '重算失败');
-        state.resultData = { ...state.resultData, ...data };
+        // 原总结基于旧地点/旧交通方式，快速重算不调用大模型，不能继续展示旧结论。
+        state.resultData = { ...state.resultData, ...data, summary: '' };
+        if (Array.isArray(data.participants)) {
+          state.participants = data.participants.map((item, index) => normalizeParticipantIdentity(item, index));
+          renderParticipantList();
+          refreshMapMarkers();
+        }
         state.selectedPoiIdx = null;
         clearPaths();
         renderResults(state.resultData);
-        toast('路线已更新');
+        toast(options?.automatic ? '交通方式已更新，路线用时已自动重算' : '已按当前地点和交通方式重算路线');
       } catch (e) {
         toast(e.message, true);
       } finally {
