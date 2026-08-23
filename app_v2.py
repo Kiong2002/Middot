@@ -7311,6 +7311,7 @@ _MEMORY_KIND_TABLES = {
     "person": "memory_people",
     "episode": "memory_episodes",
     "feedback": "memory_feedback",
+    "event": "memory_events",
 }
 
 
@@ -7345,6 +7346,8 @@ def _memory_delete_record(
             placeholders = ",".join("?" for _ in fact_ids)
             conn.execute(f"DELETE FROM memory_wiki_fact_sources WHERE fact_id IN ({placeholders})", fact_ids)
             conn.execute(f"DELETE FROM memory_wiki_facts WHERE id IN ({placeholders})", fact_ids)
+    if kind == "event":
+        conn.execute("DELETE FROM memory_event_qualifiers WHERE event_id=?", (record_id,))
     return conn.execute(
         f"DELETE FROM {table} WHERE id=? AND device_id=?", (record_id, device_id)
     ).rowcount
