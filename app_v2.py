@@ -7224,7 +7224,32 @@ def _memory_context(
         conn.close()
     turn_text = _memory_clean_text(current_message, 500)
     candidate_set = {str(name or "").strip() for name in (candidate_names or []) if str(name or "").strip()}
-    relevant_people = [p for p in people if p.get("name") and p["name"] in turn_text]
+    # 人物相关性：规范名 OR 任一已确认别名 出现在本轮文本即算相关（接入 memory_entity_aliases）
+    _person_alias_map: dict[str, list[str]] = {}
+    if people:
+        _ac = _db_connect()
+        try:
+            for _r in _ac.execute(
+                "SELECT e.canonical_norm AS cn, a.alias AS al FROM memory_entity_aliases a "
+                "JOIN memory_entities e ON e.id=a.entity_id "
+                "WHERE a.device_id=? AND a.status='confirmed' AND e.entity_type='person' "
+                "AND e.status='active'",
+                (device_id,),
+            ):
+                _person_alias_map.setdefault(str(_r["cn"] or ""), []).append(str(_r["al"] or ""))
+        finally:
+            _ac.close()
+
+    def _person_hit(_p: dict) -> bool:
+        _name = _p.get("name") or ""
+        if _name and _name in turn_text:
+            return True
+        for _al in _person_alias_map.get(_entity_normalize_name(_name), ()):
+            if _al and _al in turn_text:
+                return True
+        return False
+
+    relevant_people = [p for p in people if p.get("name") and _person_hit(p)]
     relevant_feedback = [
         f for f in feedback
         if f.get("poi_name") and (f["poi_name"] in turn_text or f["poi_name"] in candidate_set)
