@@ -7327,36 +7327,46 @@ def _memory_context(
         conn.close()
     turn_text = _memory_clean_text(current_message, 500)
     candidate_set = {str(name or "").strip() for name in (candidate_names or []) if str(name or "").strip()}
-    # 人物相关性：规范名 OR 任一已确认别名 出现在本轮文本即算相关（接入 memory_entity_aliases）
-    _person_alias_map: dict[str, list[str]] = {}
-    if people:
-        _ac = _db_connect()
-        try:
-            for _r in _ac.execute(
-                "SELECT e.canonical_norm AS cn, a.alias AS al FROM memory_entity_aliases a "
-                "JOIN memory_entities e ON e.id=a.entity_id "
-                "WHERE a.device_id=? AND a.status='confirmed' AND e.entity_type='person' "
-                "AND e.status='active'",
-                (device_id,),
-            ):
-                _person_alias_map.setdefault(str(_r["cn"] or ""), []).append(str(_r["al"] or ""))
-        finally:
-            _ac.close()
+    # 别名感知召回：实体别名(人物/地点/店铺等) + POI 地点别名，与人名一视同仁
+    _entity_alias_map: dict[str, list[str]] = {}
+    _poi_alias_map: dict[str, list[str]] = {}
+    _ac = _db_connect()
+    try:
+        for _r in _ac.execute(
+            "SELECT e.canonical_norm AS cn, a.alias AS al FROM memory_entity_aliases a "
+            "JOIN memory_entities e ON e.id=a.entity_id "
+            "WHERE a.device_id=? AND a.status='confirmed' AND e.status='active'",
+            (device_id,),
+        ):
+            _entity_alias_map.setdefault(str(_r["cn"] or ""), []).append(str(_r["al"] or ""))
+        for _r in _ac.execute(
+            "SELECT poi_id AS pid, alias AS al FROM place_alias_evidence "
+            "WHERE device_id=? AND status='confirmed'",
+            (device_id,),
+        ):
+            _poi_alias_map.setdefault(str(_r["pid"] or ""), []).append(str(_r["al"] or ""))
+    finally:
+        _ac.close()
 
-    def _person_hit(_p: dict) -> bool:
-        _name = _p.get("name") or ""
+    def _name_or_alias_in_turn(_name: str) -> bool:
         if _name and _name in turn_text:
             return True
-        for _al in _person_alias_map.get(_entity_normalize_name(_name), ()):
+        for _al in _entity_alias_map.get(_entity_normalize_name(_name or ""), ()):
             if _al and _al in turn_text:
                 return True
         return False
 
-    relevant_people = [p for p in people if p.get("name") and _person_hit(p)]
-    relevant_feedback = [
-        f for f in feedback
-        if f.get("poi_name") and (f["poi_name"] in turn_text or f["poi_name"] in candidate_set)
-    ]
+    def _feedback_hit(_f: dict) -> bool:
+        _name = _f.get("poi_name") or ""
+        if _name and (_name in turn_text or _name in candidate_set):
+            return True
+        for _al in _poi_alias_map.get(str(_f.get("poi_id") or ""), ()):
+            if _al and (_al in turn_text or _al in candidate_set):
+                return True
+        return False
+
+    relevant_people = [p for p in people if p.get("name") and _name_or_alias_in_turn(p["name"])]
+    relevant_feedback = [f for f in feedback if f.get("poi_name") and _feedback_hit(f)]
     payload = {
         "preferences": [
             {"category": r["category"], "key": r["memory_key"], "value": r["memory_value"]}
@@ -7380,7 +7390,7 @@ def _memory_context(
             {"subject_type":x["subject_type"],"subject":x["subject_key"],
              "predicate":x["predicate"],"value":x["value"],"confidence":x["confidence"]}
             for x in compiled_facts
-            if x["subject_type"]=="user" or x["subject_key"] in turn_text
+            if x["subject_type"]=="user" or _name_or_alias_in_turn(x["subject_key"])
         ][:30],
         "session_only": [
             {"kind": x.get("kind"), "entity": x.get("entity"),
