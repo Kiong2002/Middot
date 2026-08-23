@@ -9353,7 +9353,7 @@
     }
     function memorySetView(view) {
       const panel=document.querySelector('.memory-modal-panel'),before=panel?.getBoundingClientRect();
-      MEMORY_UI.view = ['profile','candidates','graph'].includes(view) ? view : 'profile';
+      MEMORY_UI.view = ['profile','candidates','graph','footprints'].includes(view) ? view : 'profile';
       document.querySelectorAll('[data-memory-view]').forEach(btn => btn.classList.toggle('is-active', btn.dataset.memoryView === MEMORY_UI.view));
       panel?.classList.toggle('is-profile-view', MEMORY_UI.view === 'profile');
       panel?.classList.toggle('is-graph-view', MEMORY_UI.view === 'graph');
