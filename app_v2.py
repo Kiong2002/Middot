@@ -4265,6 +4265,21 @@ ASSISTANT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "record_event",
+            "description": "当用户明确要求记住一次【经历/事件】时调用（如“记住我5月7日去过北京”“记住我以讲者身份参加了CCF”）。一次性经历不是长期偏好，但用户明确要求就应记下来——存成带日期的经历，不会当成固定偏好，之后可用 recall_events 回溯。不要用它存交通/饮食/预算偏好（用 remember_preference）或人物资料（用 remember_person）。只有用户明确说“记住/记一下/保存”时才调用。",
+            "parameters": {"type":"object","properties":{
+                "object":{"type":"string","description":"事件对象/地点，如 北京、CCF会议"},
+                "predicate":{"type":"string","description":"动作，默认 去过；如 参加、见了"},
+                "date":{"type":"string","description":"发生日期 YYYY-MM-DD；把用户话里的时间解析成它"},
+                "with_person":{"type":"string","description":"可选，同行的人"},
+                "by_transport":{"type":"string","description":"可选，交通方式"},
+                "role":{"type":"string","description":"可选，身份/性质，如 讲者、嘉宾"}
+            },"required":["object"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "forget_memory",
             "description": "忘记当前用户明确指定的一项档案。禁止在聊天中清空全部档案；清空全部必须让用户到会面档案界面二次确认。",
             "parameters": {
@@ -8087,6 +8102,55 @@ def _memory_event_date_range(date_str: str, date_to: str | None = None) -> tuple
     return int(d0.timestamp()), int(d1.timestamp()) + 86400
 
 
+def _tool_record_event(sid: str, args: dict) -> tuple[dict, dict | None]:
+    """记录用户明确要求记住的一次经历/事件（存为事件而非偏好）。需本轮明确"记住"授权且对象能对上原话。"""
+    did = _memory_device_id(sid)
+    obj = _memory_clean_text(args.get("object"), 80)
+    if not obj:
+        return {"ok": False, "error": "缺少事件对象（去过/参加的地点或活动）"}, None
+    raw_text = str((session_get(sid) or {}).get("current_user_message") or "")
+    if _memory_explicit_intent(sid, "person", text_override=raw_text):
+        _memory_track_authorization(sid, raw_text)
+    authorization, authorized_text = _memory_authorized_source(sid)
+    if not authorization:
+        return {"ok": False, "error": "这次对话里还没有明确的记忆授权；用户明确说“记住…”后再记录"}, None
+    if not _memory_grounded(authorized_text, [obj]):
+        return {"ok": False, "error": "事件对象与本轮可见对话不一致"}, None
+    predicate = _memory_clean_text(args.get("predicate"), 40) or "去过"
+    occurred_at = None
+    occurred_precision = None
+    date = _memory_clean_text(args.get("date"), 20) or None
+    if date:
+        rng = _memory_event_date_range(date)
+        if rng is None:
+            return {"ok": False, "error": "日期格式应为 YYYY-MM-DD"}, None
+        occurred_at, occurred_precision = rng[0], "day"
+    qualifiers = []
+    for field in ("with_person", "by_transport", "role"):
+        val = _memory_clean_text(args.get(field), 80)
+        if val:
+            qualifiers.append({"predicate": field, "value": val})
+    conn = _db_connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _memory_record_event_in_tx(
+            conn, did, "我", predicate, obj,
+            object_type=_memory_clean_text(args.get("object_type"), 20) or None,
+            occurred_at=occurred_at, occurred_precision=occurred_precision,
+            qualifiers=qualifiers,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    when = date or "（未指定日期）"
+    extra = ("（" + "、".join(q["value"] for q in qualifiers) + "）") if qualifiers else ""
+    return {"ok": True,
+            "summary": f"已记为一次经历：{when} {predicate}{obj}{extra}。只当经历、不会当成你的固定偏好；以后可回溯查询。"}, None
+
+
 def _tool_recall_events(sid: str, args: dict) -> tuple[dict, dict | None]:
     """回溯查询过去事件（只读）。按时间/对象/同行过滤 memory_events；查不到返回空并提示据实作答。"""
     did = _memory_device_id(sid)
@@ -9212,6 +9276,7 @@ TOOL_HANDLERS = {
     "remember_preference":      _tool_remember_preference,
     "list_memories":           _tool_list_memories,
     "recall_events":            _tool_recall_events,
+    "record_event":             _tool_record_event,
     "forget_memory":           _tool_forget_memory,
     "remember_person":         _tool_remember_person,
     "remember_feedback":       _tool_remember_feedback,
@@ -9254,6 +9319,7 @@ _ASSISTANT_SYSTEM = """你叫「阿觅」，是中点 Middot 的 AI 会面助手
 ## 关键约定
 - **【本轮原文最高优先级】**：当前 user 消息和 `[本轮整句结构化解析]` 是本轮事实源。旧对话、旧选择卡或示例与本轮冲突时一律忽略；禁止声称用户“提到过”本轮原文及结构化解析里没有的地点。用户本轮已明确某人的位置时，直接设置，不得再为这个人编造其他地点二选一。
 - **【长期记忆有两条入口】**：① 用户明确说“记住/以后默认/以后别推荐”时，走即时高权重确认流程；② 普通对话会在闲置整理或夜间补扫时提取稳定事实，先进入待确认候选；同日重复主要增强事实可信度，真正跨日的时间覆盖才增强长期稳定性。禁止回答“只有说记住才会形成记忆”。“今天/这次/现在”只用于本轮；搜索、推荐、模型猜测、浏览器当前位置和实时轨迹不得成为长期事实。
+- **【一次性经历/事件】**：“我5月7日去过北京”“以讲者身份参加了CCF”这类一次性经历不是长期偏好，默认不主动记入档案；但当用户明确要求“记住”时不要拒绝，调用 `record_event` 把它存成带日期的经历（不会当成固定偏好、日常规划也不会自动带出，只在用户回溯提问时用 `recall_events` 查出）。把用户话里的时间解析成 `date=YYYY-MM-DD`，同行/交通/身份等作为额外维度一并带上。回溯提问（“我几号去的X”“上次和谁去哪”）用 `recall_events` 查，查不到就据实说没有、不要编造。
 - **【候选与生效边界】**：待确认候选不会参与后续规划。当前用户对自己的明确、稳定、非敏感事实，在通过实体消歧和字段类型校验后可由一次第一手长期陈述自动晋升；普通重复至少需跨2个证据日且相隔36小时。低置信、时间覆盖不足、敏感位置和冲突内容继续待确认，由用户确认、修改或忽略。用户手动确认后的权威度为 100%，但后续出现可靠冲突证据时仍可被降级为受质疑。
 - **【人物记忆草稿】**：人物记忆必须先形成可见确认卡，用户点“确认保存”后才落库。用户第一次已经说过“请记住”后，后续回答“紫金港/杭州”等是在补充同一草稿，禁止要求他重复“请记住”。学校有多校区时先自然追问；信息补齐后调用 `remember_person` 准备确认卡。确认卡出现后停止本轮，不要再口头声称已经记住。
 - 用户问“你记得我什么”时，综合列出个人偏好、人物、店铺反馈，并把旧的搜索数据明确叫作“规划记录（不等于去过）”；说“忘掉/删除”时执行删除。人物地点可以从普通对话形成待确认候选，但第三方位置属于敏感事实，未经用户确认不得自动晋升，也不能从一次规划或搜索结果中偷记。
