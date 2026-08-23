@@ -6485,10 +6485,12 @@ def _episode_rows(device_id: str, limit: int = 8) -> list[dict]:
 def _memory_event_idempotency_key(
     device_id: str, subject_type: str, subject_key: str,
     predicate: str, object_value: str, occurred_at: int | None,
+    qual_sig: str = "",
 ) -> str:
-    """同一天同一(主体,动作,对象)算同一件事；跨天各算一件。"""
+    """事件同一性：同(主体,动作,对象,发生日)且**同一组限定词**才算同一件事。
+    限定词纳入身份键，避免 role=嘉宾 与 role=讲者 被误并为一行。"""
     day = "unknown" if occurred_at is None else str(int(occurred_at) // 86400)
-    return "\x1f".join((device_id, subject_type, subject_key, predicate, object_value, day))
+    return "\x1f".join((device_id, subject_type, subject_key, predicate, object_value, day, qual_sig))
 
 
 def _memory_record_event_in_tx(
@@ -6503,8 +6505,19 @@ def _memory_record_event_in_tx(
     """记录一次事件（可多次不同日期）。occurred_at 是事件主时间列；qualifiers 存其余维度
     （with_person / by_transport / at_place ...）。返回 event_id。"""
     now = _now()
+    # 规范化限定词，并把它们纳入事件身份键：同(主体,动作,对象,日)但限定词不同
+    # （如 role=嘉宾 vs role=讲者）应是不同事件，不能被去重合并。
+    norm_quals = []
+    for q in (qualifiers or []):
+        _p = str((q or {}).get("predicate") or "").strip()
+        _v = str((q or {}).get("value") or "").strip()
+        if _p and _v:
+            norm_quals.append({"predicate": _p, "value": _v,
+                               "value_type": (q or {}).get("value_type"),
+                               "entity_id": (q or {}).get("entity_id")})
+    qual_sig = "&".join(sorted(f"{q['predicate']}={q['value']}" for q in norm_quals))
     idem = _memory_event_idempotency_key(
-        device_id, subject_type, subject_key, predicate, object_value, occurred_at
+        device_id, subject_type, subject_key, predicate, object_value, occurred_at, qual_sig
     )
     conn.execute(
         "INSERT INTO memory_events(device_id,subject_type,subject_key,subject_entity_id,predicate,"
@@ -6522,15 +6535,11 @@ def _memory_record_event_in_tx(
     event_id = int(conn.execute(
         "SELECT id FROM memory_events WHERE idempotency_key=?", (idem,)
     ).fetchone()["id"])
-    for q in (qualifiers or []):
-        pred = str((q or {}).get("predicate") or "").strip()
-        val = str((q or {}).get("value") or "").strip()
-        if not pred or not val:
-            continue
+    for q in norm_quals:
         conn.execute(
             "INSERT OR IGNORE INTO memory_event_qualifiers(event_id,q_predicate,q_value,q_value_type,"
             "q_entity_id,created_at) VALUES(?,?,?,?,?,?)",
-            (event_id, pred, val, (q or {}).get("value_type"), (q or {}).get("entity_id"), now),
+            (event_id, q["predicate"], q["value"], q.get("value_type"), q.get("entity_id"), now),
         )
     return event_id
 
