@@ -3187,7 +3187,8 @@
           <div class="memory-tabs" id="memoryTabs" role="tablist">
             <button class="memory-tab is-active" type="button" data-memory-view="profile">档案</button>
             <button class="memory-tab" type="button" data-memory-view="candidates">待确认</button>
-            <button class="memory-tab" type="button" data-memory-view="graph">图谱</button>
+            <button class="memory-tab" type="button" data-memory-view="footprints">足迹</button>
+            <button class="memory-tab" type="button" data-memory-view="graph">关系图谱</button>
           </div>
           <div class="memory-stats" id="memoryStats" hidden></div>
           <div class="memory-list" id="memoryList"></div>
@@ -9384,6 +9385,13 @@
         list.innerHTML = memoryCandidateSection(data.candidate_groups || []) || `<div class="memory-empty"><i data-lucide="circle-check"></i>目前没有待确认记忆。</div>`;
       } else if (MEMORY_UI.view === 'graph') {
         list.innerHTML = memoryGraphHtml(data.graph || {});
+      } else if (MEMORY_UI.view === 'footprints') {
+        const events = data.events || [];
+        list.innerHTML = events.length ? events.map(ev => {
+          const when = ev.occurred_at ? new Date(ev.occurred_at*1000).toLocaleDateString('zh-CN') : '时间未记';
+          const quals = (ev.qualifiers||[]).map(q => q.q_value).join(' · ');
+          return `<div class="memory-item"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(when)} · ${escapeHtml((ev.predicate||'')+(ev.object||''))}</div><div class="memory-item-detail">${escapeHtml(quals||'一次经历')}</div></div></div>`;
+        }).join('') : `<div class="memory-empty"><i data-lucide="footprints"></i>还没有记录的足迹。可以告诉阿觅"记住我某天去过某地"。</div>`;
       } else {
         const pages=data.wiki_pages||[],preferences=data.preferences||[],people=data.people||[],feedback=data.feedback||[],episodes=data.episodes||[],placeAliases=data.place_aliases||[];
         const aboutPages=memoryGeneralWikiPages(pages,['user','preference']);
