@@ -4251,6 +4251,20 @@ ASSISTANT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "recall_events",
+            "description": "查询用户过去发生过的事件/经历（去过哪、和谁、几号参加什么、什么身份）。仅当用户回溯性询问过去时调用（如“我5月9日去了哪”“上次和苏可去哪了”）；日常规划/找店/改路线不要调用。把用户话里的时间解析成 date=YYYY-MM-DD（区间再给 date_to）。查不到就据实说没有，不要编造。",
+            "parameters": {"type":"object","properties":{
+                "date":{"type":"string","description":"起始日 YYYY-MM-DD；单日查询只填这个"},
+                "date_to":{"type":"string","description":"可选，区间结束日 YYYY-MM-DD"},
+                "object":{"type":"string","description":"可选，事件对象/地点，如 北京、CCF会议"},
+                "with_person":{"type":"string","description":"可选，同行的人"},
+                "limit":{"type":"integer","description":"最多返回条数，默认10"}
+            }},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "forget_memory",
             "description": "忘记当前用户明确指定的一项档案。禁止在聊天中清空全部档案；清空全部必须让用户到会面档案界面二次确认。",
             "parameters": {
@@ -8060,6 +8074,66 @@ def _tool_remember_preference(sid: str, args: dict) -> tuple[dict, dict | None]:
     return {"ok": True, "summary": f"已记住{_MEMORY_CATEGORY_LABELS[category]}偏好：{value}"}, None
 
 
+def _memory_event_date_range(date_str: str, date_to: str | None = None) -> tuple[int, int] | None:
+    """把 YYYY-MM-DD(可含区间) 解析成 [start, end) 的 epoch 秒（按 Asia/Shanghai 日界）。"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Asia/Shanghai")
+    try:
+        d0 = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=tz)
+        d1 = datetime.strptime(date_to or date_str, "%Y-%m-%d").replace(tzinfo=tz)
+    except (TypeError, ValueError):
+        return None
+    return int(d0.timestamp()), int(d1.timestamp()) + 86400
+
+
+def _tool_recall_events(sid: str, args: dict) -> tuple[dict, dict | None]:
+    """回溯查询过去事件（只读）。按时间/对象/同行过滤 memory_events；查不到返回空并提示据实作答。"""
+    did = _memory_device_id(sid)
+    obj = _memory_clean_text(args.get("object") or args.get("place"), 80) or None
+    with_person = _memory_clean_text(args.get("with_person"), 60) or None
+    try:
+        limit = max(1, min(50, int(args.get("limit") or 10)))
+    except (TypeError, ValueError):
+        limit = 10
+    date = _memory_clean_text(args.get("date"), 20) or None
+    date_to = _memory_clean_text(args.get("date_to"), 20) or None
+    conds = ["device_id=?", "status='confirmed'"]
+    params: list = [did]
+    if date:
+        rng = _memory_event_date_range(date, date_to)
+        if rng is None:
+            return {"ok": False, "error": "日期格式应为 YYYY-MM-DD"}, None
+        conds.append("occurred_at IS NOT NULL AND occurred_at>=? AND occurred_at<?")
+        params += [rng[0], rng[1]]
+    if obj:
+        conds.append("object=?"); params.append(obj)
+    conn = _db_connect()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id,subject_key,predicate,object,object_type,occurred_at,occurred_precision "
+            "FROM memory_events WHERE " + " AND ".join(conds) +
+            " ORDER BY (occurred_at IS NULL), occurred_at DESC, id DESC LIMIT ?",
+            (*params, limit),
+        )]
+        out = []
+        for e in rows:
+            quals = {q["q_predicate"]: q["q_value"] for q in conn.execute(
+                "SELECT q_predicate,q_value FROM memory_event_qualifiers WHERE event_id=?", (e["id"],)
+            )}
+            if with_person and quals.get("with_person") != with_person:
+                continue
+            out.append({"subject": e["subject_key"], "predicate": e["predicate"],
+                        "object": e["object"], "occurred_at": e["occurred_at"],
+                        "qualifiers": quals})
+    finally:
+        conn.close()
+    if not out:
+        return {"ok": True, "events": [],
+                "summary": "记录里没有匹配的历史事件；请据实说明没有记录，不要编造。"}, None
+    return {"ok": True, "events": out, "summary": f"查到 {len(out)} 条历史事件"}, None
+
+
 def _tool_list_memories(sid: str, _args: dict) -> tuple[dict, dict | None]:
     did = _memory_device_id(sid); snapshot = _memory_snapshot(did)
     general_facts = [
@@ -9137,6 +9211,7 @@ TOOL_HANDLERS = {
     "clarify_participant_location": _tool_clarify_participant_location,
     "remember_preference":      _tool_remember_preference,
     "list_memories":           _tool_list_memories,
+    "recall_events":            _tool_recall_events,
     "forget_memory":           _tool_forget_memory,
     "remember_person":         _tool_remember_person,
     "remember_feedback":       _tool_remember_feedback,
