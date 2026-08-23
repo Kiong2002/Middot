@@ -9408,11 +9408,21 @@ _ASSISTANT_SYSTEM = """你叫「阿觅」，是中点 Middot 的 AI 会面助手
 """
 
 
+def _session_chat_history(s: dict) -> list:
+    """归正 chat_history：Redis 合并脚本的 cjson 会把空列表 [] 编码成 {}（dict），
+    读取时若不是 list 一律当作空历史，避免 .append 崩溃。空 {} 本就代表没有历史。"""
+    hist = s.get("chat_history")
+    if not isinstance(hist, list):
+        hist = []
+        s["chat_history"] = hist
+    return hist
+
+
 def _assistant_history(sid: str) -> list[dict]:
     s = session_get(sid)
     if not s:
         return []
-    return s.setdefault("chat_history", [])
+    return _session_chat_history(s)
 
 
 _ASSISTANT_HISTORY_TRIGGER = 40
@@ -9469,7 +9479,7 @@ def _merge_history_summary(previous: str, removed: list[dict]) -> str:
 
 
 def _compact_assistant_history(s: dict, sid: str = "") -> None:
-    hist = s.setdefault("chat_history", [])
+    hist = _session_chat_history(s)
     if len(hist) <= _ASSISTANT_HISTORY_TRIGGER:
         return
     cut = max(1, len(hist) - _ASSISTANT_HISTORY_KEEP)
@@ -9503,7 +9513,7 @@ def _assistant_append_history(sid: str, msg: dict) -> None:
     s = session_get(sid)
     if not s:
         return
-    hist = s.setdefault("chat_history", [])
+    hist = _session_chat_history(s)
     hist.append(msg)
     _compact_assistant_history(s, sid)
 
