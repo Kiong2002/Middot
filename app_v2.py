@@ -298,6 +298,41 @@ def init_middot_db():
           happened_at INTEGER NOT NULL, keyword TEXT, people_json TEXT,
           chosen_poi_json TEXT, summary TEXT NOT NULL
         );
+        -- 事件层：可重复/多值的经历（我-去过-北京@5/7）。不设 (subject,predicate) 唯一，
+        -- 靠 idempotency_key(含发生日) 去重：同日重复不新增，跨日各一行。
+        CREATE TABLE IF NOT EXISTS memory_events (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id         TEXT NOT NULL,
+          subject_type      TEXT NOT NULL DEFAULT 'user',
+          subject_key       TEXT NOT NULL,
+          subject_entity_id TEXT,
+          predicate         TEXT NOT NULL,
+          object            TEXT NOT NULL,
+          object_type       TEXT,
+          object_entity_id  TEXT,
+          occurred_at       INTEGER,
+          occurred_precision TEXT,
+          confidence        REAL NOT NULL DEFAULT 0.9,
+          status            TEXT NOT NULL DEFAULT 'confirmed',
+          source_id         INTEGER,
+          created_at        INTEGER NOT NULL,
+          updated_at        INTEGER NOT NULL,
+          idempotency_key   TEXT NOT NULL UNIQUE
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_events_lookup
+          ON memory_events(device_id, subject_key, predicate, occurred_at DESC);
+        CREATE TABLE IF NOT EXISTS memory_event_qualifiers (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_id     INTEGER NOT NULL,
+          q_predicate  TEXT NOT NULL,
+          q_value      TEXT NOT NULL,
+          q_value_type TEXT,
+          q_entity_id  TEXT,
+          created_at   INTEGER NOT NULL,
+          UNIQUE(event_id, q_predicate, q_value),
+          FOREIGN KEY(event_id) REFERENCES memory_events(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_event_qual ON memory_event_qualifiers(event_id);
         CREATE INDEX IF NOT EXISTS idx_episode_device ON memory_episodes(device_id, happened_at DESC);
         CREATE TABLE IF NOT EXISTS memory_feedback (
           id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL,
@@ -6445,6 +6480,79 @@ def _episode_rows(device_id: str, limit: int = 8) -> list[dict]:
         ).fetchall()
         return [dict(r) for r in rows]
     finally: conn.close()
+
+
+def _memory_event_idempotency_key(
+    device_id: str, subject_type: str, subject_key: str,
+    predicate: str, object_value: str, occurred_at: int | None,
+) -> str:
+    """同一天同一(主体,动作,对象)算同一件事；跨天各算一件。"""
+    day = "unknown" if occurred_at is None else str(int(occurred_at) // 86400)
+    return "\x1f".join((device_id, subject_type, subject_key, predicate, object_value, day))
+
+
+def _memory_record_event_in_tx(
+    conn: sqlite3.Connection, device_id: str, subject_key: str,
+    predicate: str, object_value: str, *,
+    subject_type: str = "user", subject_entity_id: str | None = None,
+    object_type: str | None = None, object_entity_id: str | None = None,
+    occurred_at: int | None = None, occurred_precision: str | None = None,
+    confidence: float = 0.9, source_id: int | None = None,
+    qualifiers: list[dict] | None = None,
+) -> int:
+    """记录一次事件（可多次不同日期）。occurred_at 是事件主时间列；qualifiers 存其余维度
+    （with_person / by_transport / at_place ...）。返回 event_id。"""
+    now = _now()
+    idem = _memory_event_idempotency_key(
+        device_id, subject_type, subject_key, predicate, object_value, occurred_at
+    )
+    conn.execute(
+        "INSERT INTO memory_events(device_id,subject_type,subject_key,subject_entity_id,predicate,"
+        "object,object_type,object_entity_id,occurred_at,occurred_precision,confidence,status,"
+        "source_id,created_at,updated_at,idempotency_key) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?, 'confirmed', ?,?,?,?) "
+        "ON CONFLICT(idempotency_key) DO UPDATE SET "
+        "confidence=MAX(memory_events.confidence,excluded.confidence),"
+        "occurred_precision=COALESCE(excluded.occurred_precision,memory_events.occurred_precision),"
+        "updated_at=excluded.updated_at",
+        (device_id, subject_type, subject_key, subject_entity_id, predicate, object_value,
+         object_type, object_entity_id, occurred_at, occurred_precision, float(confidence),
+         source_id, now, now, idem),
+    )
+    event_id = int(conn.execute(
+        "SELECT id FROM memory_events WHERE idempotency_key=?", (idem,)
+    ).fetchone()["id"])
+    for q in (qualifiers or []):
+        pred = str((q or {}).get("predicate") or "").strip()
+        val = str((q or {}).get("value") or "").strip()
+        if not pred or not val:
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_event_qualifiers(event_id,q_predicate,q_value,q_value_type,"
+            "q_entity_id,created_at) VALUES(?,?,?,?,?,?)",
+            (event_id, pred, val, (q or {}).get("value_type"), (q or {}).get("entity_id"), now),
+        )
+    return event_id
+
+
+def _memory_events_rows(device_id: str, limit: int = 20) -> list[dict]:
+    conn = _db_connect()
+    try:
+        events = [dict(r) for r in conn.execute(
+            "SELECT id,subject_type,subject_key,predicate,object,object_type,occurred_at,"
+            "occurred_precision,confidence FROM memory_events "
+            "WHERE device_id=? AND status='confirmed' "
+            "ORDER BY (occurred_at IS NULL), occurred_at DESC, id DESC LIMIT ?",
+            (device_id, limit),
+        )]
+        for e in events:
+            e["qualifiers"] = [dict(q) for q in conn.execute(
+                "SELECT q_predicate,q_value,q_value_type FROM memory_event_qualifiers "
+                "WHERE event_id=? ORDER BY id", (e["id"],),
+            )]
+        return events
+    finally:
+        conn.close()
 
 
 def _feedback_rows(device_id: str) -> list[dict]:
