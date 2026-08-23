@@ -7262,6 +7262,7 @@ def _memory_snapshot(device_id: str) -> dict:
     people = _people_rows(device_id)
     episodes = _episode_rows(device_id, 50)
     feedback = _feedback_rows(device_id)
+    events = _memory_events_rows(device_id, 50)
     candidates = _candidate_rows(device_id)
     candidate_groups = _candidate_groups_from_rows(candidates)
     wiki = _memory_wiki_projection(device_id, candidate_groups)
@@ -7282,6 +7283,7 @@ def _memory_snapshot(device_id: str) -> dict:
         # 兼容旧数据，但明确它只是规划记录，不进入长期事实上下文。
         "episodes": episodes,
         "feedback": feedback,
+        "events": events,
         # raw candidates stay server-side/admin-facing; user UI receives semantic groups.
         "candidates": candidates,
         "candidate_groups": candidate_groups,
