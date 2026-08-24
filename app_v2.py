@@ -7713,6 +7713,18 @@ def _memory_candidate_rows_in_tx(conn: sqlite3.Connection, device_id: str) -> li
     ).fetchall()]
 
 
+# 互斥谓词组:同一(主语,目标值)上,组内不同谓词的断言互相矛盾(如同一家店"喜欢"vs"不喜欢")。
+# 这类跨谓词冲突单靠 (主语,谓词,值) 精确匹配发现不了,需按组+目标值额外检查。
+_MEMORY_EXCLUSION_GROUPS = [frozenset({"likes", "dislikes"})]
+
+
+def _memory_exclusion_group(predicate: str) -> frozenset | None:
+    for grp in _MEMORY_EXCLUSION_GROUPS:
+        if predicate in grp:
+            return grp
+    return None
+
+
 def _memory_reconcile_candidates(conn: sqlite3.Connection, device_id: str) -> dict:
     """高可信、可持久、非敏感候选自动晋升；冲突先质疑，强证据才能自动换代。"""
     result={"promoted":0,"challenged":0,"waiting":0}
@@ -7728,6 +7740,17 @@ def _memory_reconcile_candidates(conn: sqlite3.Connection, device_id: str) -> di
             (device_id,group["kind"],group["entity_key"],group["predicate"]),
         ).fetchone()
         same=bool(current and _memory_clean_text(current["value"],160)==_memory_clean_text(group["value"],160))
+        # 互斥组:同一(主语,目标值)上,组内另一谓词已有正式断言 = 跨谓词冲突
+        _excl=_memory_exclusion_group(group["predicate"]); _sibling=None
+        if _excl and not current:
+            _grp=sorted(_excl); _ph=",".join("?" for _ in _grp)
+            _sibling=conn.execute(
+                f"SELECT * FROM memory_wiki_facts WHERE device_id=? AND subject_type=? AND subject_key=? "
+                f"AND value=? AND predicate<>? AND status IN (\x27confirmed\x27,\x27challenged\x27) "
+                f"AND predicate IN ({_ph})",
+                (device_id,group["kind"],group["entity_key"],group["value"],group["predicate"],*_grp),
+            ).fetchone()
+        conflicting = current or _sibling
         resolved = group.get("resolution_status") == "resolved" and float(group.get("resolution_confidence") or 0) >= .88
         # 一次明确的本人长期陈述仍可直接成立；普通重复则必须真正跨日。
         # “一天开很多对话”只轻微增强事实可信，不满足时间覆盖要求。
@@ -7740,20 +7763,20 @@ def _memory_reconcile_candidates(conn: sqlite3.Connection, device_id: str) -> di
             _confirm_candidate_group(conn,device_id,group,rows,group["value"],authority=.75,promotion_reason="evidence_reinforced")
             result["promoted"]+=1
             continue
-        if current:
+        if conflicting:
             conn.execute(
                 f"UPDATE memory_candidates SET status='conflict',decision_reason='与当前正式记忆冲突',updated_at=? "
                 f"WHERE id IN ({','.join('?' for _ in rows)})",
                 (_now(),*(int(row["id"]) for row in rows)),
             )
-            if confidence>=.80 and enough_time and current["status"]!="challenged":
-                lowered=max(.45,float(current["confidence"])-.18*confidence)
+            if confidence>=.80 and enough_time and conflicting["status"]!="challenged":
+                lowered=max(.45,float(conflicting["confidence"])-.18*confidence)
                 conn.execute(
                     "UPDATE memory_wiki_facts SET confidence=?,status='challenged',promotion_reason='conflicting_evidence',updated_at=? WHERE id=?",
-                    (lowered,_now(),int(current["id"])),
+                    (lowered,_now(),int(conflicting["id"])),
                 )
-                if current["subject_type"]=="person" and current["predicate"]=="usual_place":
-                    conn.execute("UPDATE memory_people SET expires_at=? WHERE device_id=? AND name=?",(_now(),device_id,current["subject_key"]))
+                if conflicting["subject_type"]=="person" and conflicting["predicate"]=="usual_place":
+                    conn.execute("UPDATE memory_people SET expires_at=? WHERE device_id=? AND name=?",(_now(),device_id,conflicting["subject_key"]))
                 result["challenged"]+=1
             if (eligible and confidence>=MEMORY_AUTO_REPLACE_CONFIDENCE
                     and distinct_days>=3 and span_hours>=168):
