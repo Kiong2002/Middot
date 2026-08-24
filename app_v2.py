@@ -9111,9 +9111,10 @@ def _tool_offer_choices(sid: str, args: dict) -> tuple[dict, dict | None]:
     if any(cue in choice_text for cue in location_cues):
         for loc in (turn_parse.get("locations") or []):
             owner = str(loc.get("owner") or "").strip()
-            markers = ("你", "我") if owner in ("我", "我自己", "本人") else (owner,)
-            if owner and any(marker and marker in choice_text for marker in markers):
-                expression = str(loc.get("expression") or "").strip()
+            expression = str(loc.get("expression") or "").strip()
+            # “你/我”只是问句里的称呼，不代表在重问该位置；只有选项里再次出现
+            # “已给定的那个地点”才算“重复编造让用户确认”，问别人的其它地点(如朋友校区)不该拦。
+            if expression and expression in choice_text:
                 return {
                     "ok": False,
                     "error": f"本轮用户已明确说{owner}在“{expression}”，请直接采用，不能再编造其他地点让用户确认",
