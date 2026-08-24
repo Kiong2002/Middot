@@ -5553,6 +5553,12 @@ def _tool_add_participant(
     )
 
 
+def _participant_is_placeholder(participant: dict) -> bool:
+    """槽位是否还没绑定真实参与者——当前模型下以â尚无已确认坐标â为准:
+    没设过位置的默认槽(如â小伙伴â)改名不需要 rename/replace 消歧(没有位置可继承或丢弃)。"""
+    return participant.get("lng") is None or participant.get("lat") is None
+
+
 def _tool_ensure_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
     """Ensure exactly one planned slot; never guess a replacement target."""
     st = _assistant_get_state(sid)
@@ -5597,7 +5603,8 @@ def _tool_ensure_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
         target = parts[idx - 1]
         current_name = str(target.get("name") or "").strip()
         name_changes = participant_name != current_name
-        if name_changes and identity_action not in {"rename", "replace"}:
+        target_is_placeholder = _participant_is_placeholder(target)
+        if name_changes and not target_is_placeholder and identity_action not in {"rename", "replace"}:
             return {
                 "ok": False,
                 "error_code": "participant_identity_action_required",
@@ -5615,7 +5622,8 @@ def _tool_ensure_participant(sid: str, args: dict) -> tuple[dict, dict | None]:
         delegated["index"] = idx
         if name_changes:
             delegated["new_nickname"] = participant_name
-            delegated["identity_action"] = identity_action
+            if not target_is_placeholder:
+                delegated["identity_action"] = identity_action
         if len(delegated) == 1:
             task["participant_planned_indices"] = sorted(planned_indices | {idx})
             session_update(sid, {"agent_task": task})
