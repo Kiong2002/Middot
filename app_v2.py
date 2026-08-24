@@ -9559,6 +9559,10 @@ def _agent_task_begin(sid: str, message: str) -> dict:
             "waiting_for": "",
             "choices": [],
             "choice_token": "",
+            # 参与者规划去重是â每轮â的,resume 是新一轮,必须清零,否则
+            # 提交选择后模型重规划同一槽位会误报â本轮已经规划过â。
+            "participant_planned_indices": [],
+            "participant_planned_append_count": 0,
             "updated_at": now,
         }
     else:
