@@ -9375,6 +9375,8 @@
       stats.classList.toggle('is-profile-summary', MEMORY_UI.view === 'profile');
       if (MEMORY_UI.view === 'profile') {
         stats.innerHTML = `<div class="memory-profile-summary-copy"><strong>${Number(s.active || 0)}</strong>条记忆正在帮助规划</div><button class="memory-profile-pending" type="button" data-memory-summary-candidates>${Number(s.candidates || 0)} 条待确认</button>`;
+      } else if (MEMORY_UI.view === 'footprints') {
+        stats.innerHTML = `<div class="memory-stat"><strong>${Number((data.events||[]).length)}</strong><span>条经历(足迹)</span></div>`;
       } else {
         stats.innerHTML = `<div class="memory-stat"><strong>${Number(s.active || 0)}</strong><span>当前会用于规划</span></div>
           <div class="memory-stat"><strong>${Number(s.expired || 0)}</strong><span>已过期待确认</span></div>
@@ -9387,10 +9389,11 @@
         list.innerHTML = memoryGraphHtml(data.graph || {});
       } else if (MEMORY_UI.view === 'footprints') {
         const events = data.events || [];
+        const QLBL = {with_person:'同行', by_transport:'交通', role:'身份', at_place:'地点', purpose:'目的'};
         list.innerHTML = events.length ? events.map(ev => {
           const when = ev.occurred_at ? new Date(ev.occurred_at*1000).toLocaleDateString('zh-CN') : '时间未记';
-          const quals = (ev.qualifiers||[]).map(q => q.q_value).join(' · ');
-          return `<div class="memory-item"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(when)} · ${escapeHtml((ev.predicate||'')+(ev.object||''))}</div><div class="memory-item-detail">${escapeHtml(quals||'一次经历')}</div></div></div>`;
+          const quals = (ev.qualifiers||[]).map(q => (QLBL[q.q_predicate]?QLBL[q.q_predicate]+' ':'') + q.q_value).join(' · ');
+          return `<div class="memory-item" data-kind="event" data-id="${Number(ev.id)}"><div class="memory-item-main"><div class="memory-item-title">${escapeHtml(when)} · ${escapeHtml((ev.predicate||'')+(ev.object||''))}</div><div class="memory-item-detail">${escapeHtml(quals||'一次经历')}</div></div><button class="memory-item-btn" type="button" data-memory-delete title="删除这条足迹"><i data-lucide="trash-2"></i></button></div>`;
         }).join('') : `<div class="memory-empty"><i data-lucide="footprints"></i>还没有记录的足迹。可以告诉阿觅"记住我某天去过某地"。</div>`;
       } else {
         const pages=data.wiki_pages||[],preferences=data.preferences||[],people=data.people||[],feedback=data.feedback||[],episodes=data.episodes||[],placeAliases=data.place_aliases||[];
