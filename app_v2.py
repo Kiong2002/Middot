@@ -4776,7 +4776,7 @@ def _record_place_alias_confirmation_conn(
         "INSERT INTO place_alias_evidence(device_id,city,alias,alias_norm,poi_id,canonical_name,address,lng,lat,"
         "confirmation_count,status,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,'confirmed',?,?,?) "
         "ON CONFLICT(device_id,city,alias_norm,poi_id) DO UPDATE SET "
-        "confirmation_count=confirmation_count+1,canonical_name=excluded.canonical_name,address=excluded.address,"
+        "confirmation_count=place_alias_evidence.confirmation_count+1,canonical_name=excluded.canonical_name,address=excluded.address,"
         "lng=excluded.lng,lat=excluded.lat,status='confirmed',source=excluded.source,updated_at=excluded.updated_at",
         (device_id, city, alias, norm, poi_id, str(candidate.get("label") or "")[:160],
          str(candidate.get("address") or "")[:300], float(candidate["lng"]), float(candidate["lat"]),
