@@ -4687,7 +4687,7 @@ def _place_alias_mapping(device_id: str, alias: str, city: str) -> dict | None:
         rows = conn.execute(
             "SELECT poi_id,canonical_name,address,lng,lat,COUNT(DISTINCT device_id) AS users,"
             "SUM(confirmation_count) AS confirmations FROM place_alias_evidence "
-            "WHERE city=? AND alias_norm=? AND status='confirmed' GROUP BY poi_id "
+            "WHERE city=? AND alias_norm=? AND status='confirmed' GROUP BY poi_id,canonical_name,address,lng,lat "
             "ORDER BY users DESC,confirmations DESC",
             (city, norm),
         ).fetchall()
