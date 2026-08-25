@@ -2357,6 +2357,14 @@ def _trace_start(conversation_id: str, device_id: str, session_id: str, message:
             "VALUES(?,?,?,?,?,'running',?)",
             (trace_id, conversation_id, device_id, session_id, str(message or "")[:4000], now_ms),
         )
+        # 新 turn 开始:把本会话之前仍停在 waiting 的历史 trace 收尾,
+        # 否则回看历史会永远显示“等待处理中”转圈(其动作其实早已完成/被后续接管)。
+        conn.execute(
+            "UPDATE agent_traces SET status='done',finished_at=COALESCE(finished_at,?),"
+            "duration_ms=COALESCE(duration_ms,?-started_at) "
+            "WHERE conversation_id=? AND status='waiting' AND id<>?",
+            (now_ms, now_ms, conversation_id, trace_id),
+        )
         conn.execute(
             "INSERT INTO agent_trace_steps(trace_id,seq,step_type,title,summary,payload_json,created_at_ms) "
             "VALUES(?,1,'user','用户请求',?,?,?)",
