@@ -101,6 +101,10 @@ def _postgres_sql(sql: str) -> str:
             "MAX(memory_entity_aliases.confidence,excluded.confidence)",
             "GREATEST(memory_entity_aliases.confidence,excluded.confidence)",
         ),
+        (
+            "MAX(memory_events.confidence,excluded.confidence)",
+            "GREATEST(memory_events.confidence,excluded.confidence)",
+        ),
         ("MAX(1,COALESCE(", "GREATEST(1,COALESCE("),
         ("MAX(0,COALESCE(", "GREATEST(0,COALESCE("),
         ("MIN(0.99,", "LEAST(0.99,"),
