@@ -96,9 +96,11 @@ class MainAgentState(TypedDict, total=False):
     max_iterations: int
     successful_tool_signatures: list[str]
     non_retryable_tool_failures: list[str]
+    tool_failure_counts: dict[str, int]
     routes_recomputed_after_prefer: bool
     me_has_location: bool
     desired_search_keyword: str
+    direct_search_ready: bool
     search_compensated: bool
     repair_attempts: int
     planner_content: str

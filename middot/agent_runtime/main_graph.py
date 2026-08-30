@@ -67,6 +67,21 @@ def build_main_agent_graph(
     sink = trace_sink or NullTraceSink()
 
     def planner(state: MainAgentState) -> Mapping[str, Any]:
+        desired_keyword = str(state.get("desired_search_keyword") or "").strip()
+        if (
+            int(state.get("iteration") or 0) == 0
+            and state.get("direct_search_ready")
+            and desired_keyword
+            and not state.get("search_compensated")
+            and hooks.needs_search(state["session_id"], desired_keyword)
+        ):
+            # 整句 AI 解析已经确认是纯搜索请求，且当前参与者无需修改时，
+            # 不再先花一轮 Planner 让模型“想起”调用搜索工具。
+            return {
+                "planner_content": "",
+                "pending_tool_calls": [],
+                "status": "compensating_search",
+            }
         iteration = int(state.get("iteration") or 0) + 1
         if iteration > int(state.get("max_iterations") or 7):
             return {"status": "failed", "error": "达到工具调用上限"}
@@ -193,6 +208,7 @@ def build_main_agent_graph(
         messages = list(state.get("messages") or [])
         successful = set(state.get("successful_tool_signatures") or [])
         non_retryable_failures = set(state.get("non_retryable_tool_failures") or [])
+        failure_counts = dict(state.get("tool_failure_counts") or {})
         called_names: set[str] = set()
         location_targets: set[str] = set()
         prefer_changed = False
@@ -295,6 +311,18 @@ def build_main_agent_graph(
                         "不要让用户反复重试同一个故障。"
                     ),
                 })
+            elif not result.get("ok") and result.get("retryable") is True:
+                attempts = int(failure_counts.get(failure_key) or 0) + 1
+                failure_counts[failure_key] = attempts
+                if attempts >= 2:
+                    non_retryable_failures.add(failure_key)
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            f"工具 {name} 对同一目标的临时错误已经重试过一次，仍未恢复。"
+                            "本轮停止继续调用，向用户说明暂时阻塞即可。"
+                        ),
+                    })
             if patch:
                 writer({"type": "state_patch", "patch": patch})
                 if patch.get("type") == "location_choices":
@@ -354,6 +382,7 @@ def build_main_agent_graph(
             "pending_tool_calls": [],
             "successful_tool_signatures": sorted(successful),
             "non_retryable_tool_failures": sorted(non_retryable_failures),
+            "tool_failure_counts": failure_counts,
             "called_names": sorted(called_names),
             "verification_issues": issues,
             "waiting_kind": waiting_kind,

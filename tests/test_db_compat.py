@@ -1,6 +1,6 @@
 import sqlite3
 
-from middot.db_compat import _postgres_sql
+from middot.db_compat import _postgres_sql, classify_database_error
 
 
 ENTITY_ALIAS_UPSERT = (
@@ -65,3 +65,13 @@ def test_place_alias_upsert_qualifies_current_row_for_both_databases():
         assert count == 2
     finally:
         connection.close()
+
+
+def test_sqlite_locked_error_is_retryable_but_bad_sql_is_not():
+    locked = classify_database_error(sqlite3.OperationalError("database is locked"))
+    bad_sql = classify_database_error(sqlite3.OperationalError("no such column: missing"))
+
+    assert locked["category"] == "transient"
+    assert locked["retryable"] is True
+    assert bad_sql["category"] == "programming"
+    assert bad_sql["retryable"] is False

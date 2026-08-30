@@ -4795,12 +4795,14 @@
     };
 
     function draftApplySearchProgressStart(drafts) {
-      const participantKinds = new Set([
-        'set_participant_location', 'add_participant', 'remove_participant',
+      const refreshKinds = new Set([
+        'set_participant_location', 'set_participant_prefer',
+        'add_participant', 'remove_participant',
+        'set_keyword', 'shift_center', 'set_radius',
       ]);
-      const changesParticipants = (drafts || []).some(d => participantKinds.has(d.kind));
+      const changesSearchInputs = (drafts || []).some(d => refreshKinds.has(d.kind));
       const keyword = (document.getElementById('queryInput')?.value || '').trim();
-      if (!changesParticipants || !keyword) return false;
+      if (!changesSearchInputs || !keyword) return false;
 
       DRAFT_APPLY_SEARCH_PROGRESS.active = true;
       DRAFT_APPLY_SEARCH_PROGRESS.keyword = keyword;
@@ -6096,6 +6098,11 @@
           }),
         });
         const data = await r.json();
+        if (r.status === 409 && data.code === 'full_search_required') {
+          toast('出发地点或名单已变化，正在按新中点重新搜索…');
+          await doSearch();
+          return;
+        }
         if (!data.success) throw new Error(data.error || '重算失败');
         // 原总结基于旧地点/旧交通方式，快速重算不调用大模型，不能继续展示旧结论。
         state.resultData = { ...state.resultData, ...data, summary: '' };
@@ -8248,7 +8255,12 @@
         if (!resp.ok || !data?.ok) {
           throw new Error(data?.error || `应用失败（HTTP ${resp.status}）`);
         }
-        const participantKinds = new Set(['set_participant_location','add_participant','remove_participant']);
+        const participantKinds = new Set([
+          'set_participant_location','set_participant_prefer','add_participant','remove_participant',
+        ]);
+        const resultRefreshKinds = new Set([
+          ...participantKinds, 'set_keyword', 'shift_center', 'set_radius',
+        ]);
         if (Array.isArray(data.participants)) {
           state.participants = data.participants.map(item => ({ ...item }));
           renderParticipantList && renderParticipantList();
@@ -8256,7 +8268,7 @@
         } else {
           chosen.filter(d => participantKinds.has(d.kind)).forEach(applyDraftLocally);
         }
-        if (chosen.some(d => participantKinds.has(d.kind)) && Array.isArray(data.pois)) {
+        if (chosen.some(d => resultRefreshKinds.has(d.kind)) && Array.isArray(data.pois)) {
           draftApplySearchProgressFinish(data.pois);
           clearPaths && clearPaths();
           if (data.pois.length) {

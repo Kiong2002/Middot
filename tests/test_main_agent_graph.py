@@ -96,9 +96,11 @@ def _state(**updates):
         "max_iterations": 7,
         "successful_tool_signatures": [],
         "non_retryable_tool_failures": [],
+        "tool_failure_counts": {},
         "routes_recomputed_after_prefer": False,
         "me_has_location": True,
         "desired_search_keyword": "",
+        "direct_search_ready": False,
         "search_compensated": False,
         "repair_attempts": 0,
     }
@@ -291,3 +293,42 @@ def test_main_graph_compensates_when_model_claims_search_without_tool_call():
         {"type": "token", "delta": "已经找到两家饺子馆。"},
         {"type": "done", "outcome": "completed"},
     ]
+
+
+def test_main_graph_search_only_turn_skips_first_model_planning_call():
+    fake = FakeHooks([
+        {"content": "已经找到两家饺子馆。", "tool_calls": []},
+    ])
+    fake.search_needed = True
+
+    events = list(
+        _runtime(fake).stream(
+            _state(desired_search_keyword="饺子", direct_search_ready=True),
+            thread_id="agent:thread-direct-search",
+        )
+    )
+
+    assert fake.calls["auto_search"] == 1
+    assert fake.calls["planner"] == 1
+    assert events[-2:] == [
+        {"type": "token", "delta": "已经找到两家饺子馆。"},
+        {"type": "done", "outcome": "completed"},
+    ]
+
+
+def test_main_graph_caps_same_transient_tool_failure_at_two_attempts():
+    repeated = _tool_call("get_current_result", "{}")
+    fake = FakeHooks([
+        {"content": "", "tool_calls": [repeated]},
+        {"content": "", "tool_calls": [repeated]},
+        {"content": "", "tool_calls": [repeated]},
+        {"content": "暂时无法读取结果。", "tool_calls": []},
+    ])
+    fake.tool_results["get_current_result"] = (
+        {"ok": False, "error": "数据库暂时繁忙", "retryable": True}, None
+    )
+
+    events = list(_runtime(fake).stream(_state(), thread_id="agent:thread-transient-cap"))
+
+    assert fake.calls["tool:get_current_result"] == 2
+    assert [event["type"] for event in events].count("tool_call") == 2

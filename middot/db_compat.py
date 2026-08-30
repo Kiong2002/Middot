@@ -314,3 +314,43 @@ def integrity_error_types() -> tuple[type[BaseException], ...]:
 
         errors.append(psycopg.IntegrityError)
     return tuple(errors)
+
+
+def classify_database_error(exc: BaseException) -> dict[str, Any]:
+    """把数据库异常分成可重试的瞬时故障和必须修代码的确定性故障。"""
+    if isinstance(exc, sqlite3.IntegrityError):
+        return {"is_database_error": True, "category": "integrity", "retryable": False, "sqlstate": ""}
+    if isinstance(exc, sqlite3.OperationalError):
+        message = str(exc).casefold()
+        transient = any(token in message for token in ("locked", "busy", "temporarily unavailable"))
+        return {
+            "is_database_error": True,
+            "category": "transient" if transient else "programming",
+            "retryable": transient,
+            "sqlstate": "",
+        }
+    if IS_POSTGRES:
+        import psycopg
+
+        if isinstance(exc, psycopg.Error):
+            sqlstate = str(getattr(exc, "sqlstate", "") or "")
+            # 08: connection, 40: transaction rollback, 55P03: lock unavailable,
+            # 57P01/2/3: server shutdown/restart states.
+            transient = (
+                sqlstate.startswith(("08", "40"))
+                or sqlstate == "55P03"
+                or sqlstate in {"57P01", "57P02", "57P03"}
+            )
+            if transient:
+                category = "transient"
+            elif sqlstate.startswith("23"):
+                category = "integrity"
+            else:
+                category = "programming"
+            return {
+                "is_database_error": True,
+                "category": category,
+                "retryable": transient,
+                "sqlstate": sqlstate,
+            }
+    return {"is_database_error": False, "category": "application", "retryable": False, "sqlstate": ""}

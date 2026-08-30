@@ -781,6 +781,7 @@ def test_search_provenance_only_clears_matching_pending_goal(monkeypatch, tmp_pa
     state = module.session_get(sid)
     assert right_result["ok"] is True
     assert state["last_search"]["keyword"] == "饺子"
+    assert len(state["last_search"]["input_fingerprint"]) == 32
     assert state["pending_search_goal"] == {}
     assert patch["search_meta"]["keyword"] == "饺子"
     assert module._verify_agent_outcome(sid, set()) == []
@@ -1701,8 +1702,61 @@ def test_participant_batch_automatically_searches_after_confirmation(monkeypatch
     )
 
     assert response.status_code == 200
-    assert calls == [(sid, {"keyword": "咖啡"})]
+    assert calls == [(sid, {"keyword": "咖啡", "radius_m": 3000})]
     assert response.get_json()["pois"][0]["name"] == "测试咖啡馆"
+
+
+def test_keyword_draft_directly_refreshes_results_after_confirmation(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create({
+        "participants": [
+            {"id": "a", "name": "我", "lng": 1.0, "lat": 1.0},
+            {"id": "b", "name": "Diva", "lng": 2.0, "lat": 2.0},
+        ],
+        "query": "咖啡",
+        "last_pois": [{"id": "old", "name": "旧咖啡馆"}],
+        "pois_base": [{"id": "old", "name": "旧咖啡馆"}],
+        "memory_did": "device-a",
+        "my_did": "device-a",
+    })
+    calls = []
+
+    def fake_search(search_sid, args):
+        calls.append((search_sid, args))
+        pois = [{"id": "new", "name": "新饺子馆"}]
+        module.session_update(search_sid, {"last_pois": pois, "pois_base": pois})
+        return {"ok": True, "count": 1, "summary": "找到 1 家"}, None
+
+    monkeypatch.setattr(module, "_tool_search_pois", fake_search)
+    response = module.app.test_client().post(
+        "/api/v2/session/apply-drafts",
+        json={
+            "session_id": sid,
+            "drafts": [{"kind": "set_keyword", "data": {"keyword": "饺子"}}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert calls == [(sid, {"keyword": "饺子", "radius_m": 3000})]
+    assert response.get_json()["pois"][0]["name"] == "新饺子馆"
+
+
+def test_readiness_facts_follow_latest_session_not_turn_start(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    sid = module.session_create({
+        "participants": [{"id": "me", "name": "我", "lng": None, "lat": None}],
+        "my_did": "device-a",
+    })
+    assert module._assistant_readiness_facts(sid)["me_has_location"] is False
+
+    module.session_update(sid, {
+        "participants": [
+            {"id": "me", "name": "我", "lng": 116.3, "lat": 39.9, "address": "北京大学"}
+        ]
+    })
+    facts = module._assistant_readiness_facts(sid)
+    assert facts["me_has_location"] is True
+    assert facts["missing_location_indexes"] == []
 
 
 def test_participant_draft_batch_rejects_partial_application(monkeypatch, tmp_path):
@@ -1728,7 +1782,7 @@ def test_participant_draft_batch_rejects_partial_application(monkeypatch, tmp_pa
     assert module.session_get(sid)["participants"][0]["name"] == "A"
 
 
-def test_routes_use_latest_client_locations_instead_of_stale_session(monkeypatch, tmp_path):
+def test_routes_require_full_search_when_client_locations_changed(monkeypatch, tmp_path):
     module = _load_app(monkeypatch, tmp_path)
     sid = module.session_create({
         "participants": [
@@ -1739,13 +1793,6 @@ def test_routes_use_latest_client_locations_instead_of_stale_session(monkeypatch
         "city": "北京",
         "plan": {"sort_weights": {}},
     })
-    captured = {}
-
-    def fake_calculate(pois, participants, *args, **kwargs):
-        captured["participants"] = participants
-        return [{**pois[0], "routes": []}]
-
-    monkeypatch.setattr(module, "calculate_routes", fake_calculate)
     response = module.app.test_client().post("/api/v2/routes", json={
         "session_id": sid,
         "participants": [
@@ -1760,12 +1807,40 @@ def test_routes_use_latest_client_locations_instead_of_stale_session(monkeypatch
         ],
     })
 
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "full_search_required"
+
+
+def test_routes_reuse_candidates_when_only_transport_changed(monkeypatch, tmp_path):
+    module = _load_app(monkeypatch, tmp_path)
+    participants = [
+        {"id": "p1", "name": "我", "lng": 116.1, "lat": 39.1, "prefer": "auto"},
+        {"id": "p2", "name": "Diva", "lng": 116.2, "lat": 39.2, "prefer": "auto"},
+    ]
+    sid = module.session_create({
+        "participants": participants,
+        "pois_base": [{"id": "poi-1", "name": "候选店", "lng": 116.4, "lat": 39.4}],
+        "query": "咖啡",
+        "city": "北京",
+        "plan": {"sort_weights": {}},
+    })
+    captured = {}
+
+    def fake_calculate(pois, current_participants, *args, **kwargs):
+        captured["participants"] = current_participants
+        return [{**pois[0], "routes": []}]
+
+    monkeypatch.setattr(module, "calculate_routes", fake_calculate)
+    response = module.app.test_client().post("/api/v2/routes", json={
+        "session_id": sid,
+        "participants": [
+            {**participants[0], "prefer": "walking"},
+            {**participants[1], "prefer": "transit"},
+        ],
+    })
+
     assert response.status_code == 200
-    assert [p["lng"] for p in captured["participants"]] == [116.31, 116.42]
-    assert [p["address"] for p in captured["participants"]] == ["新地点甲", "新地点乙"]
-    saved = module.session_get(sid)["participants"]
-    assert saved[0]["prefer"] == "walking"
-    assert saved[1]["prefer"] == "transit"
+    assert [p["prefer"] for p in captured["participants"]] == ["walking", "transit"]
 
 
 def test_manual_search_reuses_conversation_session_and_persists_results(monkeypatch, tmp_path):
@@ -1813,6 +1888,7 @@ def test_manual_search_reuses_conversation_session_and_persists_results(monkeypa
     assert state["chat_history"][0]["content"] == "一起找咖啡"
     assert state["last_search"]["source"] == "manual"
     assert state["last_search"]["keyword"] == "烧烤"
+    assert len(state["last_search"]["input_fingerprint"]) == 32
     assert state["last_pois"][0]["name"] == "手动搜到的店"
     conn = module._db_connect()
     try:

@@ -37,6 +37,7 @@ from middot.state_store import (
 from middot.redis_admin import redis_key_page, redis_overview
 from middot.db_compat import (
     acquire_schema_lock,
+    classify_database_error,
     connect as database_connect,
     integrity_error_types,
     release_schema_lock,
@@ -3869,6 +3870,12 @@ def run_pipeline(
             "center": center,
             "radius_m": search_radius_m,
             "source": "manual",
+            "input_fingerprint": _candidate_input_fingerprint(
+                participants,
+                str(plan.get("keyword") or user_query),
+                city,
+                anchor,
+            ),
             "completed_at": _now(),
         },
         "departure_time":  departure_time,
@@ -4110,6 +4117,27 @@ def api_v2_routes():
     participants = requested_participants or [dict(p) for p in session.get("participants", [])]
     if len(participants) < 2:
         return jsonify({"success": False, "error": "至少需要 2 位参与者设定位置"}), 400
+
+    # 快速“重算”只能复用原候选。人数或出发地变化时，中点和搜索范围已经
+    # 变化，继续给旧 POI 换一套路程会产生看似更新、实际过期的结果。
+    last_search = session.get("last_search") if isinstance(session.get("last_search"), dict) else {}
+    search_keyword = (last_search or {}).get("keyword") or session.get("query") or ""
+    previous_fingerprint = str((last_search or {}).get("input_fingerprint") or "")
+    if not previous_fingerprint:
+        previous_fingerprint = _candidate_input_fingerprint(
+            session.get("participants") or [], search_keyword,
+            session.get("city", "北京"), session.get("anchor"),
+        )
+    current_fingerprint = _candidate_input_fingerprint(
+        participants, search_keyword,
+        session.get("city", "北京"), session.get("anchor"),
+    )
+    if current_fingerprint != previous_fingerprint:
+        return jsonify({
+            "success": False,
+            "code": "full_search_required",
+            "error": "参与者地点或名单已经变化，需要按新中点重新搜索候选地点",
+        }), 409
     # 合并 prefer 覆盖
     for i, person in enumerate(participants):
         override = prefer_overrides.get(person.get("id")) \
@@ -4624,6 +4652,64 @@ def _search_keyword_key(value: object) -> str:
     return re.sub(r"\s+", "", str(value or "")).casefold()
 
 
+def _candidate_input_fingerprint(
+    participants: list[dict], keyword: object, city: object, anchor: object
+) -> str:
+    """候选地点所依赖的稳定输入；交通方式不影响候选中心，单独重算路线即可。"""
+    normalized_people = []
+    for person in participants or []:
+        lng = person.get("lng")
+        lat = person.get("lat")
+        normalized_people.append({
+            "id": str(person.get("id") or ""),
+            "lng": round(float(lng), 6) if lng is not None else None,
+            "lat": round(float(lat), 6) if lat is not None else None,
+        })
+    anchor_value = anchor if isinstance(anchor, dict) else {}
+    material = {
+        "participants": normalized_people,
+        "keyword": _search_keyword_key(keyword),
+        "city": str(city or "").strip().casefold(),
+        "anchor": {
+            "lng": round(float(anchor_value["lng"]), 6) if anchor_value.get("lng") is not None else None,
+            "lat": round(float(anchor_value["lat"]), 6) if anchor_value.get("lat") is not None else None,
+            "radius_m": int(anchor_value.get("radius_m") or 0),
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:32]
+
+
+def _assistant_readiness_facts(sid: str) -> dict:
+    """最终回复和 Planner 共用的服务端权威事实，不从聊天文字反推。"""
+    state = _assistant_get_state(sid)
+    participants = []
+    missing_location_indexes = []
+    for index, person in enumerate(state.get("participants") or [], 1):
+        has_location = person.get("lng") is not None and person.get("lat") is not None
+        if not has_location:
+            missing_location_indexes.append(index)
+        participants.append({
+            "index": index,
+            "name": str(person.get("name") or f"第{index}位"),
+            "has_location": has_location,
+            "address": str(person.get("address") or "") if has_location else "",
+            "prefer": str(person.get("prefer") or "auto"),
+        })
+    me_index = _compute_me_index(state.get("participants") or [], state.get("my_did") or "")
+    return {
+        "participants": participants,
+        "me_index": me_index,
+        "me_has_location": bool(
+            0 < me_index <= len(participants) and participants[me_index - 1]["has_location"]
+        ),
+        "missing_location_indexes": missing_location_indexes,
+        "all_locations_ready": bool(participants) and not missing_location_indexes,
+        "can_search": _can_execute_pending_search(sid),
+    }
+
+
 def _current_result_keyword(sid: str) -> str:
     state = session_get(sid) or {}
     last_search = state.get("last_search") if isinstance(state.get("last_search"), dict) else {}
@@ -4768,6 +4854,9 @@ def _tool_search_pois(sid: str, args: dict) -> tuple[dict, dict | None]:
         "center_lng": float(center_lng),
         "center_lat": float(center_lat),
         "radius_m": radius,
+        "input_fingerprint": _candidate_input_fingerprint(
+            participants_for_routes, keyword, st.get("city", "北京"), st.get("anchor")
+        ),
         "completed_at": _now(),
     }
     pending_goal = (session_get(sid) or {}).get("pending_search_goal") or {}
@@ -10029,6 +10118,7 @@ def _location_graph_committer(**payload) -> dict:
         "candidate": selected,
         "selection_source": payload.get("selection_source"),
     }
+    replayed = False
     conn = _db_connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -10038,6 +10128,7 @@ def _location_graph_committer(**payload) -> dict:
         ).fetchone()
         if existing:
             result = json.loads(existing["result_json"] or "{}") or result
+            replayed = True
         else:
             _record_place_alias_confirmation_conn(
                 conn,
@@ -10058,7 +10149,12 @@ def _location_graph_committer(**payload) -> dict:
     finally:
         conn.close()
     answer, canonical = _project_location_selection(sid, target, selected)
-    return {**result, "answer": answer, "canonical_label": canonical}
+    return {
+        **result,
+        "replayed": replayed,
+        "answer": answer,
+        "canonical_label": canonical,
+    }
 
 
 def _get_location_graph_runtime():
@@ -10712,9 +10808,24 @@ def _main_graph_call_model(state: dict) -> dict:
             "temperature": 0.4,
         },
     )
+    # 工具可能刚刚改变了参与者；每次 Planner 调用前都从当前会话重建
+    # 权威准备状态，不能只依赖本轮开始时的旧快照。
+    readiness_facts = _assistant_readiness_facts(state["session_id"])
+    model_messages = [
+        *(state.get("messages") or []),
+        {
+            "role": "system",
+            "content": (
+                "[服务端权威准备状态] "
+                + json.dumps(readiness_facts, ensure_ascii=False)
+                + "。是否缺少位置只能依据 missing_location_indexes；"
+                  "禁止从聊天措辞自行推断某人未定位。"
+            ),
+        },
+    ]
     stream = llm_client.chat.completions.create(
         model="deepseek-chat",
-        messages=state.get("messages") or [],
+        messages=model_messages,
         tools=state.get("tools") or [],
         stream=True,
         temperature=0.4,
@@ -10809,11 +10920,26 @@ def _main_graph_execute_tool(state: dict, name: str, args: dict) -> tuple[dict, 
         try:
             result, patch = handler(state["session_id"], args)
         except Exception as exc:
+            db_error = classify_database_error(exc)
+            app.logger.exception(
+                "[agent-tool] %s failed category=%s sqlstate=%s",
+                name, db_error["category"], db_error["sqlstate"],
+            )
             result, patch = {
                 "ok": False,
-                "error": "系统内部错误，已停止重复尝试",
-                "error_code": "internal_tool_error",
-                "retryable": False,
+                "error": (
+                    "数据库暂时繁忙，可以自动重试一次"
+                    if db_error["is_database_error"] and db_error["retryable"]
+                    else "系统内部错误，已停止重复尝试"
+                ),
+                "error_code": (
+                    f"database_{db_error['category']}"
+                    if db_error["is_database_error"] else "internal_tool_error"
+                ),
+                "retryable": bool(
+                    db_error["is_database_error"] and db_error["retryable"]
+                ),
+                "sqlstate": db_error["sqlstate"],
                 "debug_error": f"{type(exc).__name__}: {exc}",
             }, None
     _agent_task_record(state["session_id"], name, result)
@@ -10926,7 +11052,8 @@ def _main_graph_auto_search(state: dict, keyword: str) -> tuple[dict, dict | Non
 
 
 def _main_graph_finalize(state: dict, content: str) -> str:
-    content = _guard_assistant_location_claim(content, bool(state.get("me_has_location")))
+    readiness_facts = _assistant_readiness_facts(state["session_id"])
+    content = _guard_assistant_location_claim(content, readiness_facts["me_has_location"])
     final_issues = _verify_agent_outcome(state["session_id"], set())
     if final_issues:
         content = (content + "\n\n" if content else "") + "当前状态仍需处理：" + "；".join(final_issues)
@@ -11070,6 +11197,8 @@ def api_v2_apply_drafts():
     # A->E, B->F, remove C is therefore never visible in a half-applied state.
     parts = [dict(item) for item in (s.get("participants") or [])]
     parts_dirty = False
+    candidate_inputs_dirty = False
+    route_inputs_dirty = False
     participant_error = ""
     alias_confirmations: list[tuple[str, str, dict]] = []
 
@@ -11085,6 +11214,7 @@ def api_v2_apply_drafts():
                 city = body.get("city")
                 if city:
                     updates["city"] = city
+                candidate_inputs_dirty = True
                 applied.append(kind)
         elif kind == "set_participant_location":
             pid = body.get("participant_id")
@@ -11094,27 +11224,41 @@ def api_v2_apply_drafts():
             requested_prefer = str(body.get("prefer") or "").strip()
             resolution = body.get("place_resolution") if isinstance(body.get("place_resolution"), dict) else None
             if pid is not None and (
-                (lng is not None and lat is not None) or new_nickname or requested_prefer
+                (lng is not None and lat is not None)
+                or body.get("clear_location") is True
+                or new_nickname
+                or requested_prefer
+                or body.get("reset_prefer") is True
             ):
                 target = next((p for p in parts if p.get("id") == pid), None)
                 if target is None:
                     participant_error = "参与者状态已经变化，请重新生成修改草稿"
                     break
                 if lng is not None and lat is not None:
+                    if target.get("lng") != float(lng) or target.get("lat") != float(lat):
+                        candidate_inputs_dirty = True
                     target["lng"] = float(lng); target["lat"] = float(lat)
                     if addr: target["address"] = addr
                     if resolution:
                         target["place_resolution"] = dict(resolution)
                 elif body.get("clear_location") is True:
+                    if target.get("lng") is not None or target.get("lat") is not None:
+                        candidate_inputs_dirty = True
                     target["lng"] = None; target["lat"] = None
                     target["address"] = ""
                     target.pop("place_resolution", None)
                 if new_nickname:
+                    if target.get("name") != new_nickname:
+                        route_inputs_dirty = True
                     target["name"] = new_nickname
                     target["identity_status"] = "confirmed"
                 if requested_prefer in {"auto", "transit", "driving", "walking", "cycling"}:
+                    if (target.get("prefer") or "auto") != requested_prefer:
+                        route_inputs_dirty = True
                     target["prefer"] = requested_prefer
                 elif body.get("reset_prefer") is True:
+                    if (target.get("prefer") or "auto") != "auto":
+                        route_inputs_dirty = True
                     target["prefer"] = "auto"
                 parts_dirty = True
                 if resolution:
@@ -11127,6 +11271,18 @@ def api_v2_apply_drafts():
             else:
                 participant_error = "参与者修改草稿缺少有效字段"
                 break
+        elif kind == "set_participant_prefer":
+            pid = body.get("participant_id")
+            prefer = str(body.get("prefer") or "").strip()
+            target = next((p for p in parts if p.get("id") == pid), None)
+            if target is None or prefer not in {"auto", "transit", "driving", "walking", "cycling"}:
+                participant_error = "交通方式草稿对应的参与者或参数已经失效"
+                break
+            if (target.get("prefer") or "auto") != prefer:
+                target["prefer"] = prefer
+                parts_dirty = True
+                route_inputs_dirty = True
+            applied.append(kind)
         elif kind == "add_participant":
             nickname = (body.get("nickname") or "").strip()
             lng = body.get("lng"); lat = body.get("lat")
@@ -11146,6 +11302,7 @@ def api_v2_apply_drafts():
                 }
                 parts.append(new_p)
                 parts_dirty = True
+                candidate_inputs_dirty = True
                 applied.append(kind)
             else:
                 participant_error = "无法新增参与者：名称为空或人数已达上限"
@@ -11156,6 +11313,7 @@ def api_v2_apply_drafts():
             parts = [p for p in parts if str(p.get("id") or "") != pid]
             if len(parts) != before_count:
                 parts_dirty = True
+                candidate_inputs_dirty = True
                 applied.append(kind)
             else:
                 participant_error = "要移除的参与者已经不存在，请重新生成修改草稿"
@@ -11163,6 +11321,8 @@ def api_v2_apply_drafts():
         elif kind == "set_keyword":
             kw = (body.get("keyword") or "").strip()
             if kw:
+                if _search_keyword_key(s.get("query")) != _search_keyword_key(kw):
+                    candidate_inputs_dirty = True
                 updates["query"] = kw
                 applied.append(kind)
         elif kind == "set_radius":
@@ -11176,6 +11336,8 @@ def api_v2_apply_drafts():
                 if cur_anchor:
                     new_anchor = dict(cur_anchor); new_anchor["radius_m"] = r
                     updates["anchor"] = new_anchor
+                    if int(cur_anchor.get("radius_m") or 0) != r:
+                        candidate_inputs_dirty = True
                 applied.append(kind)
 
     if participant_error:
@@ -11253,14 +11415,32 @@ def api_v2_apply_drafts():
                 )
             except Exception:
                 app.logger.exception("[apply-drafts] operation audit write failed")
-        if parts_dirty:
+        if candidate_inputs_dirty or route_inputs_dirty:
             refreshed_pois = []
             latest = session_get(sid) or {}
             pois_base = latest.get("pois_base") or []
             can_route = bool(parts) and all(
                 p.get("lng") is not None and p.get("lat") is not None for p in parts
             )
-            if pois_base and can_route:
+            if candidate_inputs_dirty and can_route and str(latest.get("query") or "").strip():
+                try:
+                    search_result, _ = _tool_search_pois(
+                        sid,
+                        {
+                            "keyword": str(latest.get("query") or "").strip(),
+                            "radius_m": int(
+                                ((latest.get("anchor") or {}).get("radius_m"))
+                                or latest.get("search_radius_m")
+                                or 3000
+                            ),
+                        },
+                    )
+                    if search_result.get("ok") and not search_result.get("skipped"):
+                        refreshed_pois = list((session_get(sid) or {}).get("last_pois") or [])
+                        _conversation_record_operation(sid, "search_pois", search_result)
+                except Exception:
+                    app.logger.exception("[apply-drafts] automatic search refresh failed")
+            elif not candidate_inputs_dirty and route_inputs_dirty and pois_base and can_route:
                 try:
                     refreshed_pois = calculate_routes(
                         pois_base,
@@ -11269,18 +11449,9 @@ def api_v2_apply_drafts():
                         latest.get("departure_time"),
                         sort_weights=(latest.get("plan") or {}).get("sort_weights"),
                     )
+                    session_update(sid, {"last_pois": refreshed_pois})
                 except Exception as exc:
                     app.logger.warning("[apply-drafts] participant route refresh failed: %s", exc)
-            elif can_route and str(latest.get("query") or "").strip():
-                try:
-                    search_result, _ = _tool_search_pois(
-                        sid, {"keyword": str(latest.get("query") or "").strip()}
-                    )
-                    if search_result.get("ok") and not search_result.get("skipped"):
-                        refreshed_pois = list((session_get(sid) or {}).get("last_pois") or [])
-                        _conversation_record_operation(sid, "search_pois", search_result)
-                except Exception:
-                    app.logger.exception("[apply-drafts] automatic search refresh failed")
             # Never leave routes calculated for the removed/replaced group on screen.
             session_update(sid, {"last_pois": refreshed_pois})
         try:
@@ -11684,12 +11855,21 @@ def api_v2_assistant_stream():
                 "max_iterations": MAX_ITERS,
                 "successful_tool_signatures": [],
                 "non_retryable_tool_failures": [],
+                "tool_failure_counts": {},
                 "routes_recomputed_after_prefer": False,
                 "me_has_location": me_has_location,
                 "desired_search_keyword": str(
                     (pending_search_goal.get("keyword") or "")
                     if isinstance(pending_search_goal, dict) else ""
                 ).strip(),
+                "direct_search_ready": bool(
+                    desired_search_keyword
+                    and not (utterance_parse.get("locations") or [])
+                    and not (
+                        (utterance_parse.get("participant_change") or {}).get("ordered_names")
+                        or (utterance_parse.get("participant_change") or {}).get("slot_changes")
+                    )
+                ),
                 "search_compensated": False,
                 "repair_attempts": 0,
                 "status": "planning",
